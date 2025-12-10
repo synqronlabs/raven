@@ -313,20 +313,20 @@ func (m *Mail) RequiresSMTPUTF8() bool {
 	}
 
 	// Check envelope addresses
-	if containsNonASCII(m.Envelope.From.Mailbox.LocalPart) ||
-		containsNonASCII(m.Envelope.From.Mailbox.Domain) {
+	if ContainsNonASCII(m.Envelope.From.Mailbox.LocalPart) ||
+		ContainsNonASCII(m.Envelope.From.Mailbox.Domain) {
 		return true
 	}
 	for _, rcpt := range m.Envelope.To {
-		if containsNonASCII(rcpt.Address.Mailbox.LocalPart) ||
-			containsNonASCII(rcpt.Address.Mailbox.Domain) {
+		if ContainsNonASCII(rcpt.Address.Mailbox.LocalPart) ||
+			ContainsNonASCII(rcpt.Address.Mailbox.Domain) {
 			return true
 		}
 	}
 
 	// Check headers for non-ASCII content
 	for _, h := range m.Content.Headers {
-		if containsNonASCII(h.Value) {
+		if ContainsNonASCII(h.Value) {
 			return true
 		}
 	}
@@ -348,8 +348,8 @@ func (m *Mail) Requires8BitMIME() bool {
 	return false
 }
 
-// containsNonASCII checks if a string contains any non-ASCII characters.
-func containsNonASCII(s string) bool {
+// ContainsNonASCII checks if a string contains any non-ASCII characters.
+func ContainsNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] > 127 {
 			return true

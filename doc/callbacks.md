@@ -166,7 +166,6 @@ OnEhlo: func(ctx context.Context, conn *raven.Connection, hostname string) (map[
     // Build custom extension set
     extensions := map[raven.Extension]string{
         raven.Ext8BitMIME:           "",
-        raven.ExtPipelining:         "",
         raven.ExtEnhancedStatusCodes: "",
     }
     

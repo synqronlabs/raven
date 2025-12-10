@@ -77,31 +77,6 @@ const (
 	ExtEnhancedStatusCodes Extension = "ENHANCEDSTATUSCODES"
 )
 
-// PipelineCommand represents a buffered command in the pipeline queue.
-// Per RFC 2920, commands can be sent without waiting for responses.
-type PipelineCommand struct {
-	// Command is the SMTP command verb (e.g., "MAIL", "RCPT", "DATA").
-	Command string
-	// Args contains the command arguments.
-	Args string
-	// Raw is the original command line as received.
-	Raw string
-	// ReceivedAt is when the command was read from the connection.
-	ReceivedAt time.Time
-}
-
-// PipelineResponse represents a response to be sent for a pipelined command.
-type PipelineResponse struct {
-	// Code is the three-digit SMTP reply code.
-	Code int
-	// EnhancedCode is the optional enhanced status code (e.g., "2.1.0").
-	EnhancedCode string
-	// Message is the human-readable response text.
-	Message string
-	// Multiline indicates if this is part of a multiline response.
-	Multiline bool
-}
-
 // TLSInfo contains information about the TLS connection, if established.
 type TLSInfo struct {
 	// Enabled indicates whether TLS is active on this connection.
@@ -219,18 +194,6 @@ type Connection struct {
 	// Nil when no transaction is active (before MAIL FROM or after reset).
 	currentMail *Mail
 
-	// pipelineQueue holds commands received but not yet processed (RFC 2920).
-	// Commands are queued here when pipelining is enabled.
-	pipelineQueue []PipelineCommand
-
-	// pipelineResponses holds responses waiting to be flushed.
-	// Responses are batched and sent together per RFC 2920 requirements.
-	pipelineResponses []PipelineResponse
-
-	// pipeliningEnabled indicates whether pipelining is active for this connection.
-	// Set to true after EHLO if the server advertises PIPELINING.
-	pipeliningEnabled bool
-
 	// serverHostname is the hostname the server uses in greetings and Received headers.
 	serverHostname string
 
@@ -243,7 +206,7 @@ type Connection struct {
 
 // NewConnection creates a new Connection from a net.Conn.
 // The provided context is used for cancellation and deadlines.
-func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, limits ConnectionLimits) *Connection {
+func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, limits ConnectionLimits, bufioSize int) *Connection {
 	connCtx, cancel := context.WithCancel(ctx)
 	now := time.Now()
 
@@ -251,8 +214,8 @@ func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, li
 		conn:   conn,
 		ctx:    connCtx,
 		cancel: cancel,
-		reader: bufio.NewReader(conn),
-		writer: bufio.NewWriter(conn),
+		reader: bufio.NewReaderSize(conn, bufioSize),
+		writer: bufio.NewWriterSize(conn, bufioSize),
 		state:  StateConnect,
 		Trace: ConnectionTrace{
 			RemoteAddr:   conn.RemoteAddr(),
@@ -262,7 +225,6 @@ func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, li
 		},
 		Limits:         limits,
 		Extensions:     make(map[Extension]string),
-		pipelineQueue:  make([]PipelineCommand, 0, 16),
 		serverHostname: serverHostname,
 		closedChan:     make(chan struct{}),
 	}
@@ -313,13 +275,6 @@ func (c *Connection) IsAuthenticated() bool {
 	return c.Auth.Authenticated
 }
 
-// IsPipelining returns whether pipelining is enabled.
-func (c *Connection) IsPipelining() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.pipeliningEnabled
-}
-
 // CurrentMail returns the current mail transaction, or nil if none is active.
 func (c *Connection) CurrentMail() *Mail {
 	c.mu.RLock()
@@ -357,48 +312,6 @@ func (c *Connection) CompleteTransaction() *Mail {
 	c.state = StateGreeted
 	c.Trace.TransactionCount++
 	return mail
-}
-
-// QueuePipelineCommand adds a command to the pipeline queue (RFC 2920).
-func (c *Connection) QueuePipelineCommand(cmd PipelineCommand) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pipelineQueue = append(c.pipelineQueue, cmd)
-}
-
-// DequeuePipelineCommand removes and returns the next command from the pipeline.
-func (c *Connection) DequeuePipelineCommand() (PipelineCommand, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.pipelineQueue) == 0 {
-		return PipelineCommand{}, false
-	}
-	cmd := c.pipelineQueue[0]
-	c.pipelineQueue = c.pipelineQueue[1:]
-	return cmd, true
-}
-
-// PipelineLength returns the number of commands waiting in the pipeline.
-func (c *Connection) PipelineLength() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.pipelineQueue)
-}
-
-// QueueResponse adds a response to the pipeline response buffer.
-func (c *Connection) QueueResponse(resp PipelineResponse) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pipelineResponses = append(c.pipelineResponses, resp)
-}
-
-// FlushResponses returns all queued responses and clears the buffer.
-func (c *Connection) FlushResponses() []PipelineResponse {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	responses := c.pipelineResponses
-	c.pipelineResponses = make([]PipelineResponse, 0, 8)
-	return responses
 }
 
 // Close closes the connection and releases resources.
@@ -454,14 +367,6 @@ func (c *Connection) SetClientHostname(hostname string) {
 	c.Trace.ClientHostname = hostname
 }
 
-// EnablePipelining enables command pipelining for this connection.
-func (c *Connection) EnablePipelining() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.pipeliningEnabled = true
-	c.Extensions[ExtPipelining] = ""
-}
-
 // SetExtension sets an extension with optional parameters.
 func (c *Connection) SetExtension(ext Extension, params string) {
 	c.mu.Lock()
@@ -509,8 +414,6 @@ func (c *Connection) UpgradeToTLS(config *tls.Config) error {
 
 	// Reset state after STARTTLS per RFC 3207
 	c.state = StateConnect
-	c.pipeliningEnabled = false
-	c.pipelineQueue = c.pipelineQueue[:0]
 
 	return nil
 }

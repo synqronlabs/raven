@@ -30,7 +30,6 @@ type ServerConfig struct {
 
     // Protocol Settings
     MaxLineLength    int
-    EnablePipelining bool
     Enable8BitMIME   bool
     EnableSMTPUTF8   bool
     EnableDSN        bool
@@ -248,18 +247,6 @@ config.MaxLineLength = 512  // RFC 5321 minimum
 
 **Note**: RFC 5321 specifies 512 as the minimum; some extensions may require more.
 
-### EnablePipelining
-
-Enable SMTP command pipelining (RFC 2920).
-
-```go
-config.EnablePipelining = true
-```
-
-**Default**: `true`
-
-**Benefit**: Significantly improves throughput by allowing multiple commands without waiting for responses.
-
 ### Enable8BitMIME
 
 Enable 8BITMIME extension (RFC 6152).
@@ -387,7 +374,6 @@ func DefaultServerConfig() ServerConfig {
         DataTimeout:      10 * time.Minute,
         IdleTimeout:      5 * time.Minute,
         MaxLineLength:    512,
-        EnablePipelining: true,
         Enable8BitMIME:   true,
         EnableSMTPUTF8:   true,
         AuthMechanisms:   []string{"PLAIN", "LOGIN"},

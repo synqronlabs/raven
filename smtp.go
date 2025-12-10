@@ -145,6 +145,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -292,12 +293,6 @@ type ServerConfig struct {
 	// RequireAuth requires clients to authenticate before sending mail.
 	RequireAuth bool
 
-	// AuthRequiresTLS requires clients to use TLS before authentication is allowed.
-	// When enabled, AUTH will not be advertised in EHLO responses for non-TLS connections,
-	// and AUTH commands will be rejected with a 538 error until TLS is established.
-	// Default: false
-	AuthRequiresTLS bool
-
 	// MaxMessageSize is the maximum message size in bytes (0 = unlimited).
 	// Advertised via SIZE extension.
 	MaxMessageSize int64
@@ -333,10 +328,6 @@ type ServerConfig struct {
 	// MaxLineLength is the maximum length of a command line (RFC 5321: 512).
 	// Default: 512
 	MaxLineLength int
-
-	// EnablePipelining enables SMTP pipelining (RFC 2920).
-	// Default: true
-	EnablePipelining bool
 
 	// Enable8BitMIME enables 8BITMIME extension (RFC 6152).
 	// Default: true
@@ -378,17 +369,16 @@ type ServerConfig struct {
 // DefaultServerConfig returns a ServerConfig with sensible defaults.
 func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
-		Addr:             ":25",
-		ReadTimeout:      5 * time.Minute,
-		WriteTimeout:     5 * time.Minute,
-		DataTimeout:      10 * time.Minute,
-		IdleTimeout:      5 * time.Minute,
-		MaxLineLength:    512,
-		EnablePipelining: true,
-		Enable8BitMIME:   true,
-		EnableSMTPUTF8:   true,
-		AuthMechanisms:   []string{"PLAIN", "LOGIN"},
-		Logger:           slog.Default(),
+		Addr:           ":25",
+		ReadTimeout:    5 * time.Minute,
+		WriteTimeout:   5 * time.Minute,
+		DataTimeout:    10 * time.Minute,
+		IdleTimeout:    5 * time.Minute,
+		MaxLineLength:  512,
+		Enable8BitMIME: true,
+		EnableSMTPUTF8: true,
+		AuthMechanisms: []string{"PLAIN", "LOGIN"},
+		Logger:         slog.Default(),
 	}
 }
 
@@ -601,7 +591,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		DataTimeout:    s.config.DataTimeout,
 	}
 
-	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits)
+	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength)
 	conn.Trace.ID = generateConnectionID()
 
 	// Check if implicit TLS
@@ -774,53 +764,48 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 // ErrBadLineEnding is returned when a line is not terminated by CRLF.
 var ErrBadLineEnding = errors.New("smtp: line not terminated by CRLF")
 
-// readLine reads a line from the connection, requiring strict CRLF termination.
-// This prevents SMTP smuggling attacks that exploit bare LF line endings.
+// readLine reads a single SMTP line, enforcing strict CRLF and a maximum length.
+// It returns the line without the trailing CRLF.
 func (s *Server) readLine(reader *bufio.Reader) (string, error) {
-	var line []byte
+	var total int
+
 	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			return "", err
-		}
+		chunk, err := reader.ReadSlice('\n') // returns data including '\n' or ErrBufferFull
+		total += len(chunk)
 
-		if b == '\n' {
-			// Bare LF without preceding CR - reject to prevent SMTP smuggling
-			return "", ErrBadLineEnding
-		}
-
-		if b == '\r' {
-			// Check for LF following CR
-			next, err := reader.ReadByte()
-			if err != nil {
-				return "", err
-			}
-			if next == '\n' {
-				// Valid CRLF - end of line
-				return string(line), nil
-			}
-			// CR not followed by LF - reject
-			return "", ErrBadLineEnding
-		}
-
-		line = append(line, b)
-
-		// Check line length limit
-		if len(line) > s.config.MaxLineLength {
-			// Drain rest of line until CRLF or error
-			for {
-				b, err := reader.ReadByte()
-				if err != nil {
-					return "", ErrLineTooLong
+		// If the line length has exceeded the configured maximum, drain the rest of the line
+		// (if any) and return ErrLineTooLong.
+		if total > s.config.MaxLineLength {
+			// If ReadSlice returned ErrBufferFull we still haven't hit '\n' yet,
+			// so keep discarding until we find one.
+			if err == bufio.ErrBufferFull {
+				// discard until we see a '\n' or an actual error
+				for err == bufio.ErrBufferFull {
+					_, err = reader.ReadSlice('\n')
 				}
-				if b == '\r' {
-					next, _ := reader.ReadByte()
-					if next == '\n' {
-						return "", ErrLineTooLong
-					}
-				}
+				// If err != nil after this loop, we'll fall through and return ErrLineTooLong
 			}
+			return "", ErrLineTooLong
 		}
+
+		if err == nil {
+			// chunk ends with '\n'. Enforce that it's preceded by '\r' (strict CRLF).
+			// chunk length is at least 1 because it contains '\n'
+			if len(chunk) < 2 || chunk[len(chunk)-2] != '\r' {
+				return "", ErrBadLineEnding
+			}
+			// Return the line without the trailing CRLF.
+			// Convert to string (this copies the data).
+			return string(chunk[:len(chunk)-2]), nil
+		}
+
+		if err == bufio.ErrBufferFull {
+			// We haven't seen '\n' yet; loop to read more. Continue accumulating length.
+			continue
+		}
+
+		// Any other error (including EOF) should be returned as is.
+		return "", err
 	}
 }
 
@@ -916,10 +901,6 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	// Build extension list
 	extensions := make(map[Extension]string)
 
-	if s.config.EnablePipelining {
-		extensions[ExtPipelining] = ""
-		conn.EnablePipelining()
-	}
 	if s.config.Enable8BitMIME {
 		extensions[Ext8BitMIME] = ""
 		conn.SetExtension(Ext8BitMIME, "")
@@ -945,7 +926,7 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		conn.SetExtension(ExtChunking, "")
 	}
 	// Only advertise AUTH if TLS is not required, or if TLS is active
-	if len(s.config.AuthMechanisms) > 0 && (!s.config.AuthRequiresTLS || conn.IsTLS()) {
+	if len(s.config.AuthMechanisms) > 0 && (!s.config.RequireTLS || conn.IsTLS()) {
 		authParams := strings.Join(s.config.AuthMechanisms, " ")
 		extensions[ExtAuth] = authParams
 		conn.SetExtension(ExtAuth, authParams)
@@ -1028,6 +1009,17 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	from, params, err := parsePathWithParams(args)
 	if err != nil {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
+	}
+
+	// RFC 6531: If SMTPUTF8 parameter is not present, reject non-ASCII addresses
+	if _, hasSMTPUTF8 := params["SMTPUTF8"]; !hasSMTPUTF8 {
+		if ContainsNonASCII(from.Mailbox.LocalPart) || ContainsNonASCII(from.Mailbox.Domain) {
+			return &Response{
+				Code:         CodeMailboxNameInvalid,
+				EnhancedCode: "5.6.7",
+				Message:      "Address contains non-ASCII characters but SMTPUTF8 not requested",
+			}
+		}
 	}
 
 	// Check SIZE parameter
@@ -1116,6 +1108,17 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	to, params, err := parsePathWithParams(args)
 	if err != nil {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
+	}
+
+	// RFC 6531: If SMTPUTF8 was not requested in MAIL FROM, reject non-ASCII addresses
+	if !mail.Envelope.SMTPUTF8 {
+		if ContainsNonASCII(to.Mailbox.LocalPart) || ContainsNonASCII(to.Mailbox.Domain) {
+			return &Response{
+				Code:         CodeMailboxNameInvalid,
+				EnhancedCode: "5.6.7",
+				Message:      "Address contains non-ASCII characters but SMTPUTF8 not requested",
+			}
+		}
 	}
 
 	// Callback
@@ -1243,7 +1246,7 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, e
 	var buf bytes.Buffer
 
 	for {
-		line, err := s.readDataLine(reader)
+		line, err := s.readLine(reader)
 		if err != nil {
 			return nil, err
 		}
@@ -1269,40 +1272,6 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, e
 	}
 
 	return buf.Bytes(), nil
-}
-
-// readDataLine reads a single line from DATA content, requiring strict CRLF termination.
-// Returns the line content without the trailing CRLF.
-func (s *Server) readDataLine(reader *bufio.Reader) (string, error) {
-	var line []byte
-
-	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			return "", err
-		}
-
-		if b == '\n' {
-			// Bare LF without preceding CR - reject to prevent SMTP smuggling
-			return "", ErrBadLineEnding
-		}
-
-		if b == '\r' {
-			// Check for LF following CR
-			next, err := reader.ReadByte()
-			if err != nil {
-				return "", err
-			}
-			if next == '\n' {
-				// Valid CRLF - end of line
-				return string(line), nil
-			}
-			// CR not followed by LF - reject
-			return "", ErrBadLineEnding
-		}
-
-		line = append(line, b)
-	}
 }
 
 // handleBDAT processes the BDAT command (RFC 3030 CHUNKING extension).
@@ -1566,7 +1535,7 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	if conn.IsAuthenticated() {
 		return &Response{Code: CodeBadSequence, Message: "Already authenticated"}
 	}
-	if (s.config.RequireTLS || s.config.AuthRequiresTLS) && !conn.IsTLS() {
+	if (s.config.RequireTLS) && !conn.IsTLS() {
 		return &Response{
 			Code:         530,
 			EnhancedCode: "5.7.0",
@@ -1578,13 +1547,7 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	mechanism := strings.ToUpper(parts[0])
 
 	// Check if mechanism is supported
-	supported := false
-	for _, m := range s.config.AuthMechanisms {
-		if m == mechanism {
-			supported = true
-			break
-		}
-	}
+	supported := slices.Contains(s.config.AuthMechanisms, mechanism)
 	if !supported {
 		return &Response{Code: CodeParameterNotImpl, Message: "Mechanism not supported"}
 	}
@@ -1785,7 +1748,7 @@ func parsePathWithParams(s string) (Path, map[string]string, error) {
 
 	// Parse parameters
 	if paramStr != "" {
-		for _, param := range strings.Fields(paramStr) {
+		for param := range strings.FieldsSeq(paramStr) {
 			idx := strings.IndexByte(param, '=')
 			if idx == -1 {
 				params[strings.ToUpper(param)] = ""
