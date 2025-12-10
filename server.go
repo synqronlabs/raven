@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/synqronlabs/raven/dns"
 	"github.com/synqronlabs/raven/utils"
 )
 
@@ -260,20 +259,6 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	)
 
 	logger.Info("client connected")
-
-	// Perform reverse DNS lookup if enabled
-	if s.config.EnableReverseDNS {
-		if ptrRecord, err := dns.ReverseDNSLookup(conn.RemoteAddr()); err == nil {
-			conn.Trace.ReverseDNS = ptrRecord
-			logger.Debug("reverse DNS lookup successful",
-				slog.String("ptr", ptrRecord),
-			)
-		} else {
-			logger.Debug("reverse DNS lookup failed",
-				slog.Any("error", err),
-			)
-		}
-	}
 
 	// OnConnect callback
 	if s.config.Callbacks != nil && s.config.Callbacks.OnConnect != nil {

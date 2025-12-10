@@ -9,17 +9,14 @@ import (
 // parseCommand splits a command line into verb and arguments.
 func parseCommand(line string) (cmd, args string) {
 	line = strings.TrimSpace(line)
-	idx := strings.IndexByte(line, ' ')
-	if idx == -1 {
-		return strings.ToUpper(line), ""
+	if before, after, found := strings.Cut(line, " "); found {
+		return strings.ToUpper(before), strings.TrimSpace(after)
 	}
-	return strings.ToUpper(line[:idx]), strings.TrimSpace(line[idx+1:])
+	return strings.ToUpper(line), ""
 }
 
 // parsePathWithParams parses an address path with optional parameters.
 func parsePathWithParams(s string) (Path, map[string]string, error) {
-	params := make(map[string]string)
-
 	// Find the angle-bracketed address
 	start := strings.IndexByte(s, '<')
 	end := strings.IndexByte(s, '>')
@@ -44,14 +41,15 @@ func parsePathWithParams(s string) (Path, map[string]string, error) {
 		path = Path{Mailbox: addr}
 	}
 
-	// Parse parameters
+	// Parse parameters - lazy allocate map only when needed
+	var params map[string]string
 	if paramStr != "" {
+		params = make(map[string]string)
 		for param := range strings.FieldsSeq(paramStr) {
-			idx := strings.IndexByte(param, '=')
-			if idx == -1 {
-				params[strings.ToUpper(param)] = ""
+			if before, after, found := strings.Cut(param, "="); found {
+				params[strings.ToUpper(before)] = after
 			} else {
-				params[strings.ToUpper(param[:idx])] = param[idx+1:]
+				params[strings.ToUpper(param)] = ""
 			}
 		}
 	}
@@ -62,62 +60,70 @@ func parsePathWithParams(s string) (Path, map[string]string, error) {
 // parseMessageContent parses raw message data into headers and body per RFC 5322.
 // The header section is separated from the body by an empty line (CRLF CRLF).
 func parseMessageContent(data []byte) (Headers, []byte) {
-	headers := make(Headers, 0)
-
 	// Find the header/body separator (empty line)
 	// Per RFC 5322, headers and body are separated by an empty line
 	var headerEnd int
 	dataLen := len(data)
 
-	for i := 0; i < dataLen-1; i++ {
+	for i := 0; i < dataLen-3; i++ {
 		// Look for CRLF CRLF (end of headers)
-		if data[i] == '\r' && data[i+1] == '\n' {
-			if i+3 < dataLen && data[i+2] == '\r' && data[i+3] == '\n' {
-				headerEnd = i + 2 // Points to the second CRLF
-				break
-			}
+		if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+			headerEnd = i + 2 // Points to the second CRLF
+			break
 		}
 	}
 
 	// If no empty line found, treat entire data as body (malformed message)
 	if headerEnd == 0 {
-		return headers, data
+		return nil, data
 	}
 
-	// Parse headers
-	headerSection := string(data[:headerEnd])
+	// Parse headers directly from bytes to avoid string conversion of entire header section
+	// Estimate header count (average ~50 bytes per header)
+	estimatedHeaders := headerEnd / 50
+	if estimatedHeaders < 8 {
+		estimatedHeaders = 8
+	}
+	headers := make(Headers, 0, estimatedHeaders)
+
 	var currentName, currentValue string
+	lineStart := 0
 
-	for _, line := range strings.Split(headerSection, "\r\n") {
-		if line == "" {
-			continue
-		}
+	for i := 0; i < headerEnd; i++ {
+		// Find end of line (CRLF)
+		if data[i] == '\r' && i+1 < headerEnd && data[i+1] == '\n' {
+			line := string(data[lineStart:i])
+			lineStart = i + 2
+			i++ // Skip the \n
 
-		// Check for continuation line (starts with whitespace)
-		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-			// Continuation of previous header (folded header per RFC 5322)
-			if currentName != "" {
-				currentValue += " " + strings.TrimSpace(line)
+			if line == "" {
+				continue
 			}
-			continue
-		}
 
-		// Save previous header if exists
-		if currentName != "" {
-			headers = append(headers, Header{Name: currentName, Value: currentValue})
-		}
+			// Check for continuation line (starts with whitespace)
+			if line[0] == ' ' || line[0] == '\t' {
+				// Continuation of previous header (folded header per RFC 5322)
+				if currentName != "" {
+					currentValue += " " + strings.TrimSpace(line)
+				}
+				continue
+			}
 
-		// Parse new header
-		colonIdx := strings.IndexByte(line, ':')
-		if colonIdx == -1 {
-			// Malformed header line, skip it
-			currentName = ""
-			currentValue = ""
-			continue
-		}
+			// Save previous header if exists
+			if currentName != "" {
+				headers = append(headers, Header{Name: currentName, Value: currentValue})
+			}
 
-		currentName = strings.TrimSpace(line[:colonIdx])
-		currentValue = strings.TrimSpace(line[colonIdx+1:])
+			// Parse new header using strings.Cut
+			if name, value, found := strings.Cut(line, ":"); found {
+				currentName = strings.TrimSpace(name)
+				currentValue = strings.TrimSpace(value)
+			} else {
+				// Malformed header line, skip it
+				currentName = ""
+				currentValue = ""
+			}
+		}
 	}
 
 	// Don't forget the last header

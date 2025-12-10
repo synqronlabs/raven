@@ -38,9 +38,6 @@ func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
 	}
 
 	msg := fmt.Sprintf("%s Hello %s [%s]", s.config.Hostname, ip.String(), conn.Trace.ID)
-	if conn.Trace.ReverseDNS != "" {
-		msg = fmt.Sprintf("%s Hello %s (%s) [%s]", s.config.Hostname, ip.String(), conn.Trace.ReverseDNS, conn.Trace.ID)
-	}
 	return &Response{
 		Code:    CodeOK,
 		Message: msg,
@@ -76,8 +73,9 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		conn.SetExtension(ExtSTARTTLS, "")
 	}
 	if s.config.MaxMessageSize > 0 {
-		extensions[ExtSize] = strconv.FormatInt(s.config.MaxMessageSize, 10)
-		conn.SetExtension(ExtSize, strconv.FormatInt(s.config.MaxMessageSize, 10))
+		sizeStr := strconv.FormatInt(s.config.MaxMessageSize, 10)
+		extensions[ExtSize] = sizeStr
+		conn.SetExtension(ExtSize, sizeStr)
 	}
 	if s.config.EnableDSN {
 		extensions[ExtDSN] = ""
@@ -121,10 +119,8 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 
 	// Build multiline response
 	greeting := fmt.Sprintf("%s Hello %s [%s]", s.config.Hostname, ip.String(), conn.Trace.ID)
-	if conn.Trace.ReverseDNS != "" {
-		greeting = fmt.Sprintf("%s Hello %s (%s) [%s]", s.config.Hostname, ip.String(), conn.Trace.ReverseDNS, conn.Trace.ID)
-	}
-	lines := []string{greeting}
+	lines := make([]string, 1, len(extensions)+1)
+	lines[0] = greeting
 	for ext, params := range extensions {
 		if params != "" {
 			lines = append(lines, fmt.Sprintf("%s %s", ext, params))
@@ -139,15 +135,18 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 
 // handleMail processes the MAIL FROM command.
 func (s *Server) handleMail(conn *Connection, args string) *Response {
-	if conn.State() < StateGreeted {
+	// Get state info in a single lock acquisition
+	stateInfo := conn.GetStateInfo()
+
+	if stateInfo.State < StateGreeted {
 		return &Response{Code: CodeBadSequence, Message: "Send EHLO/HELO first"}
 	}
-	if conn.State() >= StateMail {
+	if stateInfo.State >= StateMail {
 		return &Response{Code: CodeBadSequence, Message: "MAIL command already given"}
 	}
 
 	// Check TLS requirement
-	if s.config.RequireTLS && !conn.IsTLS() {
+	if s.config.RequireTLS && !stateInfo.IsTLS {
 		return &Response{
 			Code:         CodeTransactionFailed,
 			EnhancedCode: "5.7.0",
@@ -156,7 +155,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	}
 
 	// Check auth requirement
-	if s.config.RequireAuth && !conn.IsAuthenticated() {
+	if s.config.RequireAuth && !stateInfo.IsAuthenticated {
 		return &Response{
 			Code:         CodeTransactionFailed,
 			EnhancedCode: "5.7.0",
@@ -549,7 +548,8 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 // readDataContent reads the message content until <CRLF>.<CRLF>.
 // Strictly requires CRLF line endings to prevent SMTP smuggling attacks.
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, error) {
-	var buf bytes.Buffer
+	// Pre-allocate buffer with reasonable initial capacity
+	buf := bytes.NewBuffer(make([]byte, 0, 4096))
 
 	for {
 		line, err := s.readLine(reader)
@@ -569,12 +569,14 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, e
 		}
 
 		// Check size limit (account for CRLF that will be added back)
-		lineWithCRLF := line + "\r\n"
-		if maxSize > 0 && int64(buf.Len())+int64(len(lineWithCRLF)) > maxSize {
+		newLen := int64(buf.Len()) + int64(len(line)) + 2
+		if maxSize > 0 && newLen > maxSize {
 			return nil, ErrMessageTooLarge
 		}
 
-		buf.WriteString(lineWithCRLF)
+		// Write line and CRLF directly to avoid string concatenation
+		buf.WriteString(line)
+		buf.WriteString("\r\n")
 	}
 
 	return buf.Bytes(), nil
@@ -590,7 +592,9 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	}
 
 	// Must have recipients first (either from StateRcpt or ongoing BDAT)
-	if conn.State() < StateRcpt && conn.State() != StateBDAT {
+	// Get state once to avoid multiple lock acquisitions
+	state := conn.State()
+	if state < StateRcpt && state != StateBDAT {
 		return &Response{Code: CodeBadSequence, Message: "Send RCPT first"}
 	}
 
@@ -661,7 +665,12 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		return &Response{Code: CodeLocalError, Message: "Error reading chunk data"}
 	}
 
-	// Append chunk to message
+	// Pre-allocate capacity to avoid multiple reallocations when appending chunks
+	if cap(mail.Raw)-len(mail.Raw) < len(chunkData) {
+		newRaw := make([]byte, len(mail.Raw), currentSize+chunkSize)
+		copy(newRaw, mail.Raw)
+		mail.Raw = newRaw
+	}
 	mail.Raw = append(mail.Raw, chunkData...)
 
 	// If this is the last chunk, complete the transaction

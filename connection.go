@@ -118,8 +118,6 @@ type ConnectionTrace struct {
 	ConnectedAt time.Time
 	// ClientHostname is the hostname provided in EHLO/HELO.
 	ClientHostname string
-	// ReverseDNS is the reverse DNS lookup result for the client IP.
-	ReverseDNS string
 	// CommandCount is the total number of commands processed.
 	CommandCount int64
 	// TransactionCount is the number of mail transactions completed.
@@ -242,6 +240,25 @@ func (c *Connection) State() ConnectionState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.state
+}
+
+// StateInfo returns multiple state values in a single lock acquisition.
+// This reduces lock contention when multiple state checks are needed.
+type StateInfo struct {
+	State           ConnectionState
+	IsTLS           bool
+	IsAuthenticated bool
+}
+
+// GetStateInfo returns connection state, TLS status, and auth status atomically.
+func (c *Connection) GetStateInfo() StateInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return StateInfo{
+		State:           c.state,
+		IsTLS:           c.TLS.Enabled,
+		IsAuthenticated: c.Auth.Authenticated,
+	}
 }
 
 // SetState sets the connection state.

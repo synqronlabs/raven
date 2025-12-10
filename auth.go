@@ -104,7 +104,7 @@ func (s *Server) handleAuthPlain(conn *Connection, parts []string, reader *bufio
 	}
 
 	// Decode base64
-	decoded, err := decodeBase64(encoded)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", "", err
 	}
@@ -138,7 +138,7 @@ func (s *Server) handleAuthLogin(conn *Connection, reader *bufio.Reader) (identi
 		return "", "", errors.New("authentication cancelled")
 	}
 
-	userBytes, err := decodeBase64(line)
+	userBytes, err := base64.StdEncoding.DecodeString(line)
 	if err != nil {
 		return "", "", err
 	}
@@ -155,16 +155,11 @@ func (s *Server) handleAuthLogin(conn *Connection, reader *bufio.Reader) (identi
 		return "", "", errors.New("authentication cancelled")
 	}
 
-	passBytes, err := decodeBase64(line)
+	passBytes, err := base64.StdEncoding.DecodeString(line)
 	if err != nil {
 		return "", "", err
 	}
 	password = string(passBytes)
 
 	return identity, password, nil
-}
-
-// decodeBase64 decodes a base64 string.
-func decodeBase64(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
 }

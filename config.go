@@ -80,13 +80,6 @@ type ServerConfig struct {
 	// Default: false
 	EnableChunking bool
 
-	// EnableReverseDNS enables reverse DNS lookups for incoming connections.
-	// When enabled, the server will perform a PTR record lookup for the client's
-	// IP address and populate the ReverseDNS field in ConnectionTrace.
-	// This can be useful for logging and generating Received headers with hostnames.
-	// Default: false
-	EnableReverseDNS bool
-
 	// AuthMechanisms is the list of supported AUTH mechanisms.
 	// Default: ["PLAIN", "LOGIN"]
 	AuthMechanisms []string
