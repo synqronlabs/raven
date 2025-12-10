@@ -136,10 +136,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -570,13 +568,6 @@ func (s *Server) sendShutdownResponse() {
 	}
 }
 
-// generateConnectionID creates a unique connection ID.
-func generateConnectionID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 // handleConnection processes a single client connection.
 func (s *Server) handleConnection(netConn net.Conn) {
 	defer s.shutdownWg.Done()
@@ -592,7 +583,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	}
 
 	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength)
-	conn.Trace.ID = generateConnectionID()
+	conn.Trace.ID = utils.GenerateID()
 
 	// Check if implicit TLS
 	if _, ok := netConn.(*tls.Conn); ok {
@@ -1011,9 +1002,16 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
-	// RFC 6531: If SMTPUTF8 parameter is not present, reject non-ASCII addresses
-	if _, hasSMTPUTF8 := params["SMTPUTF8"]; !hasSMTPUTF8 {
-		if ContainsNonASCII(from.Mailbox.LocalPart) || ContainsNonASCII(from.Mailbox.Domain) {
+	// RFC 6531: Reject non-ASCII addresses if SMTPUTF8 is not enabled or not requested
+	if utils.ContainsNonASCII(from.Mailbox.LocalPart) || utils.ContainsNonASCII(from.Mailbox.Domain) {
+		if !s.config.EnableSMTPUTF8 {
+			return &Response{
+				Code:         CodeMailboxNameInvalid,
+				EnhancedCode: "5.6.7",
+				Message:      "Address contains non-ASCII characters but SMTPUTF8 not supported",
+			}
+		}
+		if _, hasSMTPUTF8 := params["SMTPUTF8"]; !hasSMTPUTF8 {
 			return &Response{
 				Code:         CodeMailboxNameInvalid,
 				EnhancedCode: "5.6.7",
@@ -1048,17 +1046,68 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	mail := conn.BeginTransaction()
 	mail.Envelope.From = from
 
+	// Set default body type to 7BIT per RFC 5321
+	mail.Envelope.BodyType = BodyType7Bit
+
 	// Process parameters
 	if bodyType, ok := params["BODY"]; ok {
-		mail.Envelope.BodyType = BodyType(strings.ToUpper(bodyType))
+		bodyTypeUpper := BodyType(strings.ToUpper(bodyType))
+		// Validate BODY parameter per RFC 6152 and RFC 3030
+		switch bodyTypeUpper {
+		case BodyType7Bit, BodyType8BitMIME, BodyTypeBinaryMIME:
+			mail.Envelope.BodyType = bodyTypeUpper
+		default:
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "Invalid BODY parameter",
+			}
+		}
+		// Check if 8BITMIME extension is enabled
+		if bodyTypeUpper == BodyType8BitMIME && !s.config.Enable8BitMIME {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "8BITMIME not supported",
+			}
+		}
+		// Check if BINARYMIME extension is enabled (requires CHUNKING)
+		if bodyTypeUpper == BodyTypeBinaryMIME && !s.config.EnableChunking {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "BINARYMIME not supported",
+			}
+		}
 	}
 	if _, ok := params["SMTPUTF8"]; ok {
+		if !s.config.EnableSMTPUTF8 {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "SMTPUTF8 not supported",
+			}
+		}
 		mail.Envelope.SMTPUTF8 = true
 	}
 	if envID, ok := params["ENVID"]; ok {
+		if !s.config.EnableDSN {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "DSN not supported",
+			}
+		}
 		mail.Envelope.EnvID = envID
 	}
 	if ret, ok := params["RET"]; ok {
+		if !s.config.EnableDSN {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "DSN not supported",
+			}
+		}
 		mail.Envelope.DSNParams = &DSNEnvelopeParams{RET: strings.ToUpper(ret)}
 	}
 	if sizeStr, ok := params["SIZE"]; ok {
@@ -1110,9 +1159,16 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
-	// RFC 6531: If SMTPUTF8 was not requested in MAIL FROM, reject non-ASCII addresses
-	if !mail.Envelope.SMTPUTF8 {
-		if ContainsNonASCII(to.Mailbox.LocalPart) || ContainsNonASCII(to.Mailbox.Domain) {
+	// RFC 6531: Reject non-ASCII addresses if SMTPUTF8 is not enabled or not requested
+	if utils.ContainsNonASCII(to.Mailbox.LocalPart) || utils.ContainsNonASCII(to.Mailbox.Domain) {
+		if !s.config.EnableSMTPUTF8 {
+			return &Response{
+				Code:         CodeMailboxNameInvalid,
+				EnhancedCode: "5.6.7",
+				Message:      "Address contains non-ASCII characters but SMTPUTF8 not supported",
+			}
+		}
+		if !mail.Envelope.SMTPUTF8 {
 			return &Response{
 				Code:         CodeMailboxNameInvalid,
 				EnhancedCode: "5.6.7",
@@ -1131,11 +1187,25 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	// Add recipient
 	rcpt := Recipient{Address: to}
 	if notify, ok := params["NOTIFY"]; ok {
+		if !s.config.EnableDSN {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "DSN not supported",
+			}
+		}
 		rcpt.DSNParams = &DSNRecipientParams{
 			Notify: strings.Split(notify, ","),
 		}
 	}
 	if orcpt, ok := params["ORCPT"]; ok {
+		if !s.config.EnableDSN {
+			return &Response{
+				Code:         CodeParameterNotImpl,
+				EnhancedCode: "5.5.4",
+				Message:      "DSN not supported",
+			}
+		}
 		if rcpt.DSNParams == nil {
 			rcpt.DSNParams = &DSNRecipientParams{}
 		}
@@ -1207,9 +1277,31 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		return &Response{Code: CodeLocalError, Message: "Error reading message"}
 	}
 
+	// Validate message content based on BODY parameter
+	switch mail.Envelope.BodyType {
+	case BodyType7Bit:
+		// RFC 5321: 7BIT requires strict ASCII (0-127) and line length <= 998 bytes
+		if utils.ContainsNonASCII(string(data)) {
+			conn.ResetTransaction()
+			return &Response{
+				Code:         CodeTransactionFailed,
+				EnhancedCode: "5.6.0",
+				Message:      "Message contains 8-bit data but BODY=7BIT was specified",
+			}
+		}
+	case BodyTypeBinaryMIME:
+		// RFC 3030: BINARYMIME requires BDAT command, not DATA
+		conn.ResetTransaction()
+		return &Response{
+			Code:         CodeBadSequence,
+			EnhancedCode: "5.5.0",
+			Message:      "BINARYMIME requires BDAT command",
+		}
+	}
+
 	mail.Content.Body = data
 	mail.Raw = data
-	mail.ID = generateConnectionID()
+	mail.ID = utils.GenerateID()
 
 	// Add Received header
 	receivedHeader := conn.GenerateReceivedHeader("")
@@ -1361,7 +1453,7 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	// If this is the last chunk, complete the transaction
 	if isLast {
 		mail.Content.Body = mail.Raw
-		mail.ID = generateConnectionID()
+		mail.ID = utils.GenerateID()
 
 		// Add Received header
 		receivedHeader := conn.GenerateReceivedHeader("")

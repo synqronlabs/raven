@@ -3,6 +3,8 @@ package raven
 import (
 	"net/mail"
 	"time"
+
+	"github.com/synqronlabs/raven/utils"
 )
 
 // BodyType specifies the encoding type of the message body per RFC 6152.
@@ -13,6 +15,8 @@ const (
 	BodyType7Bit BodyType = "7BIT"
 	// BodyType8BitMIME indicates an 8-bit MIME message body (RFC 6152).
 	BodyType8BitMIME BodyType = "8BITMIME"
+	// BodyTypeBinaryMIME indicates a binary MIME message body (RFC 3030).
+	BodyTypeBinaryMIME BodyType = "BINARYMIME"
 )
 
 // MailboxAddress represents an email address as per RFC 5321 Section 4.1.2.
@@ -155,7 +159,7 @@ type Headers []Header
 // Get returns the first header value with the given name (case-insensitive).
 func (h Headers) Get(name string) string {
 	for _, hdr := range h {
-		if equalFold(hdr.Name, name) {
+		if utils.EqualFoldASCII(hdr.Name, name) {
 			return hdr.Value
 		}
 	}
@@ -166,31 +170,11 @@ func (h Headers) Get(name string) string {
 func (h Headers) GetAll(name string) []string {
 	var values []string
 	for _, hdr := range h {
-		if equalFold(hdr.Name, name) {
+		if utils.EqualFoldASCII(hdr.Name, name) {
 			values = append(values, hdr.Value)
 		}
 	}
 	return values
-}
-
-// equalFold is a simple ASCII case-insensitive comparison.
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // MIMEPart represents a MIME body part for multipart messages (RFC 2045, RFC 2046).
@@ -313,20 +297,20 @@ func (m *Mail) RequiresSMTPUTF8() bool {
 	}
 
 	// Check envelope addresses
-	if ContainsNonASCII(m.Envelope.From.Mailbox.LocalPart) ||
-		ContainsNonASCII(m.Envelope.From.Mailbox.Domain) {
+	if utils.ContainsNonASCII(m.Envelope.From.Mailbox.LocalPart) ||
+		utils.ContainsNonASCII(m.Envelope.From.Mailbox.Domain) {
 		return true
 	}
 	for _, rcpt := range m.Envelope.To {
-		if ContainsNonASCII(rcpt.Address.Mailbox.LocalPart) ||
-			ContainsNonASCII(rcpt.Address.Mailbox.Domain) {
+		if utils.ContainsNonASCII(rcpt.Address.Mailbox.LocalPart) ||
+			utils.ContainsNonASCII(rcpt.Address.Mailbox.Domain) {
 			return true
 		}
 	}
 
 	// Check headers for non-ASCII content
 	for _, h := range m.Content.Headers {
-		if ContainsNonASCII(h.Value) {
+		if utils.ContainsNonASCII(h.Value) {
 			return true
 		}
 	}
@@ -342,16 +326,6 @@ func (m *Mail) Requires8BitMIME() bool {
 	}
 	for _, b := range m.Content.Body {
 		if b > 127 {
-			return true
-		}
-	}
-	return false
-}
-
-// ContainsNonASCII checks if a string contains any non-ASCII characters.
-func ContainsNonASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] > 127 {
 			return true
 		}
 	}
