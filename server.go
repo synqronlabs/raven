@@ -283,6 +283,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	logger.Info("client disconnected",
 		slog.Int64("commands", conn.Trace.CommandCount),
+		slog.Int("errors", len(conn.Trace.Errors)),
 		slog.Int64("transactions", conn.Trace.TransactionCount),
 	)
 }

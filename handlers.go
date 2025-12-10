@@ -461,8 +461,19 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		return &Response{Code: CodeLocalError, Message: "Internal error"}
 	}
 
-	// Read message data
-	data, err := s.readDataContent(reader, conn.Limits.MaxMessageSize)
+	// Check for BINARYMIME early - it requires BDAT command, not DATA
+	if mail.Envelope.BodyType == BodyTypeBinaryMIME {
+		conn.ResetTransaction()
+		return &Response{
+			Code:         CodeBadSequence,
+			EnhancedCode: "5.5.0",
+			Message:      "BINARYMIME requires BDAT command",
+		}
+	}
+
+	// Read message data, validating 7BIT if required
+	enforce7Bit := mail.Envelope.BodyType == BodyType7Bit
+	data, err := s.readDataContent(reader, conn.Limits.MaxMessageSize, enforce7Bit)
 	if err != nil {
 		if errors.Is(err, ErrMessageTooLarge) {
 			conn.ResetTransaction()
@@ -480,16 +491,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 				Message:      "Message must use CRLF line endings",
 			}
 		}
-		logger.Error("data read error", slog.Any("error", err))
-		conn.ResetTransaction()
-		return &Response{Code: CodeLocalError, Message: "Error reading message"}
-	}
-
-	// Validate message content based on BODY parameter
-	switch mail.Envelope.BodyType {
-	case BodyType7Bit:
-		// RFC 5321: 7BIT requires strict ASCII (0-127) and line length <= 998 bytes
-		if utils.ContainsNonASCII(string(data)) {
+		if errors.Is(err, Err8BitIn7BitMode) {
 			conn.ResetTransaction()
 			return &Response{
 				Code:         CodeTransactionFailed,
@@ -497,14 +499,9 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 				Message:      "Message contains 8-bit data but BODY=7BIT was specified",
 			}
 		}
-	case BodyTypeBinaryMIME:
-		// RFC 3030: BINARYMIME requires BDAT command, not DATA
+		logger.Error("data read error", slog.Any("error", err))
 		conn.ResetTransaction()
-		return &Response{
-			Code:         CodeBadSequence,
-			EnhancedCode: "5.5.0",
-			Message:      "BINARYMIME requires BDAT command",
-		}
+		return &Response{Code: CodeLocalError, Message: "Error reading message"}
 	}
 
 	// Parse message content into headers and body per RFC 5322
@@ -547,7 +544,8 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 
 // readDataContent reads the message content until <CRLF>.<CRLF>.
 // Strictly requires CRLF line endings to prevent SMTP smuggling attacks.
-func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, error) {
+// If enforce7Bit is true, returns Err8BitIn7BitMode if any non-ASCII bytes are found.
+func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
 	// Pre-allocate buffer with reasonable initial capacity
 	buf := bytes.NewBuffer(make([]byte, 0, 4096))
 
@@ -566,6 +564,11 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64) ([]byte, e
 		// Lines starting with "." have the leading dot removed
 		if len(line) > 0 && line[0] == '.' {
 			line = line[1:]
+		}
+
+		// Check for 8-bit data in 7BIT mode - validate as we read each line
+		if enforce7Bit && utils.ContainsNonASCII(line) {
+			return nil, Err8BitIn7BitMode
 		}
 
 		// Check size limit (account for CRLF that will be added back)
