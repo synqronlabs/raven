@@ -80,10 +80,7 @@ func parseMessageContent(data []byte) (Headers, []byte) {
 
 	// Parse headers directly from bytes to avoid string conversion of entire header section
 	// Estimate header count (average ~50 bytes per header)
-	estimatedHeaders := headerEnd / 50
-	if estimatedHeaders < 8 {
-		estimatedHeaders = 8
-	}
+	estimatedHeaders := max(headerEnd/50, 8)
 	headers := make(Headers, 0, estimatedHeaders)
 
 	var currentName, currentValue string

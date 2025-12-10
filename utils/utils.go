@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"unicode/utf8"
 )
 
 func GetIPFromAddr(addr net.Addr) (net.IP, error) {
@@ -40,7 +41,7 @@ func GetIPFromAddr(addr net.Addr) (net.IP, error) {
 // This works for both string validation (addresses, headers) and message content validation.
 func ContainsNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
-		if s[i] > 127 {
+		if s[i] >= utf8.RuneSelf {
 			return true
 		}
 	}
