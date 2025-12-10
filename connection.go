@@ -419,17 +419,35 @@ func (c *Connection) UpgradeToTLS(config *tls.Config) error {
 }
 
 // GenerateReceivedHeader creates a Received header for the current transaction.
-// This follows the format specified in RFC 5321 Section 4.4.
+// This follows the format specified in RFC 5321 Section 4.4 and RFC 6531 Section 3.7.3.
 func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	protocol := "SMTP"
-	if c.TLS.Enabled {
-		protocol = "ESMTPS"
-	} else if len(c.Extensions) > 0 {
-		protocol = "ESMTP"
+	// Determine protocol per RFC 5321, RFC 6531 Section 3.7.3, and RFC 3848.
+	// Protocol values: SMTP, ESMTP, ESMTPS, ESMTPA, ESMTPSA,
+	// UTF8SMTP, UTF8SMTPS, UTF8SMTPA, UTF8SMTPSA
+	var protocol string
+
+	// Check if SMTPUTF8 is being used (message requires UTF8 support)
+	useUTF8 := c.currentMail != nil && c.currentMail.Envelope.SMTPUTF8
+
+	if useUTF8 {
+		// RFC 6531 Section 3.7.3: Use UTF8SMTP variants
+		protocol = "UTF8SMTP"
+		if c.TLS.Enabled {
+			protocol = "UTF8SMTPS"
+		}
+	} else {
+		protocol = "SMTP"
+		if c.TLS.Enabled {
+			protocol = "ESMTPS"
+		} else if len(c.Extensions) > 0 {
+			protocol = "ESMTP"
+		}
 	}
+
+	// Append 'A' for authenticated connections per RFC 3848
 	if c.Auth.Authenticated {
 		protocol += "A"
 	}

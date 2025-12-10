@@ -61,6 +61,13 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		conn.SetExtension(Ext8BitMIME, "")
 	}
 	if s.config.EnableSMTPUTF8 {
+		// RFC 6531 Section 3.1 (item 8): Servers offering SMTPUTF8 MUST provide
+		// support for, and announce, the 8BITMIME extension.
+		if !s.config.Enable8BitMIME {
+			// Implicitly enable 8BITMIME when SMTPUTF8 is enabled
+			extensions[Ext8BitMIME] = ""
+			conn.SetExtension(Ext8BitMIME, "")
+		}
 		extensions[ExtSMTPUTF8] = ""
 		conn.SetExtension(ExtSMTPUTF8, "")
 	}
@@ -79,6 +86,9 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	if s.config.EnableChunking {
 		extensions[ExtChunking] = ""
 		conn.SetExtension(ExtChunking, "")
+		// RFC 3030 Section 3: BINARYMIME requires CHUNKING
+		extensions[ExtBinaryMIME] = ""
+		conn.SetExtension(ExtBinaryMIME, "")
 	}
 	// Only advertise AUTH if TLS is not required, or if TLS is active
 	if len(s.config.AuthMechanisms) > 0 && (!s.config.RequireTLS || conn.IsTLS()) {
@@ -272,7 +282,16 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 				Message:      "DSN not supported",
 			}
 		}
-		mail.Envelope.DSNParams = &DSNEnvelopeParams{RET: strings.ToUpper(ret)}
+		// RFC 3461 Section 4.3: RET parameter must be FULL or HDRS
+		retUpper := strings.ToUpper(ret)
+		if retUpper != "FULL" && retUpper != "HDRS" {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "Invalid RET parameter: must be FULL or HDRS",
+			}
+		}
+		mail.Envelope.DSNParams = &DSNEnvelopeParams{RET: retUpper}
 	}
 	if sizeStr, ok := params["SIZE"]; ok {
 		mail.Envelope.Size, _ = strconv.ParseInt(sizeStr, 10, 64)
@@ -358,8 +377,34 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 				Message:      "DSN not supported",
 			}
 		}
+		// RFC 3461 Section 4.1: Validate NOTIFY parameter values
+		notifyValues := strings.Split(strings.ToUpper(notify), ",")
+		hasNever := false
+		for _, v := range notifyValues {
+			v = strings.TrimSpace(v)
+			switch v {
+			case "NEVER":
+				hasNever = true
+			case "SUCCESS", "FAILURE", "DELAY":
+				// Valid values
+			default:
+				return &Response{
+					Code:         CodeSyntaxError,
+					EnhancedCode: "5.5.4",
+					Message:      "Invalid NOTIFY parameter value",
+				}
+			}
+		}
+		// RFC 3461: NEVER must appear by itself
+		if hasNever && len(notifyValues) > 1 {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "NOTIFY=NEVER must appear alone",
+			}
+		}
 		rcpt.DSNParams = &DSNRecipientParams{
-			Notify: strings.Split(notify, ","),
+			Notify: notifyValues,
 		}
 	}
 	if orcpt, ok := params["ORCPT"]; ok {
@@ -463,9 +508,14 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		}
 	}
 
-	mail.Content.Body = data
+	// Parse message content into headers and body per RFC 5322
+	headers, body := parseMessageContent(data)
+	mail.Content.Headers = headers
+	mail.Content.Body = body
 	mail.Raw = data
 	mail.ID = utils.GenerateID()
+	// Update ReceivedAt to reflect when message content was actually received
+	mail.ReceivedAt = time.Now()
 
 	// Add Received header
 	receivedHeader := conn.GenerateReceivedHeader("")
@@ -616,8 +666,13 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 
 	// If this is the last chunk, complete the transaction
 	if isLast {
-		mail.Content.Body = mail.Raw
+		// Parse message content into headers and body per RFC 5322
+		headers, body := parseMessageContent(mail.Raw)
+		mail.Content.Headers = headers
+		mail.Content.Body = body
 		mail.ID = utils.GenerateID()
+		// Update ReceivedAt to reflect when message content was actually received
+		mail.ReceivedAt = time.Now()
 
 		// Add Received header
 		receivedHeader := conn.GenerateReceivedHeader("")
