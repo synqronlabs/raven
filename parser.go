@@ -7,12 +7,66 @@ import (
 )
 
 // parseCommand splits a command line into verb and arguments.
-func parseCommand(line string) (cmd, args string) {
-	line = strings.TrimSpace(line)
-	if before, after, found := strings.Cut(line, " "); found {
-		return strings.ToUpper(before), strings.TrimSpace(after)
+func parseCommand(line string) (cmd Command, args string, err error) {
+	before, after, found := strings.Cut(line, " ")
+
+	if !found {
+		// Case: "QUIT", "NOOP", "RSET" (No arguments)
+		err, cmd := canonicalizeVerb(before)
+		return cmd, "", err
 	}
-	return strings.ToUpper(line), ""
+
+	// Case: "MAIL FROM:...", "RCPT TO:..."
+	// We trim the args, but we canonicalize the verb without allocation.
+	err, cmd = canonicalizeVerb(before)
+	return cmd, strings.TrimSpace(after), err
+}
+
+func canonicalizeVerb(verb string) (error, Command) {
+	switch len(verb) {
+	case 4:
+		if strings.EqualFold(verb, "HELO") {
+			return nil, CmdHelo
+		}
+		if strings.EqualFold(verb, "EHLO") {
+			return nil, CmdEhlo
+		}
+		if strings.EqualFold(verb, "MAIL") {
+			return nil, CmdMail
+		}
+		if strings.EqualFold(verb, "RCPT") {
+			return nil, CmdRcpt
+		}
+		if strings.EqualFold(verb, "DATA") {
+			return nil, CmdData
+		}
+		if strings.EqualFold(verb, "BDAT") {
+			return nil, CmdBdat
+		}
+		if strings.EqualFold(verb, "RSET") {
+			return nil, CmdRset
+		}
+		if strings.EqualFold(verb, "VRFY") {
+			return nil, CmdVrfy
+		}
+		if strings.EqualFold(verb, "EXPN") {
+			return nil, CmdExpn
+		}
+		if strings.EqualFold(verb, "NOOP") {
+			return nil, CmdNoop
+		}
+		if strings.EqualFold(verb, "QUIT") {
+			return nil, CmdQuit
+		}
+		if strings.EqualFold(verb, "AUTH") {
+			return nil, CmdAuth
+		}
+	case 8:
+		if strings.EqualFold(verb, "STARTTLS") {
+			return nil, CmdStartTLS
+		}
+	}
+	return fmt.Errorf("unknown command: %s", verb), ""
 }
 
 // parsePathWithParams parses an address path with optional parameters.

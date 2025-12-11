@@ -140,13 +140,13 @@ import (
 // Common SMTP errors.
 var (
 	ErrServerClosed     = errors.New("smtp: server closed")
-	ErrLineTooLong      = errors.New("smtp: line too long")
 	ErrTooManyRecipents = errors.New("smtp: too many recipients")
 	ErrMessageTooLarge  = errors.New("smtp: message too large")
 	Err8BitIn7BitMode   = errors.New("smtp: 8-bit data in 7BIT mode")
 	ErrTimeout          = errors.New("smtp: timeout")
 	ErrTLSRequired      = errors.New("smtp: TLS required")
 	ErrAuthRequired     = errors.New("smtp: authentication required")
+	ErrInvalidCommand   = errors.New("smtp: invalid command")
 )
 
 // Callbacks defines the callback interface for SMTP server events.
@@ -212,5 +212,5 @@ type Callbacks struct {
 
 	// OnUnknownCommand is called for unrecognized commands.
 	// Return a custom response or nil to use default 500 response.
-	OnUnknownCommand func(ctx context.Context, conn *Connection, command, args string) *Response
+	OnUnknownCommand func(ctx context.Context, conn *Connection, command Command, args string) *Response
 }

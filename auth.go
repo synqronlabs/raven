@@ -8,7 +8,12 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	ravenio "github.com/synqronlabs/raven/io"
 )
+
+const UsernameString = "VXNlcm5hbWU6"
+const PasswordString = "UGFzc3dvcmQ6"
 
 // handleAuth processes the AUTH command.
 func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader) *Response {
@@ -91,7 +96,7 @@ func (s *Server) handleAuthPlain(conn *Connection, parts []string, reader *bufio
 	} else {
 		// Request credentials
 		s.writeResponse(conn, Response{Code: 334, Message: ""})
-		line, err := s.readLine(reader)
+		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, true)
 		if err != nil {
 			return "", "", err
 		}
@@ -128,9 +133,9 @@ func (s *Server) handleAuthPlain(conn *Connection, parts []string, reader *bufio
 // handleAuthLogin processes LOGIN authentication.
 func (s *Server) handleAuthLogin(conn *Connection, reader *bufio.Reader) (identity, password string, err error) {
 	// Request username
-	s.writeResponse(conn, Response{Code: 334, Message: "VXNlcm5hbWU6"}) // "Username:" base64
+	s.writeResponse(conn, Response{Code: 334, Message: UsernameString}) // "Username:" base64
 
-	line, err := s.readLine(reader)
+	line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, true)
 	if err != nil {
 		return "", "", err
 	}
@@ -145,9 +150,9 @@ func (s *Server) handleAuthLogin(conn *Connection, reader *bufio.Reader) (identi
 	identity = string(userBytes)
 
 	// Request password
-	s.writeResponse(conn, Response{Code: 334, Message: "UGFzc3dvcmQ6"}) // "Password:" base64
+	s.writeResponse(conn, Response{Code: 334, Message: PasswordString}) // "Password:" base64
 
-	line, err = s.readLine(reader)
+	line, err = ravenio.ReadLine(reader, s.config.MaxLineLength, true)
 	if err != nil {
 		return "", "", err
 	}

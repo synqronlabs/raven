@@ -1,16 +1,12 @@
 package raven
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"mime"
-	"mime/multipart"
 	"net/mail"
 	"strings"
 	"time"
 
+	ravenmime "github.com/synqronlabs/raven/mime"
 	"github.com/synqronlabs/raven/utils"
 )
 
@@ -150,7 +146,7 @@ type Headers []Header
 // Get returns the first header value with the given name (case-insensitive).
 func (h Headers) Get(name string) string {
 	for _, hdr := range h {
-		if utils.EqualFoldASCII(hdr.Name, name) {
+		if strings.EqualFold(hdr.Name, name) {
 			return hdr.Value
 		}
 	}
@@ -161,254 +157,11 @@ func (h Headers) Get(name string) string {
 func (h Headers) GetAll(name string) []string {
 	var values []string
 	for _, hdr := range h {
-		if utils.EqualFoldASCII(hdr.Name, name) {
+		if strings.EqualFold(hdr.Name, name) {
 			values = append(values, hdr.Value)
 		}
 	}
 	return values
-}
-
-// ContentTransferEncoding represents the encoding used for the MIME part's body.
-type ContentTransferEncoding string
-
-const (
-	// Encoding7Bit is for 7-bit ASCII data.
-	Encoding7Bit ContentTransferEncoding = "7bit"
-	// Encoding8Bit is for 8-bit data (requires 8BITMIME).
-	Encoding8Bit ContentTransferEncoding = "8bit"
-	// EncodingBinary is for binary data (requires BINARYMIME/CHUNKING).
-	EncodingBinary ContentTransferEncoding = "binary"
-	// EncodingQuotedPrintable is for quoted-printable encoding.
-	EncodingQuotedPrintable ContentTransferEncoding = "quoted-printable"
-	// EncodingBase64 is for base64 encoding.
-	EncodingBase64 ContentTransferEncoding = "base64"
-)
-
-// MIMEHeaders represents a collection of MIME header fields.
-type MIMEHeader struct {
-	// Name is the header field name (e.g., "From", "Subject").
-	Name string `json:"name"`
-	// Value is the header field value.
-	Value string `json:"value"`
-}
-
-// MIMEPart represents a MIME body part for multipart messages (RFC 2045, RFC 2046).
-type MIMEPart struct {
-	// Headers contains the MIME headers for this part.
-	Headers []MIMEHeader `json:"headers,omitempty"`
-
-	// ContentType is the MIME content type (e.g., "text/plain", "image/png").
-	ContentType string `json:"content_type,omitempty"`
-
-	// ContentTransferEncoding specifies how the body is encoded.
-	ContentTransferEncoding ContentTransferEncoding `json:"content_transfer_encoding,omitempty"`
-
-	// Charset is the character set for text parts (e.g., "utf-8", "iso-8859-1").
-	Charset string `json:"charset,omitempty"`
-
-	// Filename is the suggested filename for attachment parts.
-	Filename string `json:"filename,omitempty"`
-
-	// ContentID is the Content-ID for inline parts (used in multipart/related).
-	ContentID string `json:"content_id,omitempty"`
-
-	// Body is the decoded content of this part.
-	Body []byte `json:"body,omitempty"`
-
-	// Parts contains nested parts for multipart content types.
-	Parts []*MIMEPart `json:"parts,omitempty"`
-}
-
-// parseSinglePartMIME handles non-multipart MIME messages
-func (m *Mail) ParseSinglePartMIME(mediaType string, params map[string]string) error {
-	mimePart := MIMEPart{
-		ContentType: mediaType,
-		Body:        m.Content.Body,
-	}
-
-	// Extract charset if present
-	if charset, ok := params["charset"]; ok {
-		mimePart.Charset = charset
-		m.Content.Charset = charset
-	}
-
-	// Get Content-Transfer-Encoding
-	cte := m.Content.Headers.Get("Content-Transfer-Encoding")
-	if cte != "" {
-		mimePart.ContentTransferEncoding = ContentTransferEncoding(strings.ToLower(cte))
-		m.Content.Encoding = mimePart.ContentTransferEncoding
-	}
-
-	// Get Content-ID
-	contentID := m.Content.Headers.Get("Content-ID")
-	if contentID != "" {
-		mimePart.ContentID = strings.Trim(contentID, "<>")
-	}
-
-	// Check for Content-Disposition (for attachments)
-	contentDisp := m.Content.Headers.Get("Content-Disposition")
-	if contentDisp != "" {
-		_, dispParams, err := mime.ParseMediaType(contentDisp)
-		if err == nil {
-			if filename, ok := dispParams["filename"]; ok {
-				mimePart.Filename = filename
-			}
-		}
-	}
-
-	m.Content.MIME = mimePart
-	return nil
-}
-
-// parseMultipartMIME handles multipart MIME messages
-func (m *Mail) ParseMultipartMIME(mediaType string, params map[string]string) error {
-	// Get boundary parameter (required for multipart)
-	boundary, ok := params["boundary"]
-	if !ok || boundary == "" {
-		return errors.New("multipart Content-Type missing boundary parameter")
-	}
-
-	// Create the root MIME part
-	rootPart := MIMEPart{
-		ContentType: mediaType,
-		Parts:       make([]*MIMEPart, 0),
-	}
-
-	// Create multipart reader
-	reader := multipart.NewReader(bytes.NewReader(m.Content.Body), boundary)
-
-	// Parse each part
-	for {
-		part, err := reader.NextPart()
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return fmt.Errorf("error reading multipart section: %w", err)
-		}
-
-		// Parse this part
-		mimePart, err := ParseMultipartSection(part)
-		if err != nil {
-			return fmt.Errorf("error parsing multipart section: %w", err)
-		}
-
-		rootPart.Parts = append(rootPart.Parts, mimePart)
-	}
-
-	// Validate that we have at least one part
-	if len(rootPart.Parts) == 0 {
-		return errors.New("multipart message contains no parts")
-	}
-
-	m.Content.MIME = rootPart
-	return nil
-}
-
-// parseMultipartSection parses a single part of a multipart message
-func ParseMultipartSection(part *multipart.Part) (*MIMEPart, error) {
-	mimePart := &MIMEPart{
-		Headers: make([]MIMEHeader, 0),
-	}
-
-	// Convert textproto.MIMEHeader to our Headers type
-	for name, values := range part.Header {
-		for _, value := range values {
-			mimePart.Headers = append(mimePart.Headers, MIMEHeader{
-				Name:  name,
-				Value: value,
-			})
-		}
-	}
-
-	// Get Content-Type
-	contentType := part.Header.Get("Content-Type")
-	if contentType == "" {
-		// Default to text/plain per RFC 2045
-		mimePart.ContentType = "text/plain"
-		mimePart.Charset = "us-ascii"
-	} else {
-		mediaType, params, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			return nil, fmt.Errorf("invalid Content-Type in part: %w", err)
-		}
-		mimePart.ContentType = mediaType
-
-		if charset, ok := params["charset"]; ok {
-			mimePart.Charset = charset
-		}
-
-		// Check if this part is itself multipart (nested multipart)
-		if strings.HasPrefix(mediaType, "multipart/") {
-			boundary, ok := params["boundary"]
-			if !ok || boundary == "" {
-				return nil, errors.New("nested multipart missing boundary parameter")
-			}
-
-			// Read the body first
-			body := new(bytes.Buffer)
-			_, err := body.ReadFrom(part)
-			if err != nil {
-				return nil, fmt.Errorf("error reading nested multipart body: %w", err)
-			}
-
-			// Parse nested multipart
-			nestedReader := multipart.NewReader(bytes.NewReader(body.Bytes()), boundary)
-			mimePart.Parts = make([]*MIMEPart, 0)
-
-			for {
-				nestedPart, err := nestedReader.NextPart()
-				if err != nil {
-					if err.Error() == "EOF" {
-						break
-					}
-					return nil, fmt.Errorf("error reading nested multipart section: %w", err)
-				}
-
-				nestedMIME, err := ParseMultipartSection(nestedPart)
-				if err != nil {
-					return nil, err
-				}
-				mimePart.Parts = append(mimePart.Parts, nestedMIME)
-			}
-
-			mimePart.Body = body.Bytes()
-			return mimePart, nil
-		}
-	}
-
-	// Get Content-Transfer-Encoding
-	cte := part.Header.Get("Content-Transfer-Encoding")
-	if cte != "" {
-		mimePart.ContentTransferEncoding = ContentTransferEncoding(strings.ToLower(cte))
-	}
-
-	// Get Content-ID
-	contentID := part.Header.Get("Content-ID")
-	if contentID != "" {
-		mimePart.ContentID = strings.Trim(contentID, "<>")
-	}
-
-	// Get Content-Disposition (for filename)
-	contentDisp := part.Header.Get("Content-Disposition")
-	if contentDisp != "" {
-		_, dispParams, err := mime.ParseMediaType(contentDisp)
-		if err == nil {
-			if filename, ok := dispParams["filename"]; ok {
-				mimePart.Filename = filename
-			}
-		}
-	}
-
-	// Read the body
-	body := new(bytes.Buffer)
-	_, err := body.ReadFrom(part)
-	if err != nil {
-		return nil, fmt.Errorf("error reading part body: %w", err)
-	}
-	mimePart.Body = body.Bytes()
-
-	return mimePart, nil
 }
 
 // Content represents the message content (header section + body) as per RFC 5321 Section 2.3.1.
@@ -421,12 +174,8 @@ type Content struct {
 	// Body is the raw message body (may be encoded).
 	Body []byte `json:"body,omitempty"`
 
-	// MIME contains parsed MIME structure if the message is MIME-formatted.
-	// Nil for simple non-MIME messages.
-	MIME MIMEPart `json:"mime,omitzero"`
-
 	// Encoding indicates how the body is encoded per RFC 2045.
-	Encoding ContentTransferEncoding `json:"encoding,omitempty"`
+	Encoding ravenmime.ContentTransferEncoding `json:"encoding,omitempty"`
 
 	// Charset is the primary character set of the message body.
 	Charset string `json:"charset,omitempty"`
@@ -620,36 +369,30 @@ func FromJSON(data []byte) (*Mail, error) {
 	return &m, nil
 }
 
-// ValidateAndParseMIME validates the MIME structure of the mail message and populates
-// the Content.MIME field if successful. It checks Content-Type headers and validates
-// multipart boundaries.
+// ToMIME parses and returns the MIME structure of the message content.
+// It validates Content-Type headers and parses multipart boundaries.
 //
-// For multipart messages, it recursively validates all parts and their boundaries.
-// Returns an error if the MIME structure is invalid.
-func (m *Mail) ValidateAndParseMIME() error {
-	// Get Content-Type header
-	contentType := m.Content.Headers.Get("Content-Type")
-	if contentType == "" {
-		// No Content-Type header - treat as text/plain (RFC 2045 default)
-		m.Content.MIME = MIMEPart{
-			ContentType: "text/plain",
-			Charset:     "us-ascii",
-			Body:        m.Content.Body,
+// For multipart messages, it recursively parses all parts and their boundaries.
+// Returns the parsed Part structure or an error if the MIME structure is invalid.
+func (c *Content) ToMIME() (*ravenmime.Part, error) {
+	return ravenmime.Parse(c.Headers, c.Body)
+}
+
+// FromMIME populates the Content's Body from a MIME Part.
+// For multipart messages, it serializes the entire MIME structure back to bytes.
+// It also updates the Encoding and Charset fields based on the Part's properties.
+func (c *Content) FromMIME(part *ravenmime.Part) error {
+	if part.IsMultipart() {
+		// For multipart, serialize the entire structure
+		body, err := part.ToBytes()
+		if err != nil {
+			return err
 		}
-		return nil
+		c.Body = body
+	} else {
+		c.Body = part.Body
 	}
-
-	// Parse Content-Type header
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return fmt.Errorf("invalid Content-Type header: %w", err)
-	}
-
-	// Check if this is a multipart message
-	if strings.HasPrefix(mediaType, "multipart/") {
-		return m.ParseMultipartMIME(mediaType, params)
-	}
-
-	// Single-part message
-	return m.ParseSinglePartMIME(mediaType, params)
+	c.Encoding = part.ContentTransferEncoding
+	c.Charset = part.Charset
+	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	ravenio "github.com/synqronlabs/raven/io"
 	"github.com/synqronlabs/raven/utils"
 )
 
@@ -483,7 +484,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 				Message:      "Message too large",
 			}
 		}
-		if errors.Is(err, ErrBadLineEnding) {
+		if errors.Is(err, ravenio.ErrBadLineEnding) {
 			conn.ResetTransaction()
 			return &Response{
 				Code:         CodeSyntaxError,
@@ -491,7 +492,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 				Message:      "Message must use CRLF line endings",
 			}
 		}
-		if errors.Is(err, Err8BitIn7BitMode) {
+		if errors.Is(err, ravenio.Err8BitIn7BitMode) {
 			conn.ResetTransaction()
 			return &Response{
 				Code:         CodeTransactionFailed,
@@ -550,7 +551,7 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 	buf := bytes.NewBuffer(make([]byte, 0, 4096))
 
 	for {
-		line, err := s.readLine(reader)
+		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, enforce7Bit)
 		if err != nil {
 			return nil, err
 		}
@@ -564,11 +565,6 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 		// Lines starting with "." have the leading dot removed
 		if len(line) > 0 && line[0] == '.' {
 			line = line[1:]
-		}
-
-		// Check for 8-bit data in 7BIT mode - validate as we read each line
-		if enforce7Bit && utils.ContainsNonASCII(line) {
-			return nil, Err8BitIn7BitMode
 		}
 
 		// Check size limit (account for CRLF that will be added back)

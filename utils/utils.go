@@ -40,32 +40,12 @@ func GetIPFromAddr(addr net.Addr) (net.IP, error) {
 // ContainsNonASCII checks if a string contains any non-ASCII characters (bytes > 127).
 // This works for both string validation (addresses, headers) and message content validation.
 func ContainsNonASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
+	for _, v := range s {
+		if v >= utf8.RuneSelf {
 			return true
 		}
 	}
 	return false
-}
-
-// EqualFoldASCII performs ASCII case-insensitive string comparison.
-func EqualFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // GenerateID creates a unique identifier using random bytes.

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ravenio "github.com/synqronlabs/raven/io"
 	"github.com/synqronlabs/raven/utils"
 )
 
@@ -32,6 +33,25 @@ type Server struct {
 	shutdownWg sync.WaitGroup
 	closed     atomic.Bool
 }
+
+type Command string
+
+const (
+	// SMTP command constants
+	CmdHelo     Command = "HELO"
+	CmdEhlo     Command = "EHLO"
+	CmdMail     Command = "MAIL"
+	CmdRcpt     Command = "RCPT"
+	CmdData     Command = "DATA"
+	CmdBdat     Command = "BDAT"
+	CmdRset     Command = "RSET"
+	CmdVrfy     Command = "VRFY"
+	CmdExpn     Command = "EXPN"
+	CmdNoop     Command = "NOOP"
+	CmdQuit     Command = "QUIT"
+	CmdStartTLS Command = "STARTTLS"
+	CmdAuth     Command = "AUTH"
+)
 
 // NewServer creates a new SMTP server with the given configuration.
 func NewServer(config ServerConfig) (*Server, error) {
@@ -218,7 +238,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		DataTimeout:    s.config.DataTimeout,
 	}
 
-	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength)
+	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength/16)
 	conn.Trace.ID = utils.GenerateID()
 
 	// Check if implicit TLS
@@ -306,7 +326,7 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 		}
 
 		// Read command line
-		line, err := s.readLine(reader)
+		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, false)
 		if err != nil {
 			if err == io.EOF || errors.Is(err, net.ErrClosed) {
 				return
@@ -318,7 +338,7 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 				})
 				return
 			}
-			if errors.Is(err, ErrLineTooLong) {
+			if errors.Is(err, ravenio.ErrLineTooLong) {
 				s.writeResponse(conn, Response{
 					Code:    CodeSyntaxError,
 					Message: "Line too long",
@@ -326,7 +346,7 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 				conn.RecordError(err)
 				continue
 			}
-			if errors.Is(err, ErrBadLineEnding) {
+			if errors.Is(err, ravenio.ErrBadLineEnding) {
 				s.writeResponse(conn, Response{
 					Code:    CodeSyntaxError,
 					Message: "Line must be terminated with CRLF",
@@ -359,8 +379,17 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 		}
 
 		// Parse command
-		cmd, args := parseCommand(line)
-		logger.Debug("command received", slog.String("cmd", cmd), slog.String("args", args))
+		cmd, args, err := parseCommand(line)
+		if err != nil {
+			s.writeResponse(conn, Response{
+				Code:    CodeSyntaxError,
+				Message: "Invalid command",
+			})
+			conn.RecordError(ErrInvalidCommand)
+			continue
+		}
+
+		logger.Debug("command received", slog.String("cmd", string(cmd)), slog.String("args", args))
 
 		// Handle command
 		response := s.handleCommand(conn, cmd, args, reader, logger)
@@ -375,82 +404,34 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 	}
 }
 
-// ErrBadLineEnding is returned when a line is not terminated by CRLF.
-var ErrBadLineEnding = errors.New("smtp: line not terminated by CRLF")
-
-// readLine reads a single SMTP line, enforcing strict CRLF and a maximum length.
-// It returns the line without the trailing CRLF.
-func (s *Server) readLine(reader *bufio.Reader) (string, error) {
-	var total int
-
-	for {
-		chunk, err := reader.ReadSlice('\n') // returns data including '\n' or ErrBufferFull
-		total += len(chunk)
-
-		// If the line length has exceeded the configured maximum, drain the rest of the line
-		// (if any) and return ErrLineTooLong.
-		if total > s.config.MaxLineLength {
-			// If ReadSlice returned ErrBufferFull we still haven't hit '\n' yet,
-			// so keep discarding until we find one.
-			if err == bufio.ErrBufferFull {
-				// discard until we see a '\n' or an actual error
-				for err == bufio.ErrBufferFull {
-					_, err = reader.ReadSlice('\n')
-				}
-				// If err != nil after this loop, we'll fall through and return ErrLineTooLong
-			}
-			return "", ErrLineTooLong
-		}
-
-		if err == nil {
-			// chunk ends with '\n'. Enforce that it's preceded by '\r' (strict CRLF).
-			// chunk length is at least 1 because it contains '\n'
-			if len(chunk) < 2 || chunk[len(chunk)-2] != '\r' {
-				return "", ErrBadLineEnding
-			}
-			// Return the line without the trailing CRLF.
-			// Convert to string (this copies the data).
-			return string(chunk[:len(chunk)-2]), nil
-		}
-
-		if err == bufio.ErrBufferFull {
-			// We haven't seen '\n' yet; loop to read more. Continue accumulating length.
-			continue
-		}
-
-		// Any other error (including EOF) should be returned as is.
-		return "", err
-	}
-}
-
 // handleCommand processes a single SMTP command.
-func (s *Server) handleCommand(conn *Connection, cmd, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
+func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
 	switch cmd {
-	case "HELO":
+	case CmdHelo:
 		return s.handleHelo(conn, args)
-	case "EHLO":
+	case CmdEhlo:
 		return s.handleEhlo(conn, args)
-	case "MAIL":
+	case CmdMail:
 		return s.handleMail(conn, args)
-	case "RCPT":
+	case CmdRcpt:
 		return s.handleRcpt(conn, args)
-	case "DATA":
+	case CmdData:
 		return s.handleData(conn, reader, logger)
-	case "BDAT":
+	case CmdBdat:
 		return s.handleBDAT(conn, args, reader, logger)
-	case "RSET":
+	case CmdRset:
 		return s.handleRset(conn)
-	case "VRFY":
+	case CmdVrfy:
 		return s.handleVrfy(conn, args)
-	case "EXPN":
+	case CmdExpn:
 		return s.handleExpn(conn, args)
-	case "NOOP":
+	case CmdNoop:
 		return &Response{Code: CodeOK, Message: "OK"}
-	case "QUIT":
+	case CmdQuit:
 		return s.handleQuit(conn)
-	case "STARTTLS":
+	case CmdStartTLS:
 		return s.handleStartTLS(conn)
-	case "AUTH":
+	case CmdAuth:
 		return s.handleAuth(conn, args, reader)
 	default:
 		// Unknown command callback
