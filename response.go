@@ -6,6 +6,7 @@ import "fmt"
 type SMTPCode int
 
 const (
+	CodeHelpMessage           SMTPCode = 214
 	CodeServiceReady          SMTPCode = 220
 	CodeServiceClosing        SMTPCode = 221
 	CodeAuthSuccess           SMTPCode = 235
@@ -40,4 +41,20 @@ func (r Response) String() string {
 		return fmt.Sprintf("%d %s %s", r.Code, r.EnhancedCode, r.Message)
 	}
 	return fmt.Sprintf("%d %s", r.Code, r.Message)
+}
+
+// IsError returns true if this response indicates an error (4xx or 5xx codes).
+// Per RFC 5321, codes 4xx are transient negative completions and 5xx are
+// permanent negative completions.
+func (r Response) IsError() bool {
+	return r.Code >= 400
+}
+
+// ToError converts the response to an error for recording purposes.
+// Returns nil if the response is not an error response.
+func (r Response) ToError() error {
+	if !r.IsError() {
+		return nil
+	}
+	return fmt.Errorf("SMTP %d: %s", r.Code, r.Message)
 }

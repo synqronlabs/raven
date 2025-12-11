@@ -164,6 +164,17 @@ func (h Headers) GetAll(name string) []string {
 	return values
 }
 
+// Count returns the number of headers with the given name (case-insensitive).
+func (h Headers) Count(name string) int {
+	count := 0
+	for _, hdr := range h {
+		if strings.EqualFold(hdr.Name, name) {
+			count++
+		}
+	}
+	return count
+}
+
 // Content represents the message content (header section + body) as per RFC 5321 Section 2.3.1.
 // This is what follows the DATA command.
 type Content struct {
@@ -175,10 +186,17 @@ type Content struct {
 	Body []byte `json:"body,omitempty"`
 
 	// Encoding indicates how the body is encoded per RFC 2045.
-	Encoding ravenmime.ContentTransferEncoding `json:"encoding,omitempty"`
+	// Defaults to "7bit" if not specified.
+	Encoding ravenmime.ContentTransferEncoding `json:"encoding"`
 
 	// Charset is the primary character set of the message body.
 	Charset string `json:"charset,omitempty"`
+
+	// Raw contains the raw message data as received, if preserved.
+	// This may be useful for exact re-transmission or archival.
+	// Use FromRaw() to populate Headers and Body from raw data,
+	// and ToRaw() to serialize back to raw format.
+	Raw []byte `json:"raw,omitempty"`
 }
 
 // TraceField represents a Received or Return-Path header for message tracing (RFC 5321 Section 4.4).
@@ -217,6 +235,64 @@ type TraceField struct {
 	Raw string `json:"raw,omitempty"`
 }
 
+// String formats the TraceField as an RFC 5321 compliant header value.
+// For Received headers, it follows the format:
+//
+//	from <domain> (<ip>) by <domain> [via <link>] [with <protocol>] [id <id>] [for <recipient>]; <date-time>
+//
+// Per RFC 5321 Section 4.4, the date-time MUST use explicit offsets (e.g., -0800)
+// rather than time zone names. FROM and BY clauses are required.
+func (t TraceField) String() string {
+	if t.Raw != "" {
+		return t.Raw
+	}
+
+	if t.Type == "Return-Path" {
+		return t.For
+	}
+
+	// Build RFC 5321 Section 4.4 compliant Received header value
+	var parts []string
+
+	// FROM clause (required) - RFC 5321 Section 4.4: Extended-Domain with TCP-info
+	from := "from " + t.FromDomain
+	if t.FromIP != "" {
+		from += " (" + t.FromIP + ")"
+	}
+	parts = append(parts, from)
+
+	// BY clause (required)
+	if t.ByDomain != "" {
+		parts = append(parts, "by "+t.ByDomain)
+	}
+
+	// VIA clause (optional)
+	if t.Via != "" {
+		parts = append(parts, "via "+t.Via)
+	}
+
+	// WITH clause (optional) - protocol
+	if t.With != "" {
+		parts = append(parts, "with "+t.With)
+	}
+
+	// ID clause (optional)
+	if t.ID != "" {
+		parts = append(parts, "id "+t.ID)
+	}
+
+	// FOR clause (optional) - should only appear for single-recipient messages
+	if t.For != "" {
+		parts = append(parts, "for <"+t.For+">")
+	}
+
+	// Date-time with explicit offset per RFC 5321 Section 4.4
+	// Format: "Mon, 02 Jan 2006 15:04:05 -0700"
+	timestamp := t.Timestamp.Format(time.RFC1123Z)
+
+	return strings.Join(parts, " ") + "; " + timestamp
+}
+
 // Mail represents a complete mail object as per RFC 5321 Section 2.3.1.
 // A mail object contains an envelope (transmitted via SMTP commands)
 // and content (transmitted via the DATA command).
@@ -238,10 +314,6 @@ type Mail struct {
 
 	// ID is a unique identifier assigned to this message by the server.
 	ID string `json:"id"`
-
-	// Raw contains the raw message data as received, if preserved.
-	// This may be useful for exact re-transmission or archival.
-	Raw []byte `json:"raw,omitempty"`
 }
 
 // RequiresSMTPUTF8 determines if this mail requires the SMTPUTF8 extension.
@@ -381,6 +453,7 @@ func (c *Content) ToMIME() (*ravenmime.Part, error) {
 // FromMIME populates the Content's Body from a MIME Part.
 // For multipart messages, it serializes the entire MIME structure back to bytes.
 // It also updates the Encoding and Charset fields based on the Part's properties.
+// Encoding will default to "7bit" if the Part's encoding is empty.
 func (c *Content) FromMIME(part *ravenmime.Part) error {
 	if part.IsMultipart() {
 		// For multipart, serialize the entire structure
@@ -393,6 +466,167 @@ func (c *Content) FromMIME(part *ravenmime.Part) error {
 		c.Body = part.Body
 	}
 	c.Encoding = part.ContentTransferEncoding
+	if c.Encoding == "" {
+		c.Encoding = ravenmime.Encoding7Bit
+	}
 	c.Charset = part.Charset
 	return nil
+}
+
+// FromRaw parses raw message data and populates Headers, Body, and Raw fields.
+// The raw data is stored for exact re-transmission or archival.
+// This also sets the Encoding field based on Content-Transfer-Encoding header,
+// defaulting to "7bit" per RFC 2045 if not specified.
+func (c *Content) FromRaw(data []byte) {
+	c.Raw = data
+
+	// Parse headers and body from raw data
+	c.Headers, c.Body = parseRawContent(data)
+
+	// Set encoding from Content-Transfer-Encoding header, default to 7bit
+	cte := c.Headers.Get("Content-Transfer-Encoding")
+	if cte != "" {
+		c.Encoding = ravenmime.ContentTransferEncoding(strings.ToLower(cte))
+	} else {
+		c.Encoding = ravenmime.Encoding7Bit
+	}
+
+	// Set charset from Content-Type header if present
+	contentType := c.Headers.Get("Content-Type")
+	if contentType != "" {
+		// Simple charset extraction - look for charset parameter
+		if idx := strings.Index(strings.ToLower(contentType), "charset="); idx != -1 {
+			charset := contentType[idx+8:]
+			// Handle quoted charset values
+			if len(charset) > 0 && charset[0] == '"' {
+				if endQuote := strings.Index(charset[1:], "\""); endQuote != -1 {
+					c.Charset = charset[1 : endQuote+1]
+				}
+			} else {
+				// Unquoted - extract until semicolon or end
+				if semiIdx := strings.Index(charset, ";"); semiIdx != -1 {
+					c.Charset = strings.TrimSpace(charset[:semiIdx])
+				} else {
+					c.Charset = strings.TrimSpace(charset)
+				}
+			}
+		}
+	}
+}
+
+// ToRaw serializes the Content back to raw RFC 5322 format.
+// If Raw is already set (from FromRaw), it returns that.
+// Otherwise, it reconstructs the message from Headers and Body.
+func (c *Content) ToRaw() []byte {
+	// If we have cached raw data, return it
+	if len(c.Raw) > 0 {
+		return c.Raw
+	}
+
+	// Estimate size: headers + blank line + body
+	estimatedSize := len(c.Body) + 2 // +2 for CRLF before body
+	for _, h := range c.Headers {
+		estimatedSize += len(h.Name) + 2 + len(h.Value) + 2 // "Name: Value\r\n"
+	}
+
+	buf := make([]byte, 0, estimatedSize)
+
+	// Write headers
+	for _, h := range c.Headers {
+		buf = append(buf, h.Name...)
+		buf = append(buf, ':', ' ')
+		buf = append(buf, h.Value...)
+		buf = append(buf, '\r', '\n')
+	}
+
+	// Write blank line separating headers from body
+	buf = append(buf, '\r', '\n')
+
+	// Write body
+	buf = append(buf, c.Body...)
+
+	return buf
+}
+
+// parseRawContent parses raw message data into headers and body per RFC 5322.
+// The header section is separated from the body by an empty line (CRLF CRLF).
+func parseRawContent(data []byte) (Headers, []byte) {
+	// Find the header/body separator (empty line)
+	// Per RFC 5322, headers and body are separated by an empty line
+	var headerEnd int
+	dataLen := len(data)
+
+	for i := 0; i < dataLen-3; i++ {
+		// Look for CRLF CRLF (end of headers)
+		if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+			headerEnd = i + 2 // Points to the second CRLF
+			break
+		}
+	}
+
+	// If no empty line found, treat entire data as body (malformed message)
+	if headerEnd == 0 {
+		return nil, data
+	}
+
+	// Parse headers directly from bytes to avoid string conversion of entire header section
+	// Estimate header count (average ~50 bytes per header)
+	estimatedHeaders := headerEnd / 50
+	if estimatedHeaders < 8 {
+		estimatedHeaders = 8
+	}
+	headers := make(Headers, 0, estimatedHeaders)
+
+	var currentName, currentValue string
+	lineStart := 0
+
+	for i := 0; i < headerEnd; i++ {
+		// Find end of line (CRLF)
+		if data[i] == '\r' && i+1 < headerEnd && data[i+1] == '\n' {
+			line := string(data[lineStart:i])
+			lineStart = i + 2
+			i++ // Skip the \n
+
+			if line == "" {
+				continue
+			}
+
+			// Check for continuation line (starts with whitespace)
+			if line[0] == ' ' || line[0] == '\t' {
+				// Continuation of previous header (folded header per RFC 5322)
+				if currentName != "" {
+					currentValue += " " + strings.TrimSpace(line)
+				}
+				continue
+			}
+
+			// Save previous header if exists
+			if currentName != "" {
+				headers = append(headers, Header{Name: currentName, Value: currentValue})
+			}
+
+			// Parse new header using strings.Cut
+			if name, value, found := strings.Cut(line, ":"); found {
+				currentName = strings.TrimSpace(name)
+				currentValue = strings.TrimSpace(value)
+			} else {
+				// Malformed header line, skip it
+				currentName = ""
+				currentValue = ""
+			}
+		}
+	}
+
+	// Don't forget the last header
+	if currentName != "" {
+		headers = append(headers, Header{Name: currentName, Value: currentValue})
+	}
+
+	// Body starts after the empty line (CRLF CRLF)
+	var body []byte
+	if headerEnd+2 < dataLen {
+		body = data[headerEnd+2:]
+	}
+
+	return headers, body
 }

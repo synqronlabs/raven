@@ -52,6 +52,9 @@ func canonicalizeVerb(verb string) (error, Command) {
 		if strings.EqualFold(verb, "EXPN") {
 			return nil, CmdExpn
 		}
+		if strings.EqualFold(verb, "HELP") {
+			return nil, CmdHelp
+		}
 		if strings.EqualFold(verb, "NOOP") {
 			return nil, CmdNoop
 		}
@@ -70,6 +73,7 @@ func canonicalizeVerb(verb string) (error, Command) {
 }
 
 // parsePathWithParams parses an address path with optional parameters.
+// Per RFC 3461 Section 4.5, duplicate parameters are rejected.
 func parsePathWithParams(s string) (Path, map[string]string, error) {
 	// Find the angle-bracketed address
 	start := strings.IndexByte(s, '<')
@@ -96,15 +100,24 @@ func parsePathWithParams(s string) (Path, map[string]string, error) {
 	}
 
 	// Parse parameters - lazy allocate map only when needed
+	// RFC 3461 Section 4.5: Duplicate parameters MUST be rejected
 	var params map[string]string
 	if paramStr != "" {
 		params = make(map[string]string)
 		for param := range strings.FieldsSeq(paramStr) {
+			var key, value string
 			if before, after, found := strings.Cut(param, "="); found {
-				params[strings.ToUpper(before)] = after
+				key = strings.ToUpper(before)
+				value = after
 			} else {
-				params[strings.ToUpper(param)] = ""
+				key = strings.ToUpper(param)
+				value = ""
 			}
+			// RFC 3461 Section 4.5: Reject duplicate parameters
+			if _, exists := params[key]; exists {
+				return Path{}, nil, fmt.Errorf("duplicate parameter: %s", key)
+			}
+			params[key] = value
 		}
 	}
 

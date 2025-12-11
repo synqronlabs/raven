@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -53,14 +54,12 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	}
 
 	if err != nil {
-		conn.RecordError(err)
-		return &Response{Code: CodeTransactionFailed, Message: "Authentication failed"}
+		return &Response{Code: CodeTransactionFailed, Message: fmt.Sprintf("Authentication failed: %v", err)}
 	}
 
 	// Callback for verification
 	if s.config.Callbacks != nil && s.config.Callbacks.OnAuth != nil {
 		if err := s.config.Callbacks.OnAuth(conn.Context(), conn, mechanism, identity, password); err != nil {
-			conn.RecordError(err)
 			return &Response{
 				Code:         CodeTransactionFailed,
 				EnhancedCode: "5.7.8",

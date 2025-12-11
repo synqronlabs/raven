@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"strings"
@@ -14,7 +15,7 @@ import (
 type ContentTransferEncoding string
 
 const (
-	// Encoding7Bit is for 7-bit ASCII data.
+	// Encoding7Bit is for 7-bit ASCII data (RFC 2045 default).
 	Encoding7Bit ContentTransferEncoding = "7bit"
 	// Encoding8Bit is for 8-bit data (requires 8BITMIME).
 	Encoding8Bit ContentTransferEncoding = "8bit"
@@ -25,6 +26,39 @@ const (
 	// EncodingBase64 is for base64 encoding.
 	EncodingBase64 ContentTransferEncoding = "base64"
 )
+
+// ValidCompositeEncodings contains the only valid Content-Transfer-Encoding values
+// for composite types (multipart, message) per RFC 2045 Section 6.4.
+var ValidCompositeEncodings = map[ContentTransferEncoding]bool{
+	Encoding7Bit:   true,
+	Encoding8Bit:   true,
+	EncodingBinary: true,
+}
+
+// ErrInvalidCompositeEncoding is returned when a composite type (multipart/message)
+// has an invalid Content-Transfer-Encoding per RFC 2045 Section 6.4.
+var ErrInvalidCompositeEncoding = errors.New("composite types (multipart, message) can only use 7bit, 8bit, or binary encoding per RFC 2045 Section 6.4")
+
+// IsCompositeType returns true if the media type is a composite type (multipart or message).
+func IsCompositeType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "multipart/") || strings.HasPrefix(mediaType, "message/")
+}
+
+// ValidateCompositeEncoding validates that composite types only use allowed encodings.
+// Per RFC 2045 Section 6.4, multipart and message types can ONLY use 7bit, 8bit, or binary.
+// Returns an error if the encoding is invalid for a composite type.
+func ValidateCompositeEncoding(mediaType string, encoding ContentTransferEncoding) error {
+	if !IsCompositeType(mediaType) {
+		return nil // Non-composite types can use any encoding
+	}
+	if encoding == "" {
+		return nil // Will default to 7bit
+	}
+	if !ValidCompositeEncodings[encoding] {
+		return ErrInvalidCompositeEncoding
+	}
+	return nil
+}
 
 // Header represents a MIME header field.
 type Header struct {
@@ -43,6 +77,7 @@ type Part struct {
 	ContentType string `json:"content_type,omitempty"`
 
 	// ContentTransferEncoding specifies how the body is encoded.
+	// Defaults to "7bit" per RFC 2045 Section 6.1 when not specified.
 	ContentTransferEncoding ContentTransferEncoding `json:"content_transfer_encoding,omitempty"`
 
 	// Charset is the character set for text parts (e.g., "utf-8", "iso-8859-1").
@@ -53,6 +88,9 @@ type Part struct {
 
 	// ContentID is the Content-ID for inline parts (used in multipart/related).
 	ContentID string `json:"content_id,omitempty"`
+
+	// ContentDescription is the optional description of the body part (RFC 2045 Section 8).
+	ContentDescription string `json:"content_description,omitempty"`
 
 	// Body is the decoded content of this part.
 	Body []byte `json:"body,omitempty"`
@@ -69,8 +107,9 @@ type HeaderGetter interface {
 // ParseSinglePart handles non-multipart MIME messages.
 func ParseSinglePart(headers HeaderGetter, body []byte, mediaType string, params map[string]string) (*Part, error) {
 	part := &Part{
-		ContentType: mediaType,
-		Body:        body,
+		ContentType:             mediaType,
+		ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
+		Body:                    body,
 	}
 
 	if charset, ok := params["charset"]; ok {
@@ -85,6 +124,12 @@ func ParseSinglePart(headers HeaderGetter, body []byte, mediaType string, params
 	contentID := headers.Get("Content-ID")
 	if contentID != "" {
 		part.ContentID = strings.Trim(contentID, "<>")
+	}
+
+	// Parse Content-Description per RFC 2045 Section 8
+	contentDesc := headers.Get("Content-Description")
+	if contentDesc != "" {
+		part.ContentDescription = contentDesc
 	}
 
 	// Check for Content-Disposition (for attachments)
@@ -109,8 +154,9 @@ func ParseMultipart(body []byte, mediaType string, params map[string]string) (*P
 	}
 
 	rootPart := &Part{
-		ContentType: mediaType,
-		Parts:       make([]*Part, 0),
+		ContentType:             mediaType,
+		ContentTransferEncoding: Encoding7Bit,        // RFC 2045 default
+		Parts:                   make([]*Part, 0, 4), // Pre-allocate for common case
 	}
 
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
@@ -118,7 +164,7 @@ func ParseMultipart(body []byte, mediaType string, params map[string]string) (*P
 	for {
 		part, err := reader.NextPart()
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, fmt.Errorf("error reading multipart section: %w", err)
@@ -141,8 +187,15 @@ func ParseMultipart(body []byte, mediaType string, params map[string]string) (*P
 
 // ParseMultipartSection parses a single part of a multipart message.
 func ParseMultipartSection(part *multipart.Part) (*Part, error) {
+	// Pre-allocate headers slice based on header count for efficiency
+	headerCount := 0
+	for _, values := range part.Header {
+		headerCount += len(values)
+	}
+
 	mimePart := &Part{
-		Headers: make([]Header, 0),
+		Headers:                 make([]Header, 0, headerCount),
+		ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
 	}
 
 	// Convert textproto.MIMEHeader to our Headers type
@@ -157,7 +210,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 	contentType := part.Header.Get("Content-Type")
 	if contentType == "" {
-		// Default to text/plain per RFC 2045
+		// Default to text/plain per RFC 2045 Section 5.2
 		mimePart.ContentType = "text/plain"
 		mimePart.Charset = "us-ascii"
 	} else {
@@ -178,7 +231,8 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 				return nil, errors.New("nested multipart missing boundary parameter")
 			}
 
-			body := new(bytes.Buffer)
+			// Use pre-allocated buffer for better performance
+			body := bytes.NewBuffer(make([]byte, 0, 4096))
 			_, err := body.ReadFrom(part)
 			if err != nil {
 				return nil, fmt.Errorf("error reading nested multipart body: %w", err)
@@ -186,12 +240,12 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 			// Parse nested multipart
 			nestedReader := multipart.NewReader(bytes.NewReader(body.Bytes()), boundary)
-			mimePart.Parts = make([]*Part, 0)
+			mimePart.Parts = make([]*Part, 0, 4) // Pre-allocate for common case
 
 			for {
 				nestedPart, err := nestedReader.NextPart()
 				if err != nil {
-					if err.Error() == "EOF" {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 					return nil, fmt.Errorf("error reading nested multipart section: %w", err)
@@ -219,6 +273,12 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 		mimePart.ContentID = strings.Trim(contentID, "<>")
 	}
 
+	// Parse Content-Description per RFC 2045 Section 8
+	contentDesc := part.Header.Get("Content-Description")
+	if contentDesc != "" {
+		mimePart.ContentDescription = contentDesc
+	}
+
 	contentDisp := part.Header.Get("Content-Disposition")
 	if contentDisp != "" {
 		_, dispParams, err := mime.ParseMediaType(contentDisp)
@@ -229,7 +289,8 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 		}
 	}
 
-	body := new(bytes.Buffer)
+	// Use pre-allocated buffer for better performance
+	body := bytes.NewBuffer(make([]byte, 0, 4096))
 	_, err := body.ReadFrom(part)
 	if err != nil {
 		return nil, fmt.Errorf("error reading part body: %w", err)
@@ -241,20 +302,38 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 // Parse parses MIME content from headers and body.
 // It automatically detects whether the content is single-part or multipart.
+// Per RFC 2045 Section 5.2, defaults to text/plain; charset=us-ascii when
+// Content-Type is missing or invalid.
 func Parse(headers HeaderGetter, body []byte) (*Part, error) {
 	contentType := headers.Get("Content-Type")
 	if contentType == "" {
-		// No Content-Type header - treat as text/plain (RFC 2045 default)
-		return &Part{
-			ContentType: "text/plain",
-			Charset:     "us-ascii",
-			Body:        body,
-		}, nil
+		// No Content-Type header - treat as text/plain (RFC 2045 Section 5.2 default)
+		part := &Part{
+			ContentType:             "text/plain",
+			Charset:                 "us-ascii",
+			ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
+			Body:                    body,
+		}
+		// Check for Content-Description even without Content-Type
+		if desc := headers.Get("Content-Description"); desc != "" {
+			part.ContentDescription = desc
+		}
+		return part, nil
 	}
 
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, fmt.Errorf("invalid Content-Type header: %w", err)
+		// RFC 2045 Section 5.2: assume plain US-ASCII text on invalid Content-Type
+		part := &Part{
+			ContentType:             "text/plain",
+			Charset:                 "us-ascii",
+			ContentTransferEncoding: Encoding7Bit,
+			Body:                    body,
+		}
+		if desc := headers.Get("Content-Description"); desc != "" {
+			part.ContentDescription = desc
+		}
+		return part, nil
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
@@ -287,8 +366,6 @@ func (p *Part) ToBytes() ([]byte, error) {
 		return p.Body, nil
 	}
 
-	var buf bytes.Buffer
-
 	_, params, err := mime.ParseMediaType(p.ContentType)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Content-Type: %w", err)
@@ -298,6 +375,13 @@ func (p *Part) ToBytes() ([]byte, error) {
 		return nil, errors.New("multipart Content-Type missing boundary parameter")
 	}
 
+	// Estimate buffer size for better performance
+	estimatedSize := len(p.Body)
+	for _, part := range p.Parts {
+		estimatedSize += len(part.Body) + 256 // 256 for headers overhead
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
+
 	for _, part := range p.Parts {
 		// Write boundary delimiter
 		buf.WriteString("--")
@@ -305,7 +389,7 @@ func (p *Part) ToBytes() ([]byte, error) {
 		buf.WriteString("\r\n")
 
 		// Write part headers
-		if err := writePartHeaders(&buf, part); err != nil {
+		if err := writePartHeaders(buf, part); err != nil {
 			return nil, err
 		}
 
@@ -386,6 +470,13 @@ func writePartHeaders(buf *bytes.Buffer, part *Part) error {
 		buf.WriteString("Content-ID: <")
 		buf.WriteString(part.ContentID)
 		buf.WriteString(">\r\n")
+	}
+
+	// Write Content-Description per RFC 2045 Section 8
+	if part.ContentDescription != "" {
+		buf.WriteString("Content-Description: ")
+		buf.WriteString(part.ContentDescription)
+		buf.WriteString("\r\n")
 	}
 
 	return nil

@@ -54,21 +54,28 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	// Build extension list
 	extensions := make(map[Extension]string)
 
-	if s.config.Enable8BitMIME {
-		extensions[Ext8BitMIME] = ""
-		conn.SetExtension(Ext8BitMIME, "")
-	}
-	if s.config.EnableSMTPUTF8 {
-		// RFC 6531 Section 3.1 (item 8): Servers offering SMTPUTF8 MUST provide
-		// support for, and announce, the 8BITMIME extension.
-		if !s.config.Enable8BitMIME {
-			// Implicitly enable 8BITMIME when SMTPUTF8 is enabled
-			extensions[Ext8BitMIME] = ""
-			conn.SetExtension(Ext8BitMIME, "")
-		}
-		extensions[ExtSMTPUTF8] = ""
-		conn.SetExtension(ExtSMTPUTF8, "")
-	}
+	// ---- Intrinsic Extensions (always enabled) ----
+	// These are fundamental modern SMTP capabilities per RFC compliance.
+	// They do not require configuration and cannot be disabled.
+
+	// 8BITMIME (RFC 6152) - Always enabled
+	extensions[Ext8BitMIME] = ""
+	conn.SetExtension(Ext8BitMIME, "")
+
+	// SMTPUTF8 (RFC 6531) - Always enabled
+	// Note: RFC 6531 requires 8BITMIME, which is already enabled above
+	extensions[ExtSMTPUTF8] = ""
+	conn.SetExtension(ExtSMTPUTF8, "")
+
+	// ENHANCEDSTATUSCODES (RFC 2034) - Always enabled
+	extensions[ExtEnhancedStatusCodes] = ""
+	conn.SetExtension(ExtEnhancedStatusCodes, "")
+
+	// PIPELINING (RFC 2920) - Always enabled
+	extensions[ExtPipelining] = ""
+	conn.SetExtension(ExtPipelining, "")
+
+	// ---- Opt-in Extensions ----
 	if s.config.TLSConfig != nil && !conn.IsTLS() {
 		extensions[ExtSTARTTLS] = ""
 		conn.SetExtension(ExtSTARTTLS, "")
@@ -89,14 +96,13 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		extensions[ExtBinaryMIME] = ""
 		conn.SetExtension(ExtBinaryMIME, "")
 	}
+	// AUTH (RFC 4954) - Opt-in: requires AuthMechanisms to be configured
 	// Only advertise AUTH if TLS is not required, or if TLS is active
 	if len(s.config.AuthMechanisms) > 0 && (!s.config.RequireTLS || conn.IsTLS()) {
 		authParams := strings.Join(s.config.AuthMechanisms, " ")
 		extensions[ExtAuth] = authParams
 		conn.SetExtension(ExtAuth, authParams)
 	}
-	extensions[ExtEnhancedStatusCodes] = ""
-	conn.SetExtension(ExtEnhancedStatusCodes, "")
 
 	// Callback - may modify extensions
 	if s.config.Callbacks != nil && s.config.Callbacks.OnEhlo != nil {
@@ -176,15 +182,10 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
-	// RFC 6531: Reject non-ASCII addresses if SMTPUTF8 is not enabled or not requested
+	// RFC 6531: Non-ASCII addresses require SMTPUTF8 parameter to be specified
+	// SMTPUTF8 is an intrinsic extension (always enabled), but clients must
+	// explicitly request it for non-ASCII addresses per the RFC.
 	if utils.ContainsNonASCII(from.Mailbox.LocalPart) || utils.ContainsNonASCII(from.Mailbox.Domain) {
-		if !s.config.EnableSMTPUTF8 {
-			return &Response{
-				Code:         CodeMailboxNameInvalid,
-				EnhancedCode: "5.6.7",
-				Message:      "Address contains non-ASCII characters but SMTPUTF8 not supported",
-			}
-		}
 		if _, hasSMTPUTF8 := params["SMTPUTF8"]; !hasSMTPUTF8 {
 			return &Response{
 				Code:         CodeMailboxNameInvalid,
@@ -237,15 +238,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 				Message:      "Invalid BODY parameter",
 			}
 		}
-		// Check if 8BITMIME extension is enabled
-		if bodyTypeUpper == BodyType8BitMIME && !s.config.Enable8BitMIME {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: "5.5.4",
-				Message:      "8BITMIME not supported",
-			}
-		}
-		// Check if BINARYMIME extension is enabled (requires CHUNKING)
+		// Check if BINARYMIME extension is enabled (requires CHUNKING - opt-in)
 		if bodyTypeUpper == BodyTypeBinaryMIME && !s.config.EnableChunking {
 			return &Response{
 				Code:         CodeParameterNotImpl,
@@ -255,13 +248,6 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		}
 	}
 	if _, ok := params["SMTPUTF8"]; ok {
-		if !s.config.EnableSMTPUTF8 {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: "5.5.4",
-				Message:      "SMTPUTF8 not supported",
-			}
-		}
 		mail.Envelope.SMTPUTF8 = true
 	}
 	if envID, ok := params["ENVID"]; ok {
@@ -272,6 +258,14 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 				Message:      "DSN not supported",
 			}
 		}
+		// RFC 3461 Section 5.4: ENVID parameter max 100 characters
+		if len(envID) > 100 {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "ENVID parameter too long (max 100 characters)",
+			}
+		}
 		mail.Envelope.EnvID = envID
 	}
 	if ret, ok := params["RET"]; ok {
@@ -280,6 +274,14 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 				Code:         CodeParameterNotImpl,
 				EnhancedCode: "5.5.4",
 				Message:      "DSN not supported",
+			}
+		}
+		// RFC 3461 Section 5.4: RET parameter max 8 characters
+		if len(ret) > 8 {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "RET parameter too long",
 			}
 		}
 		// RFC 3461 Section 4.3: RET parameter must be FULL or HDRS
@@ -342,15 +344,10 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
-	// RFC 6531: Reject non-ASCII addresses if SMTPUTF8 is not enabled or not requested
+	// RFC 6531: Non-ASCII addresses require SMTPUTF8 to have been requested in MAIL FROM
+	// SMTPUTF8 is an intrinsic extension (always enabled), but clients must
+	// explicitly request it for non-ASCII addresses per the RFC.
 	if utils.ContainsNonASCII(to.Mailbox.LocalPart) || utils.ContainsNonASCII(to.Mailbox.Domain) {
-		if !s.config.EnableSMTPUTF8 {
-			return &Response{
-				Code:         CodeMailboxNameInvalid,
-				EnhancedCode: "5.6.7",
-				Message:      "Address contains non-ASCII characters but SMTPUTF8 not supported",
-			}
-		}
 		if !mail.Envelope.SMTPUTF8 {
 			return &Response{
 				Code:         CodeMailboxNameInvalid,
@@ -375,6 +372,14 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 				Code:         CodeParameterNotImpl,
 				EnhancedCode: "5.5.4",
 				Message:      "DSN not supported",
+			}
+		}
+		// RFC 3461 Section 5.4: NOTIFY parameter max 28 characters
+		if len(notify) > 28 {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "NOTIFY parameter too long (max 28 characters)",
 			}
 		}
 		// RFC 3461 Section 4.1: Validate NOTIFY parameter values
@@ -413,6 +418,22 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 				Code:         CodeParameterNotImpl,
 				EnhancedCode: "5.5.4",
 				Message:      "DSN not supported",
+			}
+		}
+		// RFC 3461 Section 5.4: ORCPT parameter max 500 characters
+		if len(orcpt) > 500 {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "ORCPT parameter too long (max 500 characters)",
+			}
+		}
+		// RFC 3461 Section 4.2: ORCPT format is addr-type ";" xtext
+		if !strings.Contains(orcpt, ";") {
+			return &Response{
+				Code:         CodeSyntaxError,
+				EnhancedCode: "5.5.4",
+				Message:      "Invalid ORCPT parameter: must be addr-type;address",
 			}
 		}
 		if rcpt.DSNParams == nil {
@@ -497,7 +518,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 			return &Response{
 				Code:         CodeTransactionFailed,
 				EnhancedCode: "5.6.0",
-				Message:      "Message contains 8-bit data but BODY=7BIT was specified",
+				Message:      "Message contains 8-bit data but BODY=8BITMIME was not specified",
 			}
 		}
 		logger.Error("data read error", slog.Any("error", err))
@@ -505,18 +526,45 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		return &Response{Code: CodeLocalError, Message: "Error reading message"}
 	}
 
-	// Parse message content into headers and body per RFC 5322
-	headers, body := parseMessageContent(data)
-	mail.Content.Headers = headers
-	mail.Content.Body = body
-	mail.Raw = data
+	// Parse message content into headers and body per RFC 5322 using FromRaw
+	mail.Content.FromRaw(data)
+
+	// RFC 5321 Section 6.3: Loop detection via Received header count
+	// Simple counting of Received headers is an effective method of detecting loops.
+	// RFC recommends a large rejection threshold, normally at least 100.
+	if s.config.MaxReceivedHeaders > 0 {
+		receivedCount := mail.Content.Headers.Count("Received")
+		if receivedCount >= s.config.MaxReceivedHeaders {
+			logger.Warn("mail loop detected",
+				slog.Int("received_count", receivedCount),
+				slog.Int("max_allowed", s.config.MaxReceivedHeaders),
+				slog.String("from", mail.Envelope.From.String()),
+			)
+			conn.ResetTransaction()
+			return &Response{
+				Code:         CodeTransactionFailed,
+				EnhancedCode: "5.4.6",
+				Message:      "Mail loop detected",
+			}
+		}
+	}
+
 	mail.ID = utils.GenerateID()
 	// Update ReceivedAt to reflect when message content was actually received
 	mail.ReceivedAt = time.Now()
 
-	// Add Received header
+	// Add Received header per RFC 5321 Section 4.4
+	// SMTP servers MUST prepend Received lines to messages
 	receivedHeader := conn.GenerateReceivedHeader("")
+	receivedHeader.ID = mail.ID
 	mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
+
+	// Prepend Received header to message content per RFC 5321 Section 3.7.2
+	// "SMTP servers MUST prepend Received lines to messages"
+	mail.Content.Headers = append(Headers{{
+		Name:  "Received",
+		Value: receivedHeader.String(),
+	}}, mail.Content.Headers...)
 
 	// OnMessage callback
 	if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
@@ -549,16 +597,30 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
 	// Pre-allocate buffer with reasonable initial capacity
 	buf := bytes.NewBuffer(make([]byte, 0, 4096))
+	var sizeExceeded bool
+	var has8BitData bool
 
 	for {
 		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, enforce7Bit)
 		if err != nil {
+			if errors.Is(err, ravenio.Err8BitIn7BitMode) {
+				// Mark that we found 8-bit data, but continue draining
+				has8BitData = true
+				// Continue reading with 7-bit enforcement disabled to drain the rest
+				enforce7Bit = false
+				continue
+			}
 			return nil, err
 		}
 
 		// Check for end of data (line is ".", already stripped of CRLF)
 		if line == "." {
 			break
+		}
+
+		// If we've already exceeded the size or found 8-bit data, just drain remaining content
+		if sizeExceeded || has8BitData {
+			continue
 		}
 
 		// Remove dot-stuffing (RFC 5321 Section 4.5.2)
@@ -570,12 +632,22 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 		// Check size limit (account for CRLF that will be added back)
 		newLen := int64(buf.Len()) + int64(len(line)) + 2
 		if maxSize > 0 && newLen > maxSize {
-			return nil, ErrMessageTooLarge
+			// Mark that we exceeded the size, but continue to drain the data
+			sizeExceeded = true
+			continue
 		}
 
 		// Write line and CRLF directly to avoid string concatenation
 		buf.WriteString(line)
 		buf.WriteString("\r\n")
+	}
+
+	if has8BitData {
+		return nil, ravenio.Err8BitIn7BitMode
+	}
+
+	if sizeExceeded {
+		return nil, ErrMessageTooLarge
 	}
 
 	return buf.Bytes(), nil
@@ -627,7 +699,7 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	}
 
 	// Check if adding this chunk would exceed max message size
-	currentSize := int64(len(mail.Raw))
+	currentSize := int64(len(mail.Content.Raw))
 	if conn.Limits.MaxMessageSize > 0 && currentSize+chunkSize > conn.Limits.MaxMessageSize {
 		// Discard the chunk data to keep protocol in sync
 		s.discardBDATChunk(reader, chunkSize)
@@ -665,26 +737,52 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	}
 
 	// Pre-allocate capacity to avoid multiple reallocations when appending chunks
-	if cap(mail.Raw)-len(mail.Raw) < len(chunkData) {
-		newRaw := make([]byte, len(mail.Raw), currentSize+chunkSize)
-		copy(newRaw, mail.Raw)
-		mail.Raw = newRaw
+	if cap(mail.Content.Raw)-len(mail.Content.Raw) < len(chunkData) {
+		newRaw := make([]byte, len(mail.Content.Raw), currentSize+chunkSize)
+		copy(newRaw, mail.Content.Raw)
+		mail.Content.Raw = newRaw
 	}
-	mail.Raw = append(mail.Raw, chunkData...)
+	mail.Content.Raw = append(mail.Content.Raw, chunkData...)
 
 	// If this is the last chunk, complete the transaction
 	if isLast {
-		// Parse message content into headers and body per RFC 5322
-		headers, body := parseMessageContent(mail.Raw)
-		mail.Content.Headers = headers
-		mail.Content.Body = body
+		// Parse message content into headers and body per RFC 5322 using FromRaw
+		mail.Content.FromRaw(mail.Content.Raw)
+
+		// RFC 5321 Section 6.3: Loop detection via Received header count
+		// Simple counting of Received headers is an effective method of detecting loops.
+		// RFC recommends a large rejection threshold, normally at least 100.
+		if s.config.MaxReceivedHeaders > 0 {
+			receivedCount := mail.Content.Headers.Count("Received")
+			if receivedCount >= s.config.MaxReceivedHeaders {
+				logger.Warn("mail loop detected",
+					slog.Int("received_count", receivedCount),
+					slog.Int("max_allowed", s.config.MaxReceivedHeaders),
+					slog.String("from", mail.Envelope.From.String()),
+				)
+				conn.ResetTransaction()
+				return &Response{
+					Code:         CodeTransactionFailed,
+					EnhancedCode: "5.4.6",
+					Message:      "Mail loop detected",
+				}
+			}
+		}
+
 		mail.ID = utils.GenerateID()
 		// Update ReceivedAt to reflect when message content was actually received
 		mail.ReceivedAt = time.Now()
 
-		// Add Received header
+		// Add Received header to trace per RFC 5321 Section 4.4
 		receivedHeader := conn.GenerateReceivedHeader("")
+		receivedHeader.ID = mail.ID
 		mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
+
+		// Prepend Received header to message content per RFC 5321 Section 3.7.2
+		mail.Content.Headers = append(Headers{{
+			Name:  "Received",
+			Value: receivedHeader.String(),
+		}}, mail.Content.Headers...)
 
 		// OnMessage callback
 		if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
@@ -701,7 +799,7 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 			slog.String("mail_id", mail.ID),
 			slog.String("from", mail.Envelope.From.String()),
 			slog.Int("recipients", len(mail.Envelope.To)),
-			slog.Int("size", len(mail.Raw)),
+			slog.Int("size", len(mail.Content.Raw)),
 		)
 
 		return &Response{
@@ -802,6 +900,77 @@ func (s *Server) handleExpn(conn *Connection, args string) *Response {
 	}
 }
 
+// DefaultHelpURL is the default help URL returned by the HELP command.
+const DefaultHelpURL = "https://github.com/synqronlabs/raven"
+
+// handleHelp processes the HELP command per RFC 5321 Section 4.1.1.8.
+// The HELP command provides information about supported commands or the server.
+func (s *Server) handleHelp(conn *Connection, topic string) *Response {
+	topic = strings.TrimSpace(topic)
+
+	// Callback for custom help responses
+	if s.config.Callbacks != nil && s.config.Callbacks.OnHelp != nil {
+		lines := s.config.Callbacks.OnHelp(conn.Context(), conn, topic)
+		if lines != nil && len(lines) > 0 {
+			s.writeMultilineResponse(conn, CodeHelpMessage, lines)
+			return nil
+		}
+	}
+
+	// Default help response
+	if topic == "" {
+		// General help
+		lines := []string{
+			"Raven ESMTP Server",
+			"Supported commands: HELO EHLO MAIL RCPT DATA RSET NOOP QUIT HELP VRFY EXPN",
+			"For more information, visit: " + DefaultHelpURL,
+		}
+		s.writeMultilineResponse(conn, CodeHelpMessage, lines)
+		return nil
+	}
+
+	// Topic-specific help
+	topicUpper := strings.ToUpper(topic)
+	var helpText string
+	switch topicUpper {
+	case "HELO":
+		helpText = "HELO <hostname> - Identify yourself to the server"
+	case "EHLO":
+		helpText = "EHLO <hostname> - Extended HELLO, identify and request extensions"
+	case "MAIL":
+		helpText = "MAIL FROM:<address> [params] - Start a mail transaction"
+	case "RCPT":
+		helpText = "RCPT TO:<address> [params] - Specify a recipient"
+	case "DATA":
+		helpText = "DATA - Start message input, end with <CRLF>.<CRLF>"
+	case "BDAT":
+		helpText = "BDAT <size> [LAST] - Send message data in chunks (CHUNKING extension)"
+	case "RSET":
+		helpText = "RSET - Reset the current transaction"
+	case "NOOP":
+		helpText = "NOOP - No operation (keepalive)"
+	case "QUIT":
+		helpText = "QUIT - Close the connection"
+	case "VRFY":
+		helpText = "VRFY <address> - Verify an address (may be disabled)"
+	case "EXPN":
+		helpText = "EXPN <list> - Expand a mailing list (may be disabled)"
+	case "HELP":
+		helpText = "HELP [topic] - Show help information"
+	case "STARTTLS":
+		helpText = "STARTTLS - Upgrade connection to TLS"
+	case "AUTH":
+		helpText = "AUTH <mechanism> [initial-response] - Authenticate"
+	default:
+		return &Response{
+			Code:    CodeHelpMessage,
+			Message: fmt.Sprintf("No help available for '%s'. Visit: %s", topic, DefaultHelpURL),
+		}
+	}
+
+	return &Response{Code: CodeHelpMessage, Message: helpText}
+}
+
 // handleQuit processes the QUIT command.
 func (s *Server) handleQuit(conn *Connection) *Response {
 	conn.SetState(StateQuit)
@@ -838,8 +1007,7 @@ func (s *Server) handleStartTLS(conn *Connection) *Response {
 
 	// Upgrade connection
 	if err := conn.UpgradeToTLS(s.config.TLSConfig); err != nil {
-		conn.RecordError(err)
-		// Connection is likely broken at this point
+		// Connection is broken at this point - client will disconnect
 		return nil
 	}
 

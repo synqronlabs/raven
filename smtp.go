@@ -147,6 +147,7 @@ var (
 	ErrTLSRequired      = errors.New("smtp: TLS required")
 	ErrAuthRequired     = errors.New("smtp: authentication required")
 	ErrInvalidCommand   = errors.New("smtp: invalid command")
+	ErrLoopDetected     = errors.New("smtp: mail loop detected (too many Received headers)")
 )
 
 // Callbacks defines the callback interface for SMTP server events.
@@ -210,7 +211,8 @@ type Callbacks struct {
 	// Return the list of addresses or an error.
 	OnExpand func(ctx context.Context, conn *Connection, listName string) ([]MailboxAddress, error)
 
-	// OnUnknownCommand is called for unrecognized commands.
-	// Return a custom response or nil to use default 500 response.
-	OnUnknownCommand func(ctx context.Context, conn *Connection, command Command, args string) *Response
+	// OnHelp is called when HELP command is received.
+	// Return a slice of help text lines, or nil to use the default response.
+	// The topic parameter contains the optional argument (e.g., "HELP MAIL" -> topic="MAIL").
+	OnHelp func(ctx context.Context, conn *Connection, topic string) []string
 }

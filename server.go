@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,7 @@ const (
 	CmdRset     Command = "RSET"
 	CmdVrfy     Command = "VRFY"
 	CmdExpn     Command = "EXPN"
+	CmdHelp     Command = "HELP"
 	CmdNoop     Command = "NOOP"
 	CmdQuit     Command = "QUIT"
 	CmdStartTLS Command = "STARTTLS"
@@ -292,7 +294,6 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		}
 	}
 
-	// Send greeting
 	s.writeResponse(conn, Response{
 		Code:    CodeServiceReady,
 		Message: fmt.Sprintf("%s ESMTP ready [%s]", s.config.Hostname, conn.Trace.ID),
@@ -303,7 +304,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	logger.Info("client disconnected",
 		slog.Int64("commands", conn.Trace.CommandCount),
-		slog.Int("errors", len(conn.Trace.Errors)),
+		slog.Int("errors", conn.ErrorCount()),
 		slog.Int64("transactions", conn.Trace.TransactionCount),
 	)
 }
@@ -325,7 +326,6 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 			return
 		}
 
-		// Read command line
 		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, false)
 		if err != nil {
 			if err == io.EOF || errors.Is(err, net.ErrClosed) {
@@ -341,17 +341,15 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 			if errors.Is(err, ravenio.ErrLineTooLong) {
 				s.writeResponse(conn, Response{
 					Code:    CodeSyntaxError,
-					Message: "Line too long",
+					Message: fmt.Sprintf("Line exceeds maximum length of %d bytes", s.config.MaxLineLength),
 				})
-				conn.RecordError(err)
 				continue
 			}
 			if errors.Is(err, ravenio.ErrBadLineEnding) {
 				s.writeResponse(conn, Response{
 					Code:    CodeSyntaxError,
-					Message: "Line must be terminated with CRLF",
+					Message: "Line must be terminated with CRLF (RFC 5321)",
 				})
-				conn.RecordError(err)
 				continue
 			}
 			logger.Error("read error", slog.Any("error", err))
@@ -378,23 +376,25 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 			return
 		}
 
-		// Parse command
 		cmd, args, err := parseCommand(line)
 		if err != nil {
 			s.writeResponse(conn, Response{
 				Code:    CodeSyntaxError,
-				Message: "Invalid command",
+				Message: fmt.Sprintf("Invalid command syntax: %s", line),
 			})
-			conn.RecordError(ErrInvalidCommand)
 			continue
 		}
 
 		logger.Debug("command received", slog.String("cmd", string(cmd)), slog.String("args", args))
 
-		// Handle command
 		response := s.handleCommand(conn, cmd, args, reader, logger)
 		if response != nil {
 			s.writeResponse(conn, *response)
+		}
+
+		// After STARTTLS, we need to refresh the reader to use the TLS connection
+		if cmd == CmdStartTLS && conn.IsTLS() {
+			reader = bufio.NewReader(conn.reader)
 		}
 
 		// Check if connection should close
@@ -425,6 +425,8 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 		return s.handleVrfy(conn, args)
 	case CmdExpn:
 		return s.handleExpn(conn, args)
+	case CmdHelp:
+		return s.handleHelp(conn, args)
 	case CmdNoop:
 		return &Response{Code: CodeOK, Message: "OK"}
 	case CmdQuit:
@@ -434,19 +436,18 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 	case CmdAuth:
 		return s.handleAuth(conn, args, reader)
 	default:
-		// Unknown command callback
-		if s.config.Callbacks != nil && s.config.Callbacks.OnUnknownCommand != nil {
-			if resp := s.config.Callbacks.OnUnknownCommand(conn.Context(), conn, cmd, args); resp != nil {
-				return resp
-			}
-		}
-		conn.RecordError(fmt.Errorf("unknown command: %s", cmd))
-		return &Response{Code: CodeCommandUnrecognized, Message: "Command not recognized"}
+		return &Response{Code: CodeCommandUnrecognized, Message: fmt.Sprintf("Command not recognized: %s", cmd)}
 	}
 }
 
 // writeResponse sends a single response to the client.
+// If the response is an error (4xx or 5xx), it is automatically recorded.
 func (s *Server) writeResponse(conn *Connection, resp Response) {
+	// Record error responses for session tracking
+	if resp.IsError() {
+		conn.RecordError(resp.ToError())
+	}
+
 	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout)); err != nil {
 		return
 	}
@@ -461,7 +462,14 @@ func (s *Server) writeResponse(conn *Connection, resp Response) {
 }
 
 // writeMultilineResponse sends a multiline response.
+// If the response code is an error (4xx or 5xx), it is automatically recorded.
 func (s *Server) writeMultilineResponse(conn *Connection, code SMTPCode, lines []string) {
+	// Record error responses for session tracking
+	if code >= 400 {
+		msg := strings.Join(lines, "; ")
+		conn.RecordError(fmt.Errorf("SMTP %d: %s", code, msg))
+	}
+
 	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout)); err != nil {
 		return
 	}

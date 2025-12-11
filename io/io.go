@@ -18,7 +18,7 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 	line, err := reader.ReadSlice('\n')
 	if err == nil {
 		if !isASCII(line) && enforce {
-			return "", ErrLineTooLong
+			return "", Err8BitIn7BitMode
 		}
 		return validateAndConvert(line, max)
 	}
