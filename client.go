@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// SMTP Client Errors
 var (
 	ErrClientClosed           = errors.New("smtp: client closed")
 	ErrNoConnection           = errors.New("smtp: no connection established")

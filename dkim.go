@@ -18,6 +18,7 @@ import (
 	"time"
 )
 
+// DKIM Errors
 var (
 	ErrDKIMNoSignature             = errors.New("dkim: no DKIM-Signature header found")
 	ErrDKIMInvalidSignature        = errors.New("dkim: invalid signature format")

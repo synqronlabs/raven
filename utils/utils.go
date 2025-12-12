@@ -10,6 +10,7 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// GetIPFromAddr extracts the IP address from a net.Addr
 func GetIPFromAddr(addr net.Addr) (net.IP, error) {
 	if addr == nil {
 		return nil, fmt.Errorf("address is nil")
