@@ -15,20 +15,12 @@ type HandlerFunc func(ctx *Context) error
 type Middleware func(HandlerFunc) HandlerFunc
 
 // Context provides request-scoped values and methods for handlers.
-// It wraps the connection and current mail transaction with convenient methods.
 type Context struct {
-	// Connection is the underlying SMTP connection.
 	Connection *Connection
-
-	// Mail is the current mail transaction (nil before MAIL FROM).
-	Mail *Mail
-
-	// Keys stores values for handler communication within a request.
-	Keys map[string]any
-
-	// handlers is the chain of handlers to execute.
-	handlers []HandlerFunc
-	index    int
+	Mail       *Mail
+	Keys       map[string]any
+	handlers   []HandlerFunc
+	index      int
 }
 
 // Set stores a value in the context for later retrieval.
@@ -117,24 +109,16 @@ func (c *Context) AuthIdentity() string {
 }
 
 // ServerBuilder provides a fluent API for configuring an SMTP server.
-// It follows the builder pattern similar to HTTP frameworks like Gin.
 type ServerBuilder struct {
-	// Core configuration
-	hostname string
-	addr     string
-	logger   *slog.Logger
-
-	// TLS
-	tlsConfig  *tls.Config
-	requireTLS bool
-
-	// Timeouts
-	readTimeout  time.Duration
-	writeTimeout time.Duration
-	dataTimeout  time.Duration
-	idleTimeout  time.Duration
-
-	// Limits
+	hostname           string
+	addr               string
+	logger             *slog.Logger
+	tlsConfig          *tls.Config
+	requireTLS         bool
+	readTimeout        time.Duration
+	writeTimeout       time.Duration
+	dataTimeout        time.Duration
+	idleTimeout        time.Duration
 	maxMessageSize     int64
 	maxRecipients      int
 	maxConnections     int
@@ -142,27 +126,21 @@ type ServerBuilder struct {
 	maxErrors          int
 	maxLineLength      int
 	maxReceivedHeaders int
-
-	// Extensions (opt-in)
-	extensions []ExtensionConfig
-
-	// Authentication
-	authConfig *AuthConfig
-
-	// Handlers (replacing callbacks with handler chains)
-	onConnect    []HandlerFunc
-	onDisconnect []HandlerFunc
-	onHelo       []HandlerFunc
-	onEhlo       []HandlerFunc
-	onMailFrom   []HandlerFunc
-	onRcptTo     []HandlerFunc
-	onData       []HandlerFunc
-	onMessage    []HandlerFunc
-	onReset      []HandlerFunc
-	onHelp       []HandlerFunc
-
-	// Global middleware applied to all handlers
-	middleware []Middleware
+	extensions         []ExtensionConfig
+	authConfig         *AuthConfig
+	onConnect          []HandlerFunc
+	onDisconnect       []HandlerFunc
+	onHelo             []HandlerFunc
+	onEhlo             []HandlerFunc
+	onMailFrom         []HandlerFunc
+	onRcptTo           []HandlerFunc
+	onData             []HandlerFunc
+	onMessage          []HandlerFunc
+	onReset            []HandlerFunc
+	onHelp             []HandlerFunc
+	middleware         []Middleware
+	gracefulShutdown   *bool
+	shutdownTimeout    time.Duration
 }
 
 // ExtensionConfig holds configuration for an SMTP extension.
@@ -174,18 +152,13 @@ type ExtensionConfig struct {
 
 // AuthConfig holds authentication configuration.
 type AuthConfig struct {
-	// Mechanisms is the list of supported SASL mechanisms.
-	Mechanisms []string
-
-	// RequireAuth requires clients to authenticate before sending mail.
-	RequireAuth bool
-
-	// Handler is called to verify credentials.
-	Handler func(ctx context.Context, conn *Connection, mechanism, identity, password string) error
+	Mechanisms      []string
+	RequireAuth     bool
+	EnableLoginAuth bool // Deprecated LOGIN mechanism for legacy clients
+	Handler         func(ctx context.Context, conn *Connection, mechanism, identity, password string) error
 }
 
-// New creates a new ServerBuilder with the given hostname.
-// The hostname is required and used in SMTP greetings and Received headers.
+// New creates a new ServerBuilder.
 func New(hostname string) *ServerBuilder {
 	return &ServerBuilder{
 		hostname:           hostname,
@@ -194,7 +167,7 @@ func New(hostname string) *ServerBuilder {
 		writeTimeout:       5 * time.Minute,
 		dataTimeout:        10 * time.Minute,
 		idleTimeout:        5 * time.Minute,
-		maxLineLength:      512,
+		maxLineLength:      MaxLineLength,
 		maxReceivedHeaders: 100, // RFC 5321 Section 6.3 recommends at least 100
 		logger:             slog.Default(),
 	}
@@ -295,6 +268,23 @@ func (b *ServerBuilder) MaxReceivedHeaders(n int) *ServerBuilder {
 	return b
 }
 
+// GracefulShutdown enables or disables automatic graceful shutdown on SIGINT/SIGTERM.
+// When enabled (default), the server will automatically call Shutdown() when
+// receiving interrupt signals, allowing active connections to complete.
+// Disable this if you want to handle signals yourself.
+func (b *ServerBuilder) GracefulShutdown(enabled bool) *ServerBuilder {
+	b.gracefulShutdown = &enabled
+	return b
+}
+
+// ShutdownTimeout sets the timeout for graceful shutdown.
+// After this duration, remaining connections will be forcefully closed.
+// Default: 30 seconds.
+func (b *ServerBuilder) ShutdownTimeout(d time.Duration) *ServerBuilder {
+	b.shutdownTimeout = d
+	return b
+}
+
 // Use adds global middleware that will be applied to all handlers.
 func (b *ServerBuilder) Use(middleware ...Middleware) *ServerBuilder {
 	b.middleware = append(b.middleware, middleware...)
@@ -380,13 +370,28 @@ func (b *ServerBuilder) Auth(mechanisms []string, handler func(ctx context.Conte
 }
 
 // RequireAuth requires authentication before sending mail.
+// If no mechanisms are configured, this defaults to PLAIN only.
+// Use EnableLoginAuth() to also enable the deprecated LOGIN mechanism.
 func (b *ServerBuilder) RequireAuth() *ServerBuilder {
 	if b.authConfig == nil {
 		b.authConfig = &AuthConfig{
-			Mechanisms: []string{"PLAIN", "LOGIN"},
+			Mechanisms: []string{"PLAIN"},
 		}
 	}
 	b.authConfig.RequireAuth = true
+	return b
+}
+
+// EnableLoginAuth enables the deprecated LOGIN authentication mechanism.
+// LOGIN should only be used for compatibility with legacy clients that
+// do not support PLAIN. This method has no effect if Auth() has not been called.
+func (b *ServerBuilder) EnableLoginAuth() *ServerBuilder {
+	if b.authConfig == nil {
+		b.authConfig = &AuthConfig{
+			Mechanisms: []string{"PLAIN"},
+		}
+	}
+	b.authConfig.EnableLoginAuth = true
 	return b
 }
 
@@ -419,10 +424,20 @@ func (b *ServerBuilder) Build() (*Server, error) {
 		IdleTimeout:        b.idleTimeout,
 		MaxLineLength:      b.maxLineLength,
 		MaxReceivedHeaders: b.maxReceivedHeaders,
+		GracefulShutdown:   true, // Default enabled
+		ShutdownTimeout:    30 * time.Second,
 		Logger:             b.logger,
 		Callbacks:          callbacks,
 		// Note: Intrinsic extensions (8BITMIME, SMTPUTF8, ENHANCEDSTATUSCODES, PIPELINING)
 		// are always enabled and require no configuration.
+	}
+
+	// Apply graceful shutdown settings if explicitly set
+	if b.gracefulShutdown != nil {
+		config.GracefulShutdown = *b.gracefulShutdown
+	}
+	if b.shutdownTimeout > 0 {
+		config.ShutdownTimeout = b.shutdownTimeout
 	}
 
 	// Process opt-in extensions
@@ -439,6 +454,7 @@ func (b *ServerBuilder) Build() (*Server, error) {
 	if b.authConfig != nil {
 		config.AuthMechanisms = b.authConfig.Mechanisms
 		config.RequireAuth = b.authConfig.RequireAuth
+		config.EnableLoginAuth = b.authConfig.EnableLoginAuth
 	} else {
 		config.AuthMechanisms = nil // Disable AUTH if not configured
 	}

@@ -1,11 +1,13 @@
 package utils
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"math/rand/v2"
 	"net"
+	"time"
 	"unicode/utf8"
+
+	"github.com/oklog/ulid/v2"
 )
 
 func GetIPFromAddr(addr net.Addr) (net.IP, error) {
@@ -13,7 +15,6 @@ func GetIPFromAddr(addr net.Addr) (net.IP, error) {
 		return nil, fmt.Errorf("address is nil")
 	}
 
-	// Extract IP from the address
 	var ip net.IP
 	switch a := addr.(type) {
 	case *net.TCPAddr:
@@ -37,8 +38,7 @@ func GetIPFromAddr(addr net.Addr) (net.IP, error) {
 	return ip, nil
 }
 
-// ContainsNonASCII checks if a string contains any non-ASCII characters (bytes > 127).
-// This works for both string validation (addresses, headers) and message content validation.
+// ContainsNonASCII checks if a string contains non-ASCII characters.
 func ContainsNonASCII(s string) bool {
 	for _, v := range s {
 		if v >= utf8.RuneSelf {
@@ -48,9 +48,18 @@ func ContainsNonASCII(s string) bool {
 	return false
 }
 
-// GenerateID creates a unique identifier using random bytes.
+type fastEntropy struct{}
+
+func (fastEntropy) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(rand.Uint32())
+	}
+	return len(p), nil
+}
+
+var entropy = ulid.Monotonic(fastEntropy{}, 0)
+
+// GenerateID creates a unique identifier using ULID.
 func GenerateID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }

@@ -9,23 +9,16 @@ import (
 	"time"
 )
 
-// ConnectionState represents the current state of an SMTP session per RFC 5321 Section 4.1.4.
+// ConnectionState represents the current state of an SMTP session per RFC 5321.
 type ConnectionState int
 
 const (
-	// StateConnect is the initial state when a client connects.
 	StateConnect ConnectionState = iota
-	// StateGreeted indicates EHLO/HELO has been successfully processed.
 	StateGreeted
-	// StateMail indicates MAIL FROM has been accepted, transaction in progress.
 	StateMail
-	// StateRcpt indicates at least one RCPT TO has been accepted.
 	StateRcpt
-	// StateData indicates DATA command has been issued, awaiting message content.
 	StateData
-	// StateBDAT indicates BDAT command is in progress (CHUNKING extension).
 	StateBDAT
-	// StateQuit indicates QUIT command received, connection closing.
 	StateQuit
 )
 
@@ -55,145 +48,82 @@ func (s ConnectionState) String() string {
 type Extension string
 
 const (
-	// Ext8BitMIME indicates support for 8-bit MIME (RFC 6152).
-	Ext8BitMIME Extension = "8BITMIME"
-	// ExtPipelining indicates support for command pipelining (RFC 2920).
-	ExtPipelining Extension = "PIPELINING"
-	// ExtSMTPUTF8 indicates support for internationalized email (RFC 6531).
-	ExtSMTPUTF8 Extension = "SMTPUTF8"
-	// ExtSTARTTLS indicates support for TLS upgrade (RFC 3207).
-	ExtSTARTTLS Extension = "STARTTLS"
-	// ExtSize indicates support for message size declaration (RFC 1870).
-	ExtSize Extension = "SIZE"
-	// ExtDSN indicates support for Delivery Status Notifications (RFC 3461).
-	ExtDSN Extension = "DSN"
-	// ExtAuth indicates support for SMTP AUTH (RFC 4954).
-	ExtAuth Extension = "AUTH"
-	// ExtChunking indicates support for BDAT command (RFC 3030).
-	ExtChunking Extension = "CHUNKING"
-	// ExtBinaryMIME indicates support for binary MIME (RFC 3030).
-	ExtBinaryMIME Extension = "BINARYMIME"
-	// ExtEnhancedStatusCodes indicates support for enhanced status codes (RFC 2034).
+	Ext8BitMIME            Extension = "8BITMIME"
+	ExtPipelining          Extension = "PIPELINING"
+	ExtSMTPUTF8            Extension = "SMTPUTF8"
+	ExtSTARTTLS            Extension = "STARTTLS"
+	ExtSize                Extension = "SIZE"
+	ExtDSN                 Extension = "DSN"
+	ExtAuth                Extension = "AUTH"
+	ExtChunking            Extension = "CHUNKING"
+	ExtBinaryMIME          Extension = "BINARYMIME"
 	ExtEnhancedStatusCodes Extension = "ENHANCEDSTATUSCODES"
+	ExtRequireTLS          Extension = "REQUIRETLS"
 )
 
-// TLSInfo contains information about the TLS connection, if established.
+// TLSInfo contains information about the TLS connection.
 type TLSInfo struct {
-	// Enabled indicates whether TLS is active on this connection.
-	Enabled bool
-	// Version is the TLS version (e.g., tls.VersionTLS13).
-	Version uint16
-	// CipherSuite is the negotiated cipher suite.
-	CipherSuite uint16
-	// ServerName is the SNI server name provided by the client.
-	ServerName string
-	// PeerCertificates contains the client's certificate chain, if provided.
-	PeerCertificates [][]byte
-	// NegotiatedProtocol is the ALPN protocol, if any.
+	Enabled            bool
+	Version            uint16
+	CipherSuite        uint16
+	ServerName         string
+	PeerCertificates   [][]byte
 	NegotiatedProtocol string
 }
 
 // AuthInfo contains information about client authentication.
 type AuthInfo struct {
-	// Authenticated indicates whether the client has successfully authenticated.
-	Authenticated bool
-	// Mechanism is the SASL mechanism used (e.g., "PLAIN", "LOGIN").
-	Mechanism string
-	// Identity is the authenticated identity (username/email).
-	Identity string
-	// AuthenticatedAt is when authentication succeeded.
+	Authenticated   bool
+	Mechanism       string
+	Identity        string
 	AuthenticatedAt time.Time
 }
 
-// ConnectionTrace contains tracing and diagnostic information for a connection.
-// This is used for logging, debugging, and generating Received headers.
+// ConnectionTrace contains diagnostic information for a connection.
 type ConnectionTrace struct {
-	// ID is a unique identifier for this connection (for correlation in logs).
-	ID string
-	// RemoteAddr is the remote client address.
-	RemoteAddr net.Addr
-	// LocalAddr is the local server address.
-	LocalAddr net.Addr
-	// ConnectedAt is when the connection was established.
-	ConnectedAt time.Time
-	// ClientHostname is the hostname provided in EHLO/HELO.
-	ClientHostname string
-	// CommandCount is the total number of commands processed.
-	CommandCount int64
-	// TransactionCount is the number of mail transactions completed.
+	ID               string
+	RemoteAddr       net.Addr
+	LocalAddr        net.Addr
+	ConnectedAt      time.Time
+	ClientHostname   string
+	CommandCount     int64
 	TransactionCount int64
-	// BytesRead is the total bytes read from the client.
-	BytesRead int64
-	// BytesWritten is the total bytes written to the client.
-	BytesWritten int64
-	// LastActivity is the timestamp of the last command/response.
-	LastActivity time.Time
-	// Errors contains any errors encountered during the session.
-	Errors []error
+	BytesRead        int64
+	BytesWritten     int64
+	LastActivity     time.Time
+	Errors           []error
 }
 
 // ConnectionLimits defines resource limits for a connection.
 type ConnectionLimits struct {
-	// MaxMessageSize is the maximum allowed message size in bytes (0 = unlimited).
 	MaxMessageSize int64
-	// MaxRecipients is the maximum recipients per transaction (0 = unlimited).
-	MaxRecipients int
-	// MaxCommands is the maximum commands before forced disconnect (0 = unlimited).
-	MaxCommands int64
-	// MaxErrors is the maximum errors before forced disconnect (0 = unlimited).
-	MaxErrors int
-	// IdleTimeout is the maximum idle time before disconnect.
-	IdleTimeout time.Duration
-	// CommandTimeout is the maximum time to wait for a complete command.
+	MaxRecipients  int
+	MaxCommands    int64
+	MaxErrors      int
+	IdleTimeout    time.Duration
 	CommandTimeout time.Duration
-	// DataTimeout is the maximum time to wait for DATA content.
-	DataTimeout time.Duration
+	DataTimeout    time.Duration
 }
 
-// Connection represents an individual TCP connection for an ESMTP server.
-// It manages the full lifecycle of an SMTP session as per RFC 5321,
-// with support for pipelining (RFC 2920) and various SMTP extensions.
+// Connection represents an SMTP session.
 type Connection struct {
-	// conn is the underlying network connection.
-	conn net.Conn
-
-	// ctx is the context for this connection, used for cancellation and deadlines.
-	ctx context.Context
-	// cancel is the cancel function for the connection context.
-	cancel context.CancelFunc
-
-	// reader is the buffered reader for incoming data.
-	reader *bufio.Reader
-	// writer is the buffered writer for outgoing data.
-	writer *bufio.Writer
-
-	// mu protects concurrent access to connection state.
-	mu sync.RWMutex
-
-	// state is the current SMTP session state.
-	state ConnectionState
-
-	// Trace contains connection tracing and diagnostic information.
-	Trace ConnectionTrace
-
-	// TLS contains TLS connection information.
-	TLS TLSInfo
-
-	// Auth contains authentication information.
-	Auth AuthInfo
-
-	// Limits contains the resource limits for this connection.
-	Limits ConnectionLimits
-
-	// Extensions contains the set of extensions advertised to the client.
-	Extensions map[Extension]string
-
-	// currentMail is the mail transaction currently in progress.
-	// Nil when no transaction is active (before MAIL FROM or after reset).
-	currentMail *Mail
-
-	// serverHostname is the hostname the server uses in greetings and Received headers.
+	conn           net.Conn
+	ctx            context.Context
+	cancel         context.CancelFunc
+	reader         *bufio.Reader
+	writer         *bufio.Writer
+	mu             sync.RWMutex
+	state          ConnectionState
+	Trace          ConnectionTrace
+	TLS            TLSInfo
+	Auth           AuthInfo
+	Limits         ConnectionLimits
+	Extensions     map[Extension]string
+	currentMail    *Mail
 	serverHostname string
+
+	// bdatBuffer accumulates chunk data during BDAT transfers.
+	bdatBuffer []byte
 
 	// closedChan is closed when the connection is terminated.
 	closedChan chan struct{}
@@ -230,12 +160,10 @@ func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, li
 	return c
 }
 
-// Context returns the connection's context.
 func (c *Connection) Context() context.Context {
 	return c.ctx
 }
 
-// State returns the current connection state.
 func (c *Connection) State() ConnectionState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -268,24 +196,20 @@ func (c *Connection) SetState(state ConnectionState) {
 	c.state = state
 }
 
-// RemoteAddr returns the remote client address.
 func (c *Connection) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
 }
 
-// LocalAddr returns the local server address.
 func (c *Connection) LocalAddr() net.Addr {
 	return c.conn.LocalAddr()
 }
 
-// IsTLS returns whether the connection is using TLS.
 func (c *Connection) IsTLS() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.TLS.Enabled
 }
 
-// IsAuthenticated returns whether the client has authenticated.
 func (c *Connection) IsAuthenticated() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -314,6 +238,7 @@ func (c *Connection) ResetTransaction() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.currentMail = nil
+	c.bdatBuffer = nil
 	if c.state != StateConnect {
 		c.state = StateGreeted
 	}
@@ -326,9 +251,33 @@ func (c *Connection) CompleteTransaction() *Mail {
 	defer c.mu.Unlock()
 	mail := c.currentMail
 	c.currentMail = nil
+	c.bdatBuffer = nil
 	c.state = StateGreeted
 	c.Trace.TransactionCount++
 	return mail
+}
+
+// AppendBDATChunk appends data to the BDAT buffer during chunked transfers.
+func (c *Connection) AppendBDATChunk(data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bdatBuffer = append(c.bdatBuffer, data...)
+}
+
+// BDATBufferSize returns the current size of the BDAT buffer.
+func (c *Connection) BDATBufferSize() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return int64(len(c.bdatBuffer))
+}
+
+// ConsumeBDATBuffer returns the accumulated BDAT data and clears the buffer.
+func (c *Connection) ConsumeBDATBuffer() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data := c.bdatBuffer
+	c.bdatBuffer = nil
+	return data
 }
 
 // Close closes the connection and releases resources.
@@ -436,12 +385,12 @@ func (c *Connection) UpgradeToTLS(config *tls.Config) error {
 }
 
 // GenerateReceivedHeader creates a Received header for the current transaction.
-// This follows the format specified in RFC 5321 Section 4.4 and RFC 6531 Section 3.7.3.
+// This follows the format specified in RFC 5321 and RFC 6531.
 func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Determine protocol per RFC 5321, RFC 6531 Section 3.7.3, and RFC 3848.
+	// Determine protocol per RFC 5321, RFC 6531, and RFC 3848.
 	// Protocol values: SMTP, ESMTP, ESMTPS, ESMTPA, ESMTPSA,
 	// UTF8SMTP, UTF8SMTPS, UTF8SMTPA, UTF8SMTPSA
 	var protocol string
@@ -450,7 +399,7 @@ func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 	useUTF8 := c.currentMail != nil && c.currentMail.Envelope.SMTPUTF8
 
 	if useUTF8 {
-		// RFC 6531 Section 3.7.3: Use UTF8SMTP variants
+		// Use UTF8SMTP variants
 		protocol = "UTF8SMTP"
 		if c.TLS.Enabled {
 			protocol = "UTF8SMTPS"
@@ -464,7 +413,7 @@ func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 		}
 	}
 
-	// Append 'A' for authenticated connections per RFC 3848
+	// Append 'A' for authenticated connections
 	if c.Auth.Authenticated {
 		protocol += "A"
 	}

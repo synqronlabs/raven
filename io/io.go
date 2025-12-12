@@ -11,8 +11,7 @@ var (
 	Err8BitIn7BitMode = errors.New("smtp: 8-bit data in 7BIT mode")
 )
 
-// readLine reads a single SMTP line with strict CRLF, length enforcement,
-// and 7-bit ASCII validation.
+// ReadLine reads a single SMTP line with strict validation.
 func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 	// FAST PATH: Try to read the full line in one go (zero-copy view).
 	line, err := reader.ReadSlice('\n')
@@ -67,7 +66,7 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 	return validateAndConvert(buf, max)
 }
 
-// validateAndConvert checks length, CRLF, and converts to string.
+// validateAndConvert checks length and CRLF.
 func validateAndConvert(b []byte, max int) (string, error) {
 	if len(b) > max {
 		// No need to drain here; if we have the whole line in 'b',
@@ -84,7 +83,7 @@ func validateAndConvert(b []byte, max int) (string, error) {
 	return string(b[:len(b)-2]), nil
 }
 
-// isASCII checks if the byte array contains any octet is not US-ASCII
+// isASCII checks if all bytes are US-ASCII.
 func isASCII(b []byte) bool {
 	for _, c := range b {
 		if c > 127 {
@@ -94,7 +93,7 @@ func isASCII(b []byte) bool {
 	return true
 }
 
-// drainLine discards the rest of the current line to recover protocol synchronization.
+// drainLine discards the rest of the current line.
 func drainLine(reader *bufio.Reader) {
 	for {
 		_, err := reader.ReadSlice('\n')

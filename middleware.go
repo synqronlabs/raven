@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// ---- Built-in Middleware ----
-
 // Logger returns middleware that logs all SMTP events.
 func Logger(logger *slog.Logger) Middleware {
 	return func(next HandlerFunc) HandlerFunc {
@@ -54,8 +52,6 @@ func Recovery(logger *slog.Logger) Middleware {
 	}
 }
 
-// ---- Rate Limiting Middleware ----
-
 // RateLimiter provides connection rate limiting.
 type RateLimiter struct {
 	mu       sync.Mutex
@@ -71,7 +67,6 @@ type rateLimitEntry struct {
 }
 
 // NewRateLimiter creates a rate limiter.
-// limit is the maximum connections per window from a single IP.
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		counts:   make(map[string]*rateLimitEntry),
@@ -137,9 +132,7 @@ func RateLimit(limiter *RateLimiter) Middleware {
 	}
 }
 
-// ---- IP Filtering Middleware ----
-
-// IPFilter allows or denies connections based on IP addresses.
+// IPFilter provides IP-based access control.
 type IPFilter struct {
 	mu        sync.RWMutex
 	allowList map[string]bool
@@ -206,8 +199,6 @@ func IPFilterMiddleware(filter *IPFilter) Middleware {
 		}
 	}
 }
-
-// ---- Domain Validation Middleware ----
 
 // DomainValidator validates sender and recipient domains.
 type DomainValidator struct {
@@ -288,8 +279,6 @@ func ValidateRecipient(validator *DomainValidator) HandlerFunc {
 	}
 }
 
-// ---- Helper Functions ----
-
 func extractIP(addr net.Addr) string {
 	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpAddr.IP.String()
@@ -301,8 +290,6 @@ func extractIP(addr net.Addr) string {
 	}
 	return host
 }
-
-// ---- Convenience Middleware Groups ----
 
 // SecureDefaults returns a set of middleware suitable for production use.
 // This includes logging, recovery, and rate limiting.

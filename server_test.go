@@ -137,7 +137,7 @@ func startTestServer(t *testing.T, config ServerConfig) (*Server, string) {
 	}()
 
 	// Wait for server to start
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		conn, err := net.Dial("tcp", addr)
 		if err == nil {
 			conn.Close()
@@ -224,6 +224,151 @@ func TestBasicSMTPSession(t *testing.T) {
 		}
 	}
 	mu.Unlock()
+}
+
+// TestDATANoTrailingNewline verifies that the DATA command does not append
+// an extra trailing CRLF at the end of the message. Per RFC 5321, each line
+// should end with CRLF, but there should be no additional CRLF after the
+// last line of the message body.
+func TestDATANoTrailingNewline(t *testing.T) {
+	var receivedMail *Mail
+	var mu sync.Mutex
+
+	config := DefaultServerConfig()
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			mu.Lock()
+			receivedMail = mail
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+	client.send("DATA")
+	client.expectCode(354)
+
+	// Send message content - note the body ends with "Last line" with no blank line after
+	client.send("Subject: Test")
+	client.send("")
+	client.send("First line")
+	client.send("Last line")
+	client.send(".")
+	client.expectCode(250)
+
+	client.send("QUIT")
+	client.expectCode(221)
+
+	// Verify the raw content
+	mu.Lock()
+	defer mu.Unlock()
+
+	if receivedMail == nil {
+		t.Fatal("Expected to receive mail, but got nil")
+	}
+
+	raw := receivedMail.Content.ToRaw()
+
+	// The expected raw content (excluding the Received header which is prepended)
+	// After the Received header, we expect:
+	// "Subject: Test\r\n\r\nFirst line\r\nLast line\r\n"
+	//
+	// The message should NOT end with "\r\n\r\n" (double CRLF)
+	// It should end with exactly one CRLF after "Last line"
+
+	rawStr := string(raw)
+
+	// Check that the message does not end with double CRLF
+	if strings.HasSuffix(rawStr, "\r\n\r\n") {
+		t.Errorf("Message should not end with double CRLF (trailing newline), got: %q", rawStr[len(rawStr)-20:])
+	}
+
+	// Check that the message ends with single CRLF (after "Last line")
+	if !strings.HasSuffix(rawStr, "Last line\r\n") {
+		t.Errorf("Message should end with 'Last line\\r\\n', got: %q", rawStr[len(rawStr)-20:])
+	}
+
+	// Additional check: verify body content is correctly formed
+	if !strings.Contains(rawStr, "First line\r\nLast line\r\n") {
+		t.Errorf("Body content malformed, got: %q", rawStr)
+	}
+}
+
+// TestDATAPreservesTrailingBlankLine verifies that when a message intentionally
+// ends with a blank line, it is preserved (as a single CRLF) but not doubled.
+func TestDATAPreservesTrailingBlankLine(t *testing.T) {
+	var receivedMail *Mail
+	var mu sync.Mutex
+
+	config := DefaultServerConfig()
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			mu.Lock()
+			receivedMail = mail
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+	client.send("DATA")
+	client.expectCode(354)
+
+	// Send message content with an intentional blank line at the end of body
+	client.send("Subject: Test")
+	client.send("")
+	client.send("Body content")
+	client.send("") // Intentional blank line at end of body
+	client.send(".")
+	client.expectCode(250)
+
+	client.send("QUIT")
+	client.expectCode(221)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if receivedMail == nil {
+		t.Fatal("Expected to receive mail, but got nil")
+	}
+
+	rawStr := string(receivedMail.Content.ToRaw())
+
+	// The body should end with "Body content\r\n\r\n" (content + blank line)
+	// but NOT "Body content\r\n\r\n\r\n" (content + blank line + extra)
+	if !strings.HasSuffix(rawStr, "Body content\r\n\r\n") {
+		t.Errorf("Message body should end with 'Body content\\r\\n\\r\\n', got suffix: %q", rawStr[len(rawStr)-30:])
+	}
+
+	// Count trailing CRLFs to ensure there's exactly 2 (one for "Body content", one for blank line)
+	suffix := rawStr[len(rawStr)-6:]
+	if suffix != "nt\r\n\r\n" { // "content\r\n\r\n" ending
+		t.Errorf("Unexpected suffix, expected 'nt\\r\\n\\r\\n', got: %q", suffix)
+	}
 }
 
 func TestHELO(t *testing.T) {
@@ -1071,9 +1216,15 @@ func TestBDATMultipleChunks(t *testing.T) {
 	if receivedMail == nil {
 		t.Error("Expected to receive mail")
 	} else {
-		expectedContent := chunk1 + chunk2 + chunk3
-		if string(receivedMail.Content.Raw) != expectedContent {
-			t.Errorf("Expected content %q, got %q", expectedContent, string(receivedMail.Content.Raw))
+		// Verify the parsed content matches what was sent
+		expectedBody := "This is the body.\r\n"
+		if string(receivedMail.Content.Body) != expectedBody {
+			t.Errorf("Expected body %q, got %q", expectedBody, string(receivedMail.Content.Body))
+		}
+		// Verify Subject header was parsed
+		subject := receivedMail.Content.Headers.Get("Subject")
+		if subject != "Multi-chunk test" {
+			t.Errorf("Expected Subject 'Multi-chunk test', got %q", subject)
 		}
 	}
 	mu.Unlock()
@@ -1114,6 +1265,7 @@ func TestBDATNotAvailableWhenDisabled(t *testing.T) {
 func TestAuthExtensionAdvertised(t *testing.T) {
 	config := DefaultServerConfig()
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
+	config.EnableLoginAuth = true
 
 	server, addr := startTestServer(t, config)
 	defer server.Close()
@@ -1146,6 +1298,7 @@ func TestAuthExtensionAdvertised(t *testing.T) {
 func TestAuthPLAIN(t *testing.T) {
 	config := DefaultServerConfig()
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
+	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
 			if identity == "testuser" && password == "testpass" {
@@ -1213,6 +1366,7 @@ func TestAuthPLAINWithChallenge(t *testing.T) {
 func TestAuthLOGIN(t *testing.T) {
 	config := DefaultServerConfig()
 	config.AuthMechanisms = []string{"LOGIN"}
+	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
 			if identity == "loginuser" && password == "loginpass" {
@@ -1266,7 +1420,7 @@ func TestAuthFailed(t *testing.T) {
 
 	credentials := base64.StdEncoding.EncodeToString([]byte("\x00user\x00pass"))
 	client.send("AUTH PLAIN " + credentials)
-	client.expectCode(554) // Auth failed
+	client.expectCode(535) // RFC 4954: 535 for authentication credentials invalid
 
 	client.send("QUIT")
 	client.expectCode(221)
@@ -1359,7 +1513,7 @@ func startTLSTestServer(t *testing.T, config ServerConfig) (*Server, string) {
 	}()
 
 	// Wait for server to start (need TLS connection)
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
 		if err == nil {
 			conn.Close()
@@ -1472,6 +1626,7 @@ func TestImplicitTLSWithAuth(t *testing.T) {
 		Certificates: []tls.Certificate{cert},
 	}
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
+	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
 			if identity == "user" && password == "pass" {
@@ -1735,7 +1890,7 @@ func TestMaxRecipients(t *testing.T) {
 	client.expectCode(250)
 
 	// Add max recipients
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		client.send(fmt.Sprintf("RCPT TO:<rcpt%d@example.com>", i))
 		client.expectCode(250)
 	}
@@ -1772,7 +1927,7 @@ func TestMaxMessageSize(t *testing.T) {
 	// Build a large message body all at once
 	var msg strings.Builder
 	msg.WriteString("Subject: Large message\r\n\r\n")
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		msg.WriteString("This is line of padding text to make message large.\r\n")
 	}
 	msg.WriteString(".\r\n")
@@ -2304,6 +2459,7 @@ func TestRequireTLSHidesAuthWithoutTLS(t *testing.T) {
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	config.RequireTLS = true
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
+	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
 			if identity == "user" && password == "pass" {
@@ -2388,7 +2544,7 @@ func startBuilderTestServer(t *testing.T, builder *ServerBuilder) (*Server, stri
 	}()
 
 	// Wait for server to start
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		conn, err := net.Dial("tcp", addr)
 		if err == nil {
 			conn.Close()
@@ -2712,5 +2868,226 @@ func TestMultipleMiddlewareChaining(t *testing.T) {
 		if i < len(values) && values[i] != exp {
 			t.Errorf("Value %d: expected %q, got %q", i, exp, values[i])
 		}
+	}
+}
+
+// TestREQUIRETLSExtensionAdvertisedAfterSTARTTLS tests that REQUIRETLS is advertised
+// in EHLO response only after TLS is established (per RFC 8689 Section 2).
+func TestREQUIRETLSExtensionAdvertisedAfterSTARTTLS(t *testing.T) {
+	cert, err := generateTestCert()
+	if err != nil {
+		t.Fatalf("Failed to generate test certificate: %v", err)
+	}
+
+	config := DefaultServerConfig()
+	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	lines := client.expectMultilineCode(250)
+
+	// REQUIRETLS should NOT be advertised before TLS
+	for _, line := range lines {
+		if strings.Contains(line, "REQUIRETLS") {
+			t.Error("REQUIRETLS should not be advertised before TLS is established")
+		}
+	}
+
+	// Upgrade to TLS
+	client.send("STARTTLS")
+	client.expectCode(220)
+
+	client.conn.SetDeadline(time.Now().Add(10 * time.Second))
+	tlsConn := tls.Client(client.conn, &tls.Config{InsecureSkipVerify: true})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake failed: %v", err)
+	}
+	client.conn = tlsConn
+	client.reader = bufio.NewReader(tlsConn)
+	client.conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	// Re-EHLO after TLS
+	client.send("EHLO client.example.com")
+	lines = client.expectMultilineCode(250)
+
+	// REQUIRETLS should now be advertised after TLS is established
+	foundRequireTLS := false
+	for _, line := range lines {
+		if strings.Contains(line, "REQUIRETLS") {
+			foundRequireTLS = true
+			break
+		}
+	}
+	if !foundRequireTLS {
+		t.Error("REQUIRETLS should be advertised after TLS is established")
+	}
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// TestREQUIRETLSParameterAcceptedWithTLS tests that MAIL FROM with REQUIRETLS
+// parameter is accepted when TLS is active.
+func TestREQUIRETLSParameterAcceptedWithTLS(t *testing.T) {
+	cert, err := generateTestCert()
+	if err != nil {
+		t.Fatalf("Failed to generate test certificate: %v", err)
+	}
+
+	var receivedMail *Mail
+	config := DefaultServerConfig()
+	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			receivedMail = mail
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// Upgrade to TLS
+	client.send("STARTTLS")
+	client.expectCode(220)
+
+	client.conn.SetDeadline(time.Now().Add(10 * time.Second))
+	tlsConn := tls.Client(client.conn, &tls.Config{InsecureSkipVerify: true})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake failed: %v", err)
+	}
+	client.conn = tlsConn
+	client.reader = bufio.NewReader(tlsConn)
+	client.conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	// Re-EHLO after TLS
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// MAIL FROM with REQUIRETLS should be accepted
+	client.send("MAIL FROM:<sender@example.com> REQUIRETLS")
+	client.expectCode(250)
+
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+
+	client.send("DATA")
+	client.expectCode(354)
+
+	client.send("From: sender@example.com")
+	client.send("To: recipient@example.com")
+	client.send("Subject: Test REQUIRETLS")
+	client.send("")
+	client.send("Test message with REQUIRETLS.")
+	client.send(".")
+	client.expectCode(250)
+
+	client.send("QUIT")
+	client.expectCode(221)
+
+	// Verify the RequireTLS flag was set on the envelope
+	if receivedMail == nil {
+		t.Fatal("Expected to receive mail")
+	}
+	if !receivedMail.Envelope.RequireTLS {
+		t.Error("Expected RequireTLS flag to be set on envelope")
+	}
+}
+
+// TestREQUIRETLSParameterRejectedWithoutTLS tests that MAIL FROM with REQUIRETLS
+// parameter is rejected when TLS is not active.
+func TestREQUIRETLSParameterRejectedWithoutTLS(t *testing.T) {
+	cert, err := generateTestCert()
+	if err != nil {
+		t.Fatalf("Failed to generate test certificate: %v", err)
+	}
+
+	config := DefaultServerConfig()
+	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// MAIL FROM with REQUIRETLS should be rejected without TLS
+	client.send("MAIL FROM:<sender@example.com> REQUIRETLS")
+	client.expectCode(554) // Transaction failed - TLS required
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// TestTLSRequiredHeaderProcessing tests that TLS-Required: No header is processed
+// and stored in the envelope for relay handling.
+func TestTLSRequiredHeaderProcessing(t *testing.T) {
+	var receivedMail *Mail
+	config := DefaultServerConfig()
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			receivedMail = mail
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+
+	client.send("RCPT TO:<admin@example.com>")
+	client.expectCode(250)
+
+	client.send("DATA")
+	client.expectCode(354)
+
+	// Send message with TLS-Required: No header
+	client.send("From: sender@example.com")
+	client.send("To: admin@example.com")
+	client.send("Subject: Certificate problem")
+	client.send("TLS-Required: No")
+	client.send("")
+	client.send("Your TLS certificate seems to be expired.")
+	client.send(".")
+	client.expectCode(250)
+
+	client.send("QUIT")
+	client.expectCode(221)
+
+	// Verify the TLS-OPTIONAL flag was set
+	if receivedMail == nil {
+		t.Fatal("Expected to receive mail")
+	}
+	if receivedMail.Envelope.ExtensionParams == nil {
+		t.Fatal("Expected ExtensionParams to be set")
+	}
+	if receivedMail.Envelope.ExtensionParams["TLS-OPTIONAL"] != "yes" {
+		t.Error("Expected TLS-OPTIONAL flag to be set when TLS-Required: No header present")
 	}
 }

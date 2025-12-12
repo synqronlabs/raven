@@ -9,9 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	ravenio "github.com/synqronlabs/raven/io"
@@ -61,7 +64,6 @@ func NewServer(config ServerConfig) (*Server, error) {
 		return nil, errors.New("smtp: hostname is required")
 	}
 
-	// Apply defaults
 	if config.Addr == "" {
 		config.Addr = ":25"
 	}
@@ -122,6 +124,19 @@ func (s *Server) ListenAndServeTLS() error {
 func (s *Server) Serve(listener net.Listener) error {
 	s.listener = listener
 
+	// Set up signal handling for graceful shutdown if enabled
+	if s.config.GracefulShutdown {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			sig := <-sigChan
+			s.config.Logger.Info("received signal, shutting down", slog.String("signal", sig.String()))
+			ctx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+			defer cancel()
+			_ = s.Shutdown(ctx)
+		}()
+	}
+
 	s.config.Logger.Info("SMTP server started",
 		slog.String("addr", listener.Addr().String()),
 		slog.String("hostname", s.config.Hostname),
@@ -137,7 +152,6 @@ func (s *Server) Serve(listener net.Listener) error {
 			continue
 		}
 
-		// Check connection limit
 		if s.config.MaxConnections > 0 && s.connCount.Load() >= int64(s.config.MaxConnections) {
 			s.config.Logger.Warn("connection limit reached",
 				slog.String("remote", conn.RemoteAddr().String()),
@@ -184,7 +198,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Close immediately closes the server and all connections.
+// Close immediately closes the server and all connections without sending shutdown responses.
+// Use this for immediate termination. For graceful shutdown, use Shutdown() instead.
 func (s *Server) Close() error {
 	s.closed.Store(true)
 	s.cancel()
@@ -192,9 +207,6 @@ func (s *Server) Close() error {
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
-
-	// Send 421 response to all connected clients before closing
-	s.sendShutdownResponse()
 
 	s.connMu.Lock()
 	for conn := range s.connections {
@@ -206,7 +218,6 @@ func (s *Server) Close() error {
 }
 
 // sendShutdownResponse sends a 421 response to all connected clients and closes them.
-// Per RFC 5321, servers should send 421 before closing connections.
 func (s *Server) sendShutdownResponse() {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
@@ -214,10 +225,7 @@ func (s *Server) sendShutdownResponse() {
 	for conn := range s.connections {
 		// Set a short write deadline to avoid blocking shutdown
 		_ = conn.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		resp := Response{
-			Code:    CodeServiceUnavailable,
-			Message: fmt.Sprintf("%s Service shutting down [%s]", s.config.Hostname, conn.Trace.ID),
-		}
+		resp := ResponseServiceUnavailable(s.config.Hostname, fmt.Sprintf("Service shutting down [%s]", conn.Trace.ID))
 		line := resp.String() + "\r\n"
 		_, _ = conn.writer.WriteString(line)
 		_ = conn.writer.Flush()
@@ -240,7 +248,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		DataTimeout:    s.config.DataTimeout,
 	}
 
-	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength/16)
+	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength/4)
 	conn.Trace.ID = utils.GenerateID()
 
 	// Check if implicit TLS
@@ -256,7 +264,6 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		}
 	}
 
-	// Track connection
 	s.connMu.Lock()
 	s.connections[conn] = struct{}{}
 	s.connMu.Unlock()
@@ -269,7 +276,6 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		s.connCount.Add(-1)
 		_ = conn.Close()
 
-		// OnDisconnect callback
 		if s.config.Callbacks != nil && s.config.Callbacks.OnDisconnect != nil {
 			s.config.Callbacks.OnDisconnect(conn.Context(), conn)
 		}
@@ -282,22 +288,17 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	logger.Info("client connected")
 
-	// OnConnect callback
 	if s.config.Callbacks != nil && s.config.Callbacks.OnConnect != nil {
 		if err := s.config.Callbacks.OnConnect(conn.Context(), conn); err != nil {
 			logger.Warn("connection rejected", slog.Any("error", err))
-			s.writeResponse(conn, Response{
-				Code:    CodeTransactionFailed,
-				Message: "Connection rejected",
-			})
+			resp := ResponseTransactionFailed("Connection rejected", ESCPermFailure)
+			s.writeResponse(conn, resp)
 			return
 		}
 	}
 
-	s.writeResponse(conn, Response{
-		Code:    CodeServiceReady,
-		Message: fmt.Sprintf("%s ESMTP ready [%s]", s.config.Hostname, conn.Trace.ID),
-	})
+	resp := ResponseServiceReady(s.config.Hostname, fmt.Sprintf("ESMTP ready [%s]", conn.Trace.ID))
+	s.writeResponse(conn, resp)
 
 	// Main command loop
 	s.commandLoop(conn, logger)
@@ -311,22 +312,18 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 // commandLoop processes commands from the client.
 func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
-	reader := bufio.NewReader(conn.reader)
-
 	for {
-		// Check for shutdown
 		select {
 		case <-conn.Context().Done():
 			return
 		default:
 		}
 
-		// Set read deadline
 		if err := conn.conn.SetReadDeadline(time.Now().Add(s.config.ReadTimeout)); err != nil {
 			return
 		}
 
-		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, false)
+		line, err := ravenio.ReadLine(conn.reader, s.config.MaxLineLength, false)
 		if err != nil {
 			if err == io.EOF || errors.Is(err, net.ErrClosed) {
 				return
@@ -358,53 +355,38 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 
 		conn.UpdateActivity()
 
-		// Check command limit
 		if conn.Limits.MaxCommands > 0 && conn.Trace.CommandCount > conn.Limits.MaxCommands {
-			s.writeResponse(conn, Response{
-				Code:    CodeServiceUnavailable,
-				Message: "Too many commands",
-			})
+			resp := ResponseServiceUnavailable(s.config.Hostname, "Too many commands")
+			s.writeResponse(conn, resp)
 			return
 		}
 
-		// Check error limit
 		if conn.Limits.MaxErrors > 0 && conn.ErrorCount() >= conn.Limits.MaxErrors {
-			s.writeResponse(conn, Response{
-				Code:    CodeServiceUnavailable,
-				Message: "Too many errors",
-			})
+			resp := ResponseServiceUnavailable(s.config.Hostname, "Too many errors")
+			s.writeResponse(conn, resp)
 			return
 		}
 
 		cmd, args, err := parseCommand(line)
 		if err != nil {
-			s.writeResponse(conn, Response{
-				Code:    CodeSyntaxError,
-				Message: fmt.Sprintf("Invalid command syntax: %s", line),
-			})
+			resp := ResponseSyntaxError(fmt.Sprintf("Invalid command syntax: %s", line))
+			s.writeResponse(conn, resp)
 			continue
 		}
 
 		logger.Debug("command received", slog.String("cmd", string(cmd)), slog.String("args", args))
 
-		response := s.handleCommand(conn, cmd, args, reader, logger)
+		response := s.handleCommand(conn, cmd, args, conn.reader, logger)
 		if response != nil {
 			s.writeResponse(conn, *response)
 		}
 
-		// After STARTTLS, we need to refresh the reader to use the TLS connection
-		if cmd == CmdStartTLS && conn.IsTLS() {
-			reader = bufio.NewReader(conn.reader)
-		}
-
-		// Check if connection should close
 		if conn.State() == StateQuit {
 			return
 		}
 	}
 }
 
-// handleCommand processes a single SMTP command.
 func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
 	switch cmd {
 	case CmdHelo:
@@ -428,7 +410,8 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 	case CmdHelp:
 		return s.handleHelp(conn, args)
 	case CmdNoop:
-		return &Response{Code: CodeOK, Message: "OK"}
+		resp := ResponseOK("OK", "")
+		return &resp
 	case CmdQuit:
 		return s.handleQuit(conn)
 	case CmdStartTLS:
@@ -436,7 +419,8 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 	case CmdAuth:
 		return s.handleAuth(conn, args, reader)
 	default:
-		return &Response{Code: CodeCommandUnrecognized, Message: fmt.Sprintf("Command not recognized: %s", cmd)}
+		resp := ResponseCommandNotRecognized(string(cmd))
+		return &resp
 	}
 }
 

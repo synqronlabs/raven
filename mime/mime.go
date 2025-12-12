@@ -27,26 +27,22 @@ const (
 	EncodingBase64 ContentTransferEncoding = "base64"
 )
 
-// ValidCompositeEncodings contains the only valid Content-Transfer-Encoding values
-// for composite types (multipart, message) per RFC 2045 Section 6.4.
+// ValidCompositeEncodings lists valid encodings for composite types (RFC 2045).
 var ValidCompositeEncodings = map[ContentTransferEncoding]bool{
 	Encoding7Bit:   true,
 	Encoding8Bit:   true,
 	EncodingBinary: true,
 }
 
-// ErrInvalidCompositeEncoding is returned when a composite type (multipart/message)
-// has an invalid Content-Transfer-Encoding per RFC 2045 Section 6.4.
-var ErrInvalidCompositeEncoding = errors.New("composite types (multipart, message) can only use 7bit, 8bit, or binary encoding per RFC 2045 Section 6.4")
+// ErrInvalidCompositeEncoding is returned for invalid composite type encodings (RFC 2045).
+var ErrInvalidCompositeEncoding = errors.New("composite types (multipart, message) can only use 7bit, 8bit, or binary encoding")
 
 // IsCompositeType returns true if the media type is a composite type (multipart or message).
 func IsCompositeType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "multipart/") || strings.HasPrefix(mediaType, "message/")
 }
 
-// ValidateCompositeEncoding validates that composite types only use allowed encodings.
-// Per RFC 2045 Section 6.4, multipart and message types can ONLY use 7bit, 8bit, or binary.
-// Returns an error if the encoding is invalid for a composite type.
+// ValidateCompositeEncoding validates composite type encodings (RFC 2045).
 func ValidateCompositeEncoding(mediaType string, encoding ContentTransferEncoding) error {
 	if !IsCompositeType(mediaType) {
 		return nil // Non-composite types can use any encoding
@@ -62,41 +58,21 @@ func ValidateCompositeEncoding(mediaType string, encoding ContentTransferEncodin
 
 // Header represents a MIME header field.
 type Header struct {
-	// Name is the header field name (e.g., "From", "Subject").
-	Name string `json:"name"`
-	// Value is the header field value.
+	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
-// Part represents a MIME body part for multipart messages (RFC 2045, RFC 2046).
+// Part represents a MIME body part (RFC 2045, RFC 2046).
 type Part struct {
-	// Headers contains the MIME headers for this part.
-	Headers []Header `json:"headers,omitempty"`
-
-	// ContentType is the MIME content type (e.g., "text/plain", "image/png").
-	ContentType string `json:"content_type,omitempty"`
-
-	// ContentTransferEncoding specifies how the body is encoded.
-	// Defaults to "7bit" per RFC 2045 Section 6.1 when not specified.
+	Headers                 []Header                `json:"headers,omitempty"`
+	ContentType             string                  `json:"content_type,omitempty"`
 	ContentTransferEncoding ContentTransferEncoding `json:"content_transfer_encoding,omitempty"`
-
-	// Charset is the character set for text parts (e.g., "utf-8", "iso-8859-1").
-	Charset string `json:"charset,omitempty"`
-
-	// Filename is the suggested filename for attachment parts.
-	Filename string `json:"filename,omitempty"`
-
-	// ContentID is the Content-ID for inline parts (used in multipart/related).
-	ContentID string `json:"content_id,omitempty"`
-
-	// ContentDescription is the optional description of the body part (RFC 2045 Section 8).
-	ContentDescription string `json:"content_description,omitempty"`
-
-	// Body is the decoded content of this part.
-	Body []byte `json:"body,omitempty"`
-
-	// Parts contains nested parts for multipart content types.
-	Parts []*Part `json:"parts,omitempty"`
+	Charset                 string                  `json:"charset,omitempty"`
+	Filename                string                  `json:"filename,omitempty"`
+	ContentID               string                  `json:"content_id,omitempty"`
+	ContentDescription      string                  `json:"content_description,omitempty"`
+	Body                    []byte                  `json:"body,omitempty"`
+	Parts                   []*Part                 `json:"parts,omitempty"`
 }
 
 // HeaderGetter is an interface for types that can retrieve header values.
@@ -108,7 +84,7 @@ type HeaderGetter interface {
 func ParseSinglePart(headers HeaderGetter, body []byte, mediaType string, params map[string]string) (*Part, error) {
 	part := &Part{
 		ContentType:             mediaType,
-		ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
+		ContentTransferEncoding: Encoding7Bit,
 		Body:                    body,
 	}
 
@@ -126,7 +102,6 @@ func ParseSinglePart(headers HeaderGetter, body []byte, mediaType string, params
 		part.ContentID = strings.Trim(contentID, "<>")
 	}
 
-	// Parse Content-Description per RFC 2045 Section 8
 	contentDesc := headers.Get("Content-Description")
 	if contentDesc != "" {
 		part.ContentDescription = contentDesc
@@ -155,7 +130,7 @@ func ParseMultipart(body []byte, mediaType string, params map[string]string) (*P
 
 	rootPart := &Part{
 		ContentType:             mediaType,
-		ContentTransferEncoding: Encoding7Bit,        // RFC 2045 default
+		ContentTransferEncoding: Encoding7Bit,
 		Parts:                   make([]*Part, 0, 4), // Pre-allocate for common case
 	}
 
@@ -195,7 +170,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 	mimePart := &Part{
 		Headers:                 make([]Header, 0, headerCount),
-		ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
+		ContentTransferEncoding: Encoding7Bit,
 	}
 
 	// Convert textproto.MIMEHeader to our Headers type
@@ -210,7 +185,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 	contentType := part.Header.Get("Content-Type")
 	if contentType == "" {
-		// Default to text/plain per RFC 2045 Section 5.2
+		// Default to text/plain per RFC 2045
 		mimePart.ContentType = "text/plain"
 		mimePart.Charset = "us-ascii"
 	} else {
@@ -238,7 +213,6 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 				return nil, fmt.Errorf("error reading nested multipart body: %w", err)
 			}
 
-			// Parse nested multipart
 			nestedReader := multipart.NewReader(bytes.NewReader(body.Bytes()), boundary)
 			mimePart.Parts = make([]*Part, 0, 4) // Pre-allocate for common case
 
@@ -273,7 +247,6 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 		mimePart.ContentID = strings.Trim(contentID, "<>")
 	}
 
-	// Parse Content-Description per RFC 2045 Section 8
 	contentDesc := part.Header.Get("Content-Description")
 	if contentDesc != "" {
 		mimePart.ContentDescription = contentDesc
@@ -307,11 +280,10 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 func Parse(headers HeaderGetter, body []byte) (*Part, error) {
 	contentType := headers.Get("Content-Type")
 	if contentType == "" {
-		// No Content-Type header - treat as text/plain (RFC 2045 Section 5.2 default)
 		part := &Part{
 			ContentType:             "text/plain",
 			Charset:                 "us-ascii",
-			ContentTransferEncoding: Encoding7Bit, // RFC 2045 Section 6.1 default
+			ContentTransferEncoding: Encoding7Bit,
 			Body:                    body,
 		}
 		// Check for Content-Description even without Content-Type
@@ -323,7 +295,6 @@ func Parse(headers HeaderGetter, body []byte) (*Part, error) {
 
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		// RFC 2045 Section 5.2: assume plain US-ASCII text on invalid Content-Type
 		part := &Part{
 			ContentType:             "text/plain",
 			Charset:                 "us-ascii",
@@ -383,17 +354,14 @@ func (p *Part) ToBytes() ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
 
 	for _, part := range p.Parts {
-		// Write boundary delimiter
 		buf.WriteString("--")
 		buf.WriteString(boundary)
 		buf.WriteString("\r\n")
 
-		// Write part headers
 		if err := writePartHeaders(buf, part); err != nil {
 			return nil, err
 		}
 
-		// Write blank line between headers and body
 		buf.WriteString("\r\n")
 
 		// Write part body (recursively for nested multipart)
@@ -405,7 +373,6 @@ func (p *Part) ToBytes() ([]byte, error) {
 		buf.WriteString("\r\n")
 	}
 
-	// Write closing boundary
 	buf.WriteString("--")
 	buf.WriteString(boundary)
 	buf.WriteString("--\r\n")
@@ -415,7 +382,6 @@ func (p *Part) ToBytes() ([]byte, error) {
 
 // writePartHeaders writes the headers for a MIME part.
 func writePartHeaders(buf *bytes.Buffer, part *Part) error {
-	// If the part has explicit headers, use them
 	if len(part.Headers) > 0 {
 		for _, h := range part.Headers {
 			buf.WriteString(h.Name)
@@ -426,7 +392,6 @@ func writePartHeaders(buf *bytes.Buffer, part *Part) error {
 		return nil
 	}
 
-	// Otherwise, reconstruct headers from part properties
 	if part.ContentType != "" {
 		buf.WriteString("Content-Type: ")
 		buf.WriteString(part.ContentType)
@@ -472,7 +437,6 @@ func writePartHeaders(buf *bytes.Buffer, part *Part) error {
 		buf.WriteString(">\r\n")
 	}
 
-	// Write Content-Description per RFC 2045 Section 8
 	if part.ContentDescription != "" {
 		buf.WriteString("Content-Description: ")
 		buf.WriteString(part.ContentDescription)

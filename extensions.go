@@ -19,103 +19,33 @@ const (
 
 // ExtensionInfo provides metadata about an SMTP extension.
 type ExtensionInfo struct {
-	// Name is the extension keyword (e.g., "DSN", "CHUNKING").
-	Name Extension
-
-	// Type indicates whether the extension is intrinsic or opt-in.
-	Type ExtensionType
-
-	// RFC is the defining RFC number(s).
-	RFC string
-
-	// Description provides a brief explanation of the extension.
-	Description string
-
-	// Dependencies lists other extensions this one requires.
+	Name         Extension
+	Type         ExtensionType
+	RFC          string
+	Description  string
 	Dependencies []Extension
 }
 
-// IntrinsicExtensions are always enabled on any Raven server.
-// These represent fundamental modern SMTP capabilities.
+// IntrinsicExtensions are always enabled.
 var IntrinsicExtensions = []ExtensionInfo{
-	{
-		Name:        ExtEnhancedStatusCodes,
-		Type:        ExtTypeIntrinsic,
-		RFC:         "RFC 2034",
-		Description: "Enhanced status codes for more descriptive error messages",
-	},
-	{
-		Name:        Ext8BitMIME,
-		Type:        ExtTypeIntrinsic,
-		RFC:         "RFC 6152",
-		Description: "8-bit MIME transport support",
-	},
-	{
-		Name:         ExtSMTPUTF8,
-		Type:         ExtTypeIntrinsic,
-		RFC:          "RFC 6531",
-		Description:  "Internationalized email addresses (UTF-8 support)",
-		Dependencies: []Extension{Ext8BitMIME}, // RFC 6531 requires 8BITMIME
-	},
-	{
-		Name:        ExtPipelining,
-		Type:        ExtTypeIntrinsic,
-		RFC:         "RFC 2920",
-		Description: "Command pipelining for improved performance",
-	},
+	{ExtEnhancedStatusCodes, ExtTypeIntrinsic, "RFC 2034", "Enhanced status codes", nil},
+	{Ext8BitMIME, ExtTypeIntrinsic, "RFC 6152", "8-bit MIME transport", nil},
+	{ExtSMTPUTF8, ExtTypeIntrinsic, "RFC 6531", "Internationalized email", []Extension{Ext8BitMIME}},
+	{ExtPipelining, ExtTypeIntrinsic, "RFC 2920", "Command pipelining", nil},
+	{ExtRequireTLS, ExtTypeIntrinsic, "RFC 8689", "Require TLS for transmission", []Extension{ExtSTARTTLS}},
 }
 
 // OptInExtensions require explicit configuration.
 var OptInExtensions = []ExtensionInfo{
-	{
-		Name:        ExtSTARTTLS,
-		Type:        ExtTypeOptIn,
-		RFC:         "RFC 3207",
-		Description: "TLS encryption upgrade via STARTTLS command",
-	},
-	{
-		Name:        ExtAuth,
-		Type:        ExtTypeOptIn,
-		RFC:         "RFC 4954",
-		Description: "SMTP authentication (SASL)",
-	},
-	{
-		Name:        ExtSize,
-		Type:        ExtTypeOptIn,
-		RFC:         "RFC 1870",
-		Description: "Message size declaration",
-	},
-	{
-		Name:        ExtDSN,
-		Type:        ExtTypeOptIn,
-		RFC:         "RFC 3461",
-		Description: "Delivery Status Notifications",
-	},
-	{
-		Name:        ExtChunking,
-		Type:        ExtTypeOptIn,
-		RFC:         "RFC 3030",
-		Description: "Chunked message transfer via BDAT command",
-	},
-	{
-		Name:         ExtBinaryMIME,
-		Type:         ExtTypeOptIn,
-		RFC:          "RFC 3030",
-		Description:  "Binary MIME content transfer",
-		Dependencies: []Extension{ExtChunking}, // BINARYMIME requires CHUNKING
-	},
+	{ExtSTARTTLS, ExtTypeOptIn, "RFC 3207", "TLS encryption upgrade", nil},
+	{ExtAuth, ExtTypeOptIn, "RFC 4954", "SMTP authentication", nil},
+	{ExtSize, ExtTypeOptIn, "RFC 1870", "Message size declaration", nil},
+	{ExtDSN, ExtTypeOptIn, "RFC 3461", "Delivery Status Notifications", nil},
+	{ExtChunking, ExtTypeOptIn, "RFC 3030", "Chunked message transfer", nil},
+	{ExtBinaryMIME, ExtTypeOptIn, "RFC 3030", "Binary MIME transfer", []Extension{ExtChunking}},
 }
 
-// ---- Extension Configuration Helpers ----
-
 // DSN enables Delivery Status Notifications (RFC 3461).
-// DSN allows senders to request delivery notifications.
-//
-// Example:
-//
-//	server := raven.New("mail.example.com").
-//	    Extension(raven.DSN()).
-//	    Build()
 func DSN() ExtensionConfig {
 	return ExtensionConfig{
 		Name:    ExtDSN,
@@ -123,15 +53,7 @@ func DSN() ExtensionConfig {
 	}
 }
 
-// Chunking enables the CHUNKING/BDAT extension (RFC 3030).
-// This allows large messages to be sent in chunks and enables
-// binary content transfer (BINARYMIME).
-//
-// Example:
-//
-//	server := raven.New("mail.example.com").
-//	    Extension(raven.Chunking()).
-//	    Build()
+// Chunking enables CHUNKING/BDAT (RFC 3030).
 func Chunking() ExtensionConfig {
 	return ExtensionConfig{
 		Name:    ExtChunking,
@@ -140,14 +62,6 @@ func Chunking() ExtensionConfig {
 }
 
 // ChunkingWithOptions enables CHUNKING with custom options.
-//
-// Example:
-//
-//	server := raven.New("mail.example.com").
-//	    Extension(raven.ChunkingWithOptions(ChunkingOptions{
-//	        MaxChunkSize: 10 * 1024 * 1024, // 10MB max chunk
-//	    })).
-//	    Build()
 func ChunkingWithOptions(opts ChunkingOptions) ExtensionConfig {
 	return ExtensionConfig{
 		Name:    ExtChunking,
@@ -158,21 +72,12 @@ func ChunkingWithOptions(opts ChunkingOptions) ExtensionConfig {
 	}
 }
 
-// ChunkingOptions holds configuration for the CHUNKING extension.
+// ChunkingOptions holds configuration for CHUNKING.
 type ChunkingOptions struct {
-	// MaxChunkSize is the maximum size of a single BDAT chunk.
-	// 0 means no limit (uses MaxMessageSize).
-	MaxChunkSize int64
+	MaxChunkSize int64 // Maximum BDAT chunk size (0 = no limit)
 }
 
-// Size enables the SIZE extension (RFC 1870) with a specific limit.
-// If maxSize is 0, no size limit is advertised.
-//
-// Example:
-//
-//	server := raven.New("mail.example.com").
-//	    Extension(raven.Size(25 * 1024 * 1024)). // 25MB
-//	    Build()
+// Size enables SIZE (RFC 1870). If maxSize is 0, no limit is advertised.
 func Size(maxSize int64) ExtensionConfig {
 	return ExtensionConfig{
 		Name:    ExtSize,
@@ -183,10 +88,7 @@ func Size(maxSize int64) ExtensionConfig {
 	}
 }
 
-// ---- Extension Group Helpers ----
-
 // WithAllExtensions returns all opt-in extensions.
-// Use this for maximum compatibility with clients.
 func WithAllExtensions() []ExtensionConfig {
 	return []ExtensionConfig{
 		DSN(),
@@ -195,15 +97,12 @@ func WithAllExtensions() []ExtensionConfig {
 }
 
 // WithSubmissionExtensions returns extensions suitable for a mail submission agent (MSA).
-// This includes extensions useful for authenticated submission on port 587.
 func WithSubmissionExtensions() []ExtensionConfig {
 	return []ExtensionConfig{
 		// DSN is useful for submission
 		DSN(),
 	}
 }
-
-// ---- Extension Validation ----
 
 // ValidateExtensions checks that all extension dependencies are met.
 func ValidateExtensions(extensions []ExtensionConfig) error {
@@ -214,12 +113,10 @@ func ValidateExtensions(extensions []ExtensionConfig) error {
 		}
 	}
 
-	// Add intrinsic extensions
 	for _, ext := range IntrinsicExtensions {
 		enabled[ext.Name] = true
 	}
 
-	// Check dependencies
 	for _, ext := range OptInExtensions {
 		if enabled[ext.Name] {
 			for _, dep := range ext.Dependencies {
@@ -232,8 +129,6 @@ func ValidateExtensions(extensions []ExtensionConfig) error {
 
 	return nil
 }
-
-// ---- Extension Registry ----
 
 // ExtensionRegistry holds the enabled extensions for a server.
 type ExtensionRegistry struct {
@@ -259,7 +154,6 @@ func NewExtensionRegistry() *ExtensionRegistry {
 
 // Enable adds an extension to the registry.
 func (r *ExtensionRegistry) Enable(config ExtensionConfig) error {
-	// Find extension info
 	var info *ExtensionInfo
 	for i := range OptInExtensions {
 		if OptInExtensions[i].Name == config.Name {
@@ -278,7 +172,6 @@ func (r *ExtensionRegistry) Enable(config ExtensionConfig) error {
 		return fmt.Errorf("unknown extension: %s", config.Name)
 	}
 
-	// Check dependencies
 	for _, dep := range info.Dependencies {
 		if _, ok := r.extensions[dep]; !ok {
 			return fmt.Errorf("extension %s requires %s to be enabled first", config.Name, dep)

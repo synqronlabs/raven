@@ -2,19 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/synqronlabs/raven.svg)](https://pkg.go.dev/github.com/synqronlabs/raven)
 
-Raven is a high-performance, RFC-compliant SMTP server library for Go. It provides a flexible and extensible framework for building mail transfer agents (MTAs), mail submission agents (MSAs), and custom email processing applications.
-
-## Features
-
-- **Full RFC 5321 Compliance**: Complete SMTP protocol implementation
-- **Fluent Builder API**: Gin-style chainable configuration and handler registration
-- **Modern Extensions**: STARTTLS, AUTH, 8BITMIME, SMTPUTF8, PIPELINING, SIZE, DSN, CHUNKING
-- **Middleware Support**: Composable middleware for logging, rate limiting, IP filtering
-- **Handler Chaining**: Multiple handlers per event with `ctx.Next()` pattern
-- **Resource Limits**: Built-in protection with configurable limits
-- **Concurrent Handling**: Efficiently handles multiple simultaneous connections
-- **Structured Logging**: Integration with Go's `slog` package
-- **Security**: SMTP smuggling protection, TLS support, SASL authentication
+Raven is a high-performance, RFC-compliant SMTP server and client library for Go. It provides a flexible and extensible framework for building mail transfer agents (MTAs), mail submission agents (MSAs), and custom email processing applications.
 
 ## Installation
 
@@ -23,8 +11,6 @@ go get github.com/synqronlabs/raven
 ```
 
 ## Quick Start
-
-### Builder API (Recommended)
 
 ```go
 package main
@@ -61,11 +47,13 @@ func main() {
         log.Fatal(err)
     }
 
-    log.Fatal(server.ListenAndServe())
+    if err := server.ListenAndServe(); err != raven.ErrServerClosed {
+        log.Fatal(err)
+    }
 }
 ```
 
-### Traditional Callbacks API
+### Using Callbacks
 
 ```go
 config := raven.DefaultServerConfig()
@@ -85,7 +73,7 @@ server.ListenAndServe()
 
 ## SMTP Extensions
 
-Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** (must be enabled):
+Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** (must be enabled manually):
 
 ### Intrinsic Extensions (Always Enabled)
 
@@ -95,6 +83,7 @@ Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** 
 | 8BITMIME | RFC 6152 | 8-bit content support |
 | SMTPUTF8 | RFC 6531 | Internationalized email |
 | PIPELINING | RFC 2920 | Command pipelining |
+| REQUIRETLS | RFC 8689 | Require TLS for message transmission (advertised after STARTTLS) |
 
 ### Opt-in Extensions
 
@@ -120,12 +109,6 @@ server := raven.New("mail.example.com").
 ## Documentation
 
 - **[API Reference](https://pkg.go.dev/github.com/synqronlabs/raven)** - Complete API documentation
-- **[API Guide](doc/api-guide.md)** - Builder API and middleware guide
-- **[Getting Started](doc/getting-started.md)** - Detailed walkthrough
-- **[Configuration](doc/configuration.md)** - All configuration options
-- **[Callbacks](doc/callbacks.md)** - Event handling reference
-- **[TLS & Auth](doc/tls-and-auth.md)** - Security setup
-- **[Examples](doc/examples.md)** - Complete working examples
 
 ## Middleware
 
@@ -169,39 +152,156 @@ func validateDomain(ctx *raven.Context) error {
 }
 ```
 
-## Complete Example: Mail Submission Agent
+## SMTP Client
+
+Raven includes a full-featured SMTP client with extension support, connection pooling, and a fluent mail builder API.
+
+### Quick Send
 
 ```go
-server, _ := raven.New("smtp.example.com").
-    Addr(":587").
-    Logger(logger).
-    TLS(tlsConfig).
-    RequireTLS().
-    Auth([]string{"PLAIN", "LOGIN"}, authenticate).
-    RequireAuth().
-    MaxMessageSize(25 * 1024 * 1024).
-    Extension(raven.DSN()).
-    Use(raven.SecureDefaults(logger)...).
-    OnMailFrom(raven.ValidateSender(domains)).
-    OnRcptTo(raven.ValidateRecipient(domains)).
-    OnMessage(queueForDelivery).
+// Simplest way to send an email
+err := raven.QuickSend(
+    "smtp.example.com:587",
+    &raven.ClientAuth{Username: "user", Password: "pass"},
+    "sender@example.com",
+    []string{"recipient@example.com"},
+    "Hello",
+    "This is the message body.",
+)
+```
+
+### Mail Builder
+
+Build emails fluently with full RFC compliance:
+
+```go
+mail, err := raven.NewMailBuilder().
+    From("Sender Name <sender@example.com>").
+    To("recipient1@example.com", "recipient2@example.com").
+    Cc("cc@example.com").
+    ReplyTo("reply@example.com").
+    Subject("Meeting Tomorrow").
+    TextBody("Don't forget the meeting!").
+    Priority(1). // High priority
     Build()
 ```
 
-## RFC Compliance
+### Client with Extension Probing
 
-Raven implements the following RFCs:
+```go
+// Create client
+client := raven.NewClient(&raven.ClientConfig{
+    LocalName: "client.example.com",
+    Auth: &raven.ClientAuth{
+        Username: "user",
+        Password: "password",
+    },
+})
 
-- **RFC 5321** - Simple Mail Transfer Protocol
-- **RFC 3207** - SMTP Service Extension for Secure SMTP over TLS
-- **RFC 4954** - SMTP Service Extension for Authentication
-- **RFC 6152** - SMTP Service Extension for 8-bit MIME Transport
-- **RFC 6531** - SMTP Extension for Internationalized Email
-- **RFC 2920** - SMTP Service Extension for Command Pipelining
-- **RFC 1870** - SMTP Service Extension for Message Size Declaration
-- **RFC 3461** - SMTP Service Extension for Delivery Status Notifications
-- **RFC 3030** - SMTP Service Extensions for Large and Binary MIME Messages
-- **RFC 2034** - SMTP Service Extension for Returning Enhanced Error Codes
+// Connect and probe server
+client.Dial("smtp.example.com:587")
+client.Hello()
+
+// Check available extensions
+caps := client.Capabilities()
+if caps.TLS {
+    client.StartTLS()
+    client.Hello() // Re-EHLO after STARTTLS
+}
+
+if client.HasExtension(raven.ExtAuth) {
+    client.Auth()
+}
+
+// Send mail
+result, err := client.Send(mail)
+client.Quit()
+```
+
+### Probe Server Capabilities
+
+```go
+// Discover what a server supports without sending mail
+caps, err := raven.Probe("smtp.example.com:25")
+fmt.Println(caps.String())
+
+// Probe with STARTTLS upgrade
+caps, err := raven.ProbeWithSTARTTLS("smtp.example.com:587")
+```
+
+### Connection Pooling
+
+```go
+// Create a dialer for connection reuse
+dialer := raven.NewDialer("smtp.example.com", 587)
+dialer.Auth = &raven.ClientAuth{Username: "user", Password: "pass"}
+dialer.StartTLS = true
+
+// Create pool
+pool := raven.NewPool(dialer, 5)
+defer pool.Close()
+
+// Send messages efficiently
+for _, mail := range mails {
+    result, err := pool.Send(mail)
+}
+```
+
+### Advanced Features
+
+```go
+// DSN (Delivery Status Notifications)
+mail, _ := raven.NewMailBuilder().
+    From("sender@example.com").
+    To("recipient@example.com").
+    Subject("Important").
+    TextBody("Please confirm receipt").
+    DSN([]string{"SUCCESS", "FAILURE"}, "FULL"). // Request full DSN
+    EnvID("tracking-123").
+    Build()
+
+// Streaming large messages
+reader := bytes.NewReader(largeMessage)
+resp, err := client.StreamData(reader)
+
+// Command pipelining
+responses, err := client.PipelineCommands([]string{
+    "MAIL FROM:<sender@example.com>",
+    "RCPT TO:<rcpt1@example.com>",
+    "RCPT TO:<rcpt2@example.com>",
+})
+```
+
+## Project Structure
+
+The codebase is organized with clear file naming for easy navigation:
+
+```
+raven/
+├── raven.go           # Package documentation and overview
+├── server.go          # Server type and lifecycle methods
+├── server_config.go   # Server configuration options
+├── server_builder.go  # Fluent builder API for server setup
+├── server_handler.go  # SMTP command handlers
+├── server_conn.go     # Connection state and management
+├── server_auth.go     # Authentication handling
+├── server_test.go     # Server integration tests
+├── client.go          # SMTP client core
+├── client_dialer.go   # Connection dialing and pooling
+├── client_probe.go    # Server capability probing
+├── client_send.go     # Mail sending logic
+├── mail.go            # Mail and envelope types
+├── mail_builder.go    # Fluent mail builder API
+├── mail_test.go       # Mail builder tests
+├── response.go        # SMTP response codes and types
+├── extensions.go      # SMTP extension definitions
+├── middleware.go      # Built-in middleware
+├── parser.go          # SMTP command parser
+├── io/                # I/O utilities
+├── mime/              # MIME handling
+├── sasl/              # SASL authentication mechanisms
+└── utils/             # Utility functions
+```
 
 ## License
 

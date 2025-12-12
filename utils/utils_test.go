@@ -105,24 +105,23 @@ func TestGenerateID(t *testing.T) {
 		t.Error("GenerateID() returned empty string")
 	}
 
-	// Test that GenerateID returns a hex-encoded string of expected length
-	// 8 bytes -> 16 hex characters
-	expectedLen := 16
+	// Test that GenerateID returns a ULID of expected length (26 characters)
+	expectedLen := 26
 	if len(id) != expectedLen {
 		t.Errorf("GenerateID() returned string of length %d, want %d", len(id), expectedLen)
 	}
 
-	// Test that the returned string is valid hex
+	// Test that the returned string is valid Crockford's base32 (ULID alphabet)
 	for _, c := range id {
-		if !isHexChar(c) {
-			t.Errorf("GenerateID() returned non-hex character: %c", c)
+		if !isULIDChar(c) {
+			t.Errorf("GenerateID() returned invalid ULID character: %c", c)
 			break
 		}
 	}
 
 	// Test uniqueness (generate multiple IDs and ensure they're different)
 	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		newID := GenerateID()
 		if ids[newID] {
 			t.Errorf("GenerateID() returned duplicate ID: %s", newID)
@@ -131,8 +130,11 @@ func TestGenerateID(t *testing.T) {
 	}
 }
 
-func isHexChar(c rune) bool {
-	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+// isULIDChar checks if a character is valid in Crockford's base32 encoding (ULID alphabet).
+// Valid characters: 0-9, A-Z (excluding I, L, O, U)
+func isULIDChar(c rune) bool {
+	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'H') || (c >= 'J' && c <= 'K') ||
+		(c >= 'M' && c <= 'N') || (c >= 'P' && c <= 'T') || (c >= 'V' && c <= 'Z')
 }
 
 func TestGetIPFromAddr(t *testing.T) {

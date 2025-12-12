@@ -2,6 +2,7 @@ package raven
 
 import (
 	"encoding/json"
+	"errors"
 	"net/mail"
 	"strings"
 	"time"
@@ -10,30 +11,35 @@ import (
 	"github.com/synqronlabs/raven/utils"
 )
 
-// BodyType specifies the encoding type of the message body per RFC 6152.
+// RFC 5322 line length limits.
+const (
+	MaxLineLength         = 998
+	RecommendedLineLength = 78
+)
+
+// RFC 5322 validation errors.
+var (
+	ErrMissingDateHeader     = errors.New("rfc5322: missing required Date header")
+	ErrMissingFromHeader     = errors.New("rfc5322: missing required From header")
+	ErrMultipleFromNoSender  = errors.New("rfc5322: multiple From addresses require Sender header")
+	ErrDuplicateSingleHeader = errors.New("rfc5322: header field appears more than once")
+	ErrLineTooLong           = errors.New("rfc5322: line exceeds maximum length of 998 characters")
+)
+
+// BodyType specifies the encoding type of the message body (RFC 6152).
 type BodyType string
 
 const (
-	// BodyType7Bit indicates a 7-bit ASCII message body (RFC 5321 compliant).
-	BodyType7Bit BodyType = "7BIT"
-	// BodyType8BitMIME indicates an 8-bit MIME message body (RFC 6152).
-	BodyType8BitMIME BodyType = "8BITMIME"
-	// BodyTypeBinaryMIME indicates a binary MIME message body (RFC 3030).
+	BodyType7Bit       BodyType = "7BIT"
+	BodyType8BitMIME   BodyType = "8BITMIME"
 	BodyTypeBinaryMIME BodyType = "BINARYMIME"
 )
 
-// MailboxAddress represents an email address as per RFC 5321 Section 4.1.2.
-// It supports both ASCII addresses (RFC 5321) and internationalized addresses (RFC 6531).
+// MailboxAddress represents an email address.
+// Supports ASCII and internationalized addresses.
 type MailboxAddress struct {
-	// LocalPart is the portion before the @ sign.
-	// May contain UTF-8 characters if SMTPUTF8 extension is used.
-	LocalPart string `json:"local_part"`
-
-	// Domain is the portion after the @ sign.
-	// May be an internationalized domain name (IDN) in U-label or A-label form.
-	Domain string `json:"domain"`
-
-	// DisplayName is an optional human-readable name associated with the address.
+	LocalPart   string `json:"local_part"`
+	Domain      string `json:"domain"`
 	DisplayName string `json:"display_name,omitempty"`
 }
 
@@ -45,23 +51,18 @@ func (m MailboxAddress) String() string {
 	return m.LocalPart + "@" + m.Domain
 }
 
-// Path represents an SMTP forward-path or reverse-path as per RFC 5321 Section 4.1.2.
+// Path represents an SMTP forward-path or reverse-path.
 type Path struct {
-	// Mailbox is the actual email address.
-	Mailbox MailboxAddress `json:"mailbox"`
-
-	// SourceRoutes contains optional source routing information (deprecated per RFC 5321).
-	// Included for completeness but SHOULD NOT be used for new implementations.
-	SourceRoutes []string `json:"source_routes,omitempty"`
+	Mailbox      MailboxAddress `json:"mailbox"`
+	SourceRoutes []string       `json:"source_routes,omitempty"` // Deprecated
 }
 
-// IsNull returns true if this is a null reverse-path (empty sender).
-// Null reverse-paths are used for bounce messages per RFC 5321 Section 4.5.5.
+// IsNull returns true if this is a null reverse-path (used for bounce messages).
 func (p Path) IsNull() bool {
 	return p.Mailbox.LocalPart == "" && p.Mailbox.Domain == ""
 }
 
-// String returns the path in angle bracket format as used in SMTP commands.
+// String returns the path in angle bracket format.
 func (p Path) String() string {
 	if p.IsNull() {
 		return "<>"
@@ -71,72 +72,41 @@ func (p Path) String() string {
 
 // Recipient represents a single recipient with delivery status information.
 type Recipient struct {
-	// Address is the recipient's email address (forward-path).
 	Address Path `json:"address"`
 
-	// DSNParams contains Delivery Status Notification parameters per RFC 3461.
+	// DSNParams contains Delivery Status Notification parameters.
 	DSNParams *DSNRecipientParams `json:"dsn_params,omitempty"`
 }
 
-// DSNRecipientParams contains per-recipient DSN parameters per RFC 3461.
+// DSNRecipientParams contains per-recipient DSN parameters.
 type DSNRecipientParams struct {
-	// Notify specifies when notifications should be sent.
-	// Valid values: NEVER, SUCCESS, FAILURE, DELAY (can be combined except NEVER).
-	Notify []string `json:"notify,omitempty"`
-
-	// ORcpt is the original recipient address if different from the actual recipient.
-	ORcpt string `json:"orcpt,omitempty"`
+	Notify []string `json:"notify,omitempty"` // NEVER, SUCCESS, FAILURE, DELAY
+	ORcpt  string   `json:"orcpt,omitempty"`  // Original recipient
 }
 
-// Envelope represents the SMTP envelope as per RFC 5321 Section 2.3.1.
-// The envelope is distinct from the message content and is transmitted
-// via MAIL FROM and RCPT TO commands.
+// Envelope represents the SMTP envelope.
+// The envelope is transmitted via MAIL FROM and RCPT TO commands.
 type Envelope struct {
-	// From is the reverse-path (originator) specified in the MAIL FROM command.
-	// Used for error/bounce notifications. May be null for bounce messages.
-	From Path `json:"from"`
-
-	// To is the list of recipients specified via RCPT TO commands.
-	To []Recipient `json:"to"`
-
-	// BodyType indicates the body encoding type (RFC 6152 8BITMIME extension).
-	// If empty, defaults to 7BIT.
-	BodyType BodyType `json:"body_type,omitempty"`
-
-	// Size is the declared message size in octets (RFC 1870 SIZE extension).
-	// Zero means no size was declared.
-	Size int64 `json:"size,omitempty"`
-
-	// SMTPUTF8 indicates whether the message requires SMTPUTF8 extension (RFC 6531).
-	// This is set when the envelope or headers contain internationalized content.
-	SMTPUTF8 bool `json:"smtputf8,omitempty"`
-
-	// EnvID is the envelope identifier for DSN purposes (RFC 3461).
-	EnvID string `json:"env_id,omitempty"`
-
-	// DSNParams contains envelope-level DSN parameters.
-	DSNParams *DSNEnvelopeParams `json:"dsn_params,omitempty"`
-
-	// Auth contains authentication identity if SMTP AUTH was used.
-	Auth string `json:"auth,omitempty"`
-
-	// ExtensionParams holds additional MAIL FROM parameters from other extensions.
-	// Keys are parameter names (uppercase), values are parameter values.
-	ExtensionParams map[string]string `json:"extension_params,omitempty"`
+	From            Path               `json:"from"`
+	To              []Recipient        `json:"to"`
+	BodyType        BodyType           `json:"body_type,omitempty"`
+	Size            int64              `json:"size,omitempty"`
+	SMTPUTF8        bool               `json:"smtputf8,omitempty"`
+	RequireTLS      bool               `json:"requiretls,omitempty"`
+	EnvID           string             `json:"env_id,omitempty"`
+	DSNParams       *DSNEnvelopeParams `json:"dsn_params,omitempty"`
+	Auth            string             `json:"auth,omitempty"`
+	ExtensionParams map[string]string  `json:"extension_params,omitempty"`
 }
 
-// DSNEnvelopeParams contains envelope-level DSN parameters per RFC 3461.
+// DSNEnvelopeParams contains envelope-level DSN parameters.
 type DSNEnvelopeParams struct {
-	// RET specifies what to return in a DSN: FULL (entire message) or HDRS (headers only).
-	RET string `json:"ret"`
+	RET string `json:"ret"` // FULL or HDRS
 }
 
-// Header represents the message header section as per RFC 5322.
-// Headers may contain internationalized content when SMTPUTF8 is used (RFC 6532).
+// Header represents a message header field.
 type Header struct {
-	// Name is the header field name (e.g., "From", "Subject").
-	Name string `json:"name"`
-	// Value is the header field value.
+	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
@@ -175,54 +145,82 @@ func (h Headers) Count(name string) int {
 	return count
 }
 
-// Content represents the message content (header section + body) as per RFC 5321 Section 2.3.1.
-// This is what follows the DATA command.
-type Content struct {
-	// Headers contains all message header fields per RFC 5322.
-	// Common headers include: From, To, Cc, Bcc, Subject, Date, Message-ID, etc.
-	Headers Headers `json:"headers"`
-
-	// Body is the raw message body (may be encoded).
-	Body []byte `json:"body,omitempty"`
-
-	// Encoding indicates how the body is encoded per RFC 2045.
-	// Defaults to "7bit" if not specified.
-	Encoding ravenmime.ContentTransferEncoding `json:"encoding"`
-
-	// Charset is the primary character set of the message body.
-	Charset string `json:"charset,omitempty"`
-
-	// Raw contains the raw message data as received, if preserved.
-	// This may be useful for exact re-transmission or archival.
-	// Use FromRaw() to populate Headers and Body from raw data,
-	// and ToRaw() to serialize back to raw format.
-	Raw []byte `json:"raw,omitempty"`
+// singleOccurrenceHeaders lists headers that must appear at most once.
+var singleOccurrenceHeaders = map[string]bool{
+	"date":        true,
+	"from":        true,
+	"sender":      true,
+	"reply-to":    true,
+	"to":          true,
+	"cc":          true,
+	"bcc":         true,
+	"message-id":  true,
+	"in-reply-to": true,
+	"references":  true,
+	"subject":     true,
 }
 
-// TraceField represents a Received or Return-Path header for message tracing (RFC 5321 Section 4.4).
+// Validate validates headers.
+func (h Headers) Validate() error {
+	if h.Count("Date") == 0 {
+		return ErrMissingDateHeader
+	}
+
+	fromCount := h.Count("From")
+	if fromCount == 0 {
+		return ErrMissingFromHeader
+	}
+
+	for name := range singleOccurrenceHeaders {
+		if h.Count(name) > 1 {
+			return ErrDuplicateSingleHeader
+		}
+	}
+
+	// If From contains multiple mailboxes, Sender MUST be present
+	// This is a simplified check - a full implementation would parse the From header
+	fromValue := h.Get("From")
+	if strings.Contains(fromValue, ",") && h.Count("Sender") == 0 {
+		return ErrMultipleFromNoSender
+	}
+
+	return nil
+}
+
+// Content represents the message content (headers + body).
+type Content struct {
+	Headers  Headers                           `json:"headers"`
+	Body     []byte                            `json:"body,omitempty"`
+	Encoding ravenmime.ContentTransferEncoding `json:"encoding"`
+	Charset  string                            `json:"charset,omitempty"`
+}
+
+// TraceField represents a Received or Return-Path header.
 type TraceField struct {
-	// Type is either "Received" or "Return-Path".
-	Type string `json:"type"`
-
-	// FromDomain is the domain of the sending host (for Received headers).
+	Type       string `json:"type"` // "Received" or "Return-Path"
 	FromDomain string `json:"from_domain,omitempty"`
-
-	// FromIP is the IP address of the sending host.
-	FromIP string `json:"from_ip,omitempty"`
-
-	// ByDomain is the domain of the receiving host.
-	ByDomain string `json:"by_domain,omitempty"`
-
-	// Via indicates the link type (e.g., "TCP").
-	Via string `json:"via,omitempty"`
-
-	// With indicates the protocol used (e.g., "SMTP", "ESMTP", "ESMTPS", "UTF8SMTP").
+	FromIP     string `json:"from_ip,omitempty"`
+	ByDomain   string `json:"by_domain,omitempty"`
+	Via        string `json:"via,omitempty"` // e.g., "TCP"
+	// With indicates the protocol used (e.g., "SMTP", "ESMTP", "ESMTPS", "ESMTPA").
+	//   - "ESMTP": extended SMTP (EHLO)
+	//   - "ESMTPS": ESMTP with TLS
+	//   - "ESMTPA": ESMTP with AUTH
+	//   - "ESMTPSA": ESMTP with TLS and AUTH
+	// RFC 6531 adds:
+	//   - "UTF8SMTP": SMTP with SMTPUTF8
+	//   - "UTF8SMTPS": UTF8SMTP with TLS
+	//   - "UTF8SMTPA": UTF8SMTP with AUTH
+	//   - "UTF8SMTPSA": UTF8SMTP with TLS and AUTH
 	With string `json:"with,omitempty"`
 
 	// ID is the message identifier assigned by this host.
 	ID string `json:"id,omitempty"`
 
 	// For is the recipient address (for single-recipient messages).
+	// Per RFC 5321, the FOR clause MUST contain exactly one path
+	// when present, even if multiple RCPT TO commands were given.
+	// For security, this should be omitted for multi-recipient messages.
 	For string `json:"for,omitempty"`
 
 	// Timestamp is when the message was received.
@@ -235,26 +233,35 @@ type TraceField struct {
 	Raw string `json:"raw,omitempty"`
 }
 
-// String formats the TraceField as an RFC 5321 compliant header value.
-// For Received headers, it follows the format:
+// For Received headers, the format is:
 //
 //	from <domain> (<ip>) by <domain> [via <link>] [with <protocol>] [id <id>] [for <recipient>]; <date-time>
 //
-// Per RFC 5321 Section 4.4, the date-time MUST use explicit offsets (e.g., -0800)
-// rather than time zone names. FROM and BY clauses are required.
+// For Return-Path headers, the format is:
+//
+//	<reverse-path>
+//
+// Return-Path preserves the MAIL FROM address and
+// is added when making final delivery.
 func (t TraceField) String() string {
 	if t.Raw != "" {
 		return t.Raw
 	}
 
 	if t.Type == "Return-Path" {
-		return t.For
+		// Format: <reverse-path>
+		// Empty path is valid for bounce messages
+		if t.For == "" {
+			return "<>"
+		}
+		return "<" + t.For + ">"
 	}
 
-	// Build RFC 5321 Section 4.4 compliant Received header value
+	// Build Received header value
 	var parts []string
 
-	// FROM clause (required) - RFC 5321 Section 4.4: Extended-Domain with TCP-info
+	// FROM clause (required) - Extended-Domain with TCP-info
+	// Format: "from domain (TCP-info)" where TCP-info is "address-literal" or "domain address-literal"
 	from := "from " + t.FromDomain
 	if t.FromIP != "" {
 		from += " (" + t.FromIP + ")"
@@ -266,12 +273,12 @@ func (t TraceField) String() string {
 		parts = append(parts, "by "+t.ByDomain)
 	}
 
-	// VIA clause (optional)
+	// VIA clause (optional) - primarily for non-Internet transports
 	if t.Via != "" {
 		parts = append(parts, "via "+t.Via)
 	}
 
-	// WITH clause (optional) - protocol
+	// WITH clause (optional) - protocol per RFC 5321 and RFC 3848
 	if t.With != "" {
 		parts = append(parts, "with "+t.With)
 	}
@@ -281,28 +288,37 @@ func (t TraceField) String() string {
 		parts = append(parts, "id "+t.ID)
 	}
 
-	// FOR clause (optional) - should only appear for single-recipient messages
+	// FOR clause (optional) - per RFC 5321, MUST contain exactly one path
+	// For security, should be omitted for multi-recipient messages
 	if t.For != "" {
 		parts = append(parts, "for <"+t.For+">")
 	}
 
-	// Date-time with explicit offset per RFC 5321 Section 4.4
+	// Date-time with explicit offset
 	// Format: "Mon, 02 Jan 2006 15:04:05 -0700"
+	// MUST NOT use obs- date forms, especially two-digit years
 	timestamp := t.Timestamp.Format(time.RFC1123Z)
 
 	return strings.Join(parts, " ") + "; " + timestamp
 }
 
-// Mail represents a complete mail object as per RFC 5321 Section 2.3.1.
+// NewReturnPathTrace creates a Return-Path trace field from the envelope's reverse-path.
+// Return-Path is added when making final delivery
+// to preserve the MAIL FROM address for bounce messages.
+func NewReturnPathTrace(reversePath Path) TraceField {
+	return TraceField{
+		Type: "Return-Path",
+		For:  reversePath.Mailbox.String(),
+	}
+}
+
 // A mail object contains an envelope (transmitted via SMTP commands)
 // and content (transmitted via the DATA command).
 type Mail struct {
 	// Envelope contains the SMTP envelope (MAIL FROM/RCPT TO information).
-	// This is separate from the message headers and controls actual delivery.
 	Envelope Envelope `json:"envelope"`
 
 	// Content contains the message header section and body.
-	// This is what appears after the DATA command.
 	Content Content `json:"content"`
 
 	// Trace contains the message trace information (Received/Return-Path headers).
@@ -391,6 +407,26 @@ func (m *Mail) SetNullSender() {
 	m.Envelope.From = Path{}
 }
 
+// AddReturnPath adds a Return-Path header for final delivery.
+// Per RFC 5321, the SMTP server making final delivery
+// MUST insert a Return-Path line at the beginning of the mail data.
+// This preserves the reverse-path from MAIL FROM for bounce messages.
+//
+// This method should be called by the application when making final
+// delivery (i.e., when the message leaves the SMTP environment).
+func (m *Mail) AddReturnPath() {
+	returnPath := NewReturnPathTrace(m.Envelope.From)
+
+	// Prepend to trace
+	m.Trace = append([]TraceField{returnPath}, m.Trace...)
+
+	// Prepend Return-Path header to content
+	m.Content.Headers = append(Headers{{
+		Name:  "Return-Path",
+		Value: returnPath.String(),
+	}}, m.Content.Headers...)
+}
+
 // AddHeader adds a header to the message content.
 func (m *Mail) AddHeader(name, value string) {
 	m.Content.Headers = append(m.Content.Headers, Header{Name: name, Value: value})
@@ -404,7 +440,6 @@ func ParseAddress(addr string) (MailboxAddress, error) {
 		return MailboxAddress{}, err
 	}
 
-	// Split the address part
 	address := parsed.Address
 	var local, domain string
 	for i := len(address) - 1; i >= 0; i-- {
@@ -441,6 +476,39 @@ func FromJSON(data []byte) (*Mail, error) {
 	return &m, nil
 }
 
+// Validate validates the Content according to RFC 5322 requirements.
+// It checks headers and body line lengths.
+func (c *Content) Validate() error {
+	if err := c.Headers.Validate(); err != nil {
+		return err
+	}
+
+	// Validate body line lengths per RFC 5322
+	if len(c.Body) > 0 {
+		lineStart := 0
+		for i := 0; i < len(c.Body); i++ {
+			if c.Body[i] == '\n' {
+				lineLen := i - lineStart
+				if lineLen > 0 && c.Body[i-1] == '\r' {
+					lineLen-- // Don't count CR
+				}
+				if lineLen > MaxLineLength {
+					return ErrLineTooLong
+				}
+				lineStart = i + 1
+			}
+		}
+		if lineStart < len(c.Body) {
+			lineLen := len(c.Body) - lineStart
+			if lineLen > MaxLineLength {
+				return ErrLineTooLong
+			}
+		}
+	}
+
+	return nil
+}
+
 // ToMIME parses and returns the MIME structure of the message content.
 // It validates Content-Type headers and parses multipart boundaries.
 //
@@ -473,17 +541,12 @@ func (c *Content) FromMIME(part *ravenmime.Part) error {
 	return nil
 }
 
-// FromRaw parses raw message data and populates Headers, Body, and Raw fields.
-// The raw data is stored for exact re-transmission or archival.
+// FromRaw parses raw message data and populates Headers and Body fields.
 // This also sets the Encoding field based on Content-Transfer-Encoding header,
 // defaulting to "7bit" per RFC 2045 if not specified.
 func (c *Content) FromRaw(data []byte) {
-	c.Raw = data
-
-	// Parse headers and body from raw data
 	c.Headers, c.Body = parseRawContent(data)
 
-	// Set encoding from Content-Transfer-Encoding header, default to 7bit
 	cte := c.Headers.Get("Content-Transfer-Encoding")
 	if cte != "" {
 		c.Encoding = ravenmime.ContentTransferEncoding(strings.ToLower(cte))
@@ -515,28 +578,21 @@ func (c *Content) FromRaw(data []byte) {
 }
 
 // ToRaw serializes the Content back to raw RFC 5322 format.
-// If Raw is already set (from FromRaw), it returns that.
-// Otherwise, it reconstructs the message from Headers and Body.
+// It reconstructs the message from Headers and Body.
+// Header lines are folded per RFC 5322 to comply with line length limits.
 func (c *Content) ToRaw() []byte {
-	// If we have cached raw data, return it
-	if len(c.Raw) > 0 {
-		return c.Raw
-	}
-
-	// Estimate size: headers + blank line + body
+	// Estimate size: headers + blank line + body (with some extra for folding)
 	estimatedSize := len(c.Body) + 2 // +2 for CRLF before body
 	for _, h := range c.Headers {
-		estimatedSize += len(h.Name) + 2 + len(h.Value) + 2 // "Name: Value\r\n"
+		estimatedSize += len(h.Name) + 2 + len(h.Value) + 10 // Extra for potential folding
 	}
 
 	buf := make([]byte, 0, estimatedSize)
 
-	// Write headers
+	// Write headers with folding
 	for _, h := range c.Headers {
-		buf = append(buf, h.Name...)
-		buf = append(buf, ':', ' ')
-		buf = append(buf, h.Value...)
-		buf = append(buf, '\r', '\n')
+		headerLine := foldHeader(h.Name, h.Value)
+		buf = append(buf, headerLine...)
 	}
 
 	// Write blank line separating headers from body
@@ -548,11 +604,80 @@ func (c *Content) ToRaw() []byte {
 	return buf
 }
 
+// foldHeader folds a header line per RFC 5322.
+// Lines MUST be no more than 998 characters, SHOULD be no more than 78.
+// Folding is done by inserting CRLF before whitespace.
+func foldHeader(name, value string) []byte {
+	// Build initial header line: "Name: Value"
+	prefix := name + ": "
+	prefixLen := len(prefix)
+
+	// If the entire header fits within recommended length, no folding needed
+	totalLen := prefixLen + len(value)
+	if totalLen <= RecommendedLineLength {
+		result := make([]byte, 0, totalLen+2)
+		result = append(result, prefix...)
+		result = append(result, value...)
+		result = append(result, '\r', '\n')
+		return result
+	}
+
+	// Need to fold - find appropriate break points
+	result := make([]byte, 0, totalLen+20) // Extra for CRLF insertions
+	result = append(result, prefix...)
+
+	currentLineLen := prefixLen
+	valueBytes := []byte(value)
+	lastBreak := 0
+
+	for i := range valueBytes {
+		currentLineLen++
+
+		// Check if we need to fold
+		if currentLineLen >= RecommendedLineLength {
+			// Find the last whitespace before current position to break at
+			breakPoint := -1
+			for j := i; j > lastBreak; j-- {
+				if valueBytes[j] == ' ' || valueBytes[j] == '\t' {
+					breakPoint = j
+					break
+				}
+			}
+
+			if breakPoint > lastBreak {
+				result = append(result, valueBytes[lastBreak:breakPoint]...)
+				// Insert fold (CRLF + WSP)
+				result = append(result, '\r', '\n', ' ')
+				lastBreak = breakPoint + 1
+				// Skip any consecutive whitespace after the break point
+				for lastBreak < len(valueBytes) && (valueBytes[lastBreak] == ' ' || valueBytes[lastBreak] == '\t') {
+					lastBreak++
+				}
+				currentLineLen = 1 + (i - lastBreak + 1) // 1 for the leading space
+			} else if currentLineLen >= MaxLineLength {
+				// No good break point found, force break at max length
+				// This is a last resort - RFC says MUST not exceed 998
+				result = append(result, valueBytes[lastBreak:i]...)
+				result = append(result, '\r', '\n', ' ')
+				lastBreak = i
+				currentLineLen = 1
+			}
+		}
+	}
+
+	if lastBreak < len(valueBytes) {
+		result = append(result, valueBytes[lastBreak:]...)
+	}
+
+	result = append(result, '\r', '\n')
+	return result
+}
+
 // parseRawContent parses raw message data into headers and body per RFC 5322.
 // The header section is separated from the body by an empty line (CRLF CRLF).
 func parseRawContent(data []byte) (Headers, []byte) {
 	// Find the header/body separator (empty line)
-	// Per RFC 5322, headers and body are separated by an empty line
+	// headers and body are separated by an empty line
 	var headerEnd int
 	dataLen := len(data)
 
@@ -571,10 +696,7 @@ func parseRawContent(data []byte) (Headers, []byte) {
 
 	// Parse headers directly from bytes to avoid string conversion of entire header section
 	// Estimate header count (average ~50 bytes per header)
-	estimatedHeaders := headerEnd / 50
-	if estimatedHeaders < 8 {
-		estimatedHeaders = 8
-	}
+	estimatedHeaders := max(headerEnd/50, 8)
 	headers := make(Headers, 0, estimatedHeaders)
 
 	var currentName, currentValue string
@@ -593,7 +715,7 @@ func parseRawContent(data []byte) (Headers, []byte) {
 
 			// Check for continuation line (starts with whitespace)
 			if line[0] == ' ' || line[0] == '\t' {
-				// Continuation of previous header (folded header per RFC 5322)
+				// Continuation of previous header (folded header)
 				if currentName != "" {
 					currentValue += " " + strings.TrimSpace(line)
 				}

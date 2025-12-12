@@ -2,6 +2,7 @@ package mime
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -346,12 +347,7 @@ func TestPart_ToJSONIndent(t *testing.T) {
 }
 
 func containsNewline(data []byte) bool {
-	for _, b := range data {
-		if b == '\n' {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(data, '\n')
 }
 
 func TestHeader(t *testing.T) {
