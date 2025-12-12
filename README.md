@@ -272,6 +272,54 @@ responses, err := client.PipelineCommands([]string{
 })
 ```
 
+## DKIM Signing and Verification
+
+Raven supports DKIM (RFC 6376) for signing outbound messages and verifying inbound messages:
+
+### Signing Outbound Messages
+
+```go
+import "crypto/rsa"
+
+// Load your private key
+privateKey, _ := loadPrivateKey() // *rsa.PrivateKey
+
+// Build your mail
+mail, _ := raven.NewMailBuilder().
+    From("sender@example.com").
+    To("recipient@example.com").
+    Subject("Signed Message").
+    TextBody("This message will be DKIM signed.").
+    Build()
+
+// Sign with DKIM
+err := mail.SignDKIM(&raven.DKIMSignOptions{
+    Domain:     "example.com",
+    Selector:   "default",
+    PrivateKey: privateKey,
+})
+
+// Send the signed mail
+client.Send(mail)
+```
+
+### Verifying Inbound Messages
+
+```go
+// Verify DKIM signatures on received mail
+results := mail.VerifyDKIM(raven.DefaultDKIMVerifyOptions())
+
+for _, result := range results {
+    if result.Status == raven.DKIMStatusPass {
+        log.Printf("Valid signature from domain: %s", result.Domain)
+    } else {
+        log.Printf("DKIM verification failed: %v", result.Error)
+    }
+}
+```
+
+The library uses secure defaults (RSA-SHA256, relaxed canonicalization) and performs DNS lookups to retrieve public keys automatically.
+
 ## Project Structure
 
 The codebase is organized with clear file naming for easy navigation:

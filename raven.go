@@ -94,6 +94,25 @@
 //	    result, err := pool.Send(mail)
 //	}
 //
+// # DKIM Signing and Verification
+//
+// Sign outbound messages with DKIM (RFC 6376):
+//
+//	mail.SignDKIM(&raven.DKIMSignOptions{
+//	    Domain:     "example.com",
+//	    Selector:   "default",
+//	    PrivateKey: privateKey, // *rsa.PrivateKey
+//	})
+//
+// Verify DKIM signatures on inbound messages:
+//
+//	results := mail.VerifyDKIM(raven.DefaultDKIMVerifyOptions())
+//	for _, result := range results {
+//	    if result.Status == raven.DKIMStatusPass {
+//	        // Valid signature from result.Domain
+//	    }
+//	}
+//
 // # Server Capability Probing
 //
 // Discover what a server supports without sending mail:
