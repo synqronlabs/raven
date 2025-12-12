@@ -320,6 +320,44 @@ for _, result := range results {
 
 The library uses secure defaults (RSA-SHA256, relaxed canonicalization) and performs DNS lookups to retrieve public keys automatically.
 
+## Serialization
+
+Raven supports both JSON and MessagePack serialization for Mail objects.
+
+### JSON Serialization
+
+```go
+// Serialize to JSON
+jsonData, err := mail.ToJSON()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Deserialize from JSON
+mail, err := raven.FromJSON(jsonData)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### MessagePack Serialization
+
+MessagePack provides more compact binary serialization compared to JSON, which is useful for storage and transmission of mail objects:
+
+```go
+// Serialize to MessagePack
+msgpackData, err := mail.ToMessagePack()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Deserialize from MessagePack
+mail, err := raven.FromMessagePack(msgpackData)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
 ## Project Structure
 
 The codebase is organized with clear file naming for easy navigation:

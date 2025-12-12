@@ -1,5 +1,7 @@
 package raven
 
+//go:generate msgp
+
 import (
 	"encoding/json"
 	"errors"
@@ -471,6 +473,21 @@ func (m *Mail) ToJSONIndent() ([]byte, error) {
 func FromJSON(data []byte) (*Mail, error) {
 	var m Mail
 	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// ToMessagePack serializes the Mail object to MessagePack bytes.
+func (m *Mail) ToMessagePack() ([]byte, error) {
+	return m.MarshalMsg(nil)
+}
+
+// FromMessagePack deserializes a Mail object from MessagePack bytes.
+func FromMessagePack(data []byte) (*Mail, error) {
+	var m Mail
+	_, err := m.UnmarshalMsg(data)
+	if err != nil {
 		return nil, err
 	}
 	return &m, nil

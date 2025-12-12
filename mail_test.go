@@ -939,3 +939,82 @@ func TestFoldHeader_WhitespaceOnlyValue(t *testing.T) {
 		t.Error("Result should end with CRLF")
 	}
 }
+
+func TestMailMessagePack(t *testing.T) {
+	// Create a test mail with various fields populated
+	mail, err := NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("MessagePack Test").
+		TextBody("Testing MessagePack serialization").
+		Build()
+
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Add some trace information
+	mail.Trace = append(mail.Trace, TraceField{
+		Type:       "Received",
+		FromDomain: "sender.example.com",
+		FromIP:     "192.168.1.1",
+		ByDomain:   "receiver.example.com",
+		With:       "ESMTP",
+		Timestamp:  time.Now(),
+	})
+
+	// Serialize to MessagePack
+	data, err := mail.ToMessagePack()
+	if err != nil {
+		t.Fatalf("ToMessagePack failed: %v", err)
+	}
+
+	// Verify we got some data
+	if len(data) == 0 {
+		t.Fatal("ToMessagePack returned empty data")
+	}
+
+	// Deserialize from MessagePack
+	decoded, err := FromMessagePack(data)
+	if err != nil {
+		t.Fatalf("FromMessagePack failed: %v", err)
+	}
+
+	// Verify the decoded mail matches the original
+	if decoded.Envelope.From.Mailbox.String() != mail.Envelope.From.Mailbox.String() {
+		t.Errorf("Expected from %q, got %q",
+			mail.Envelope.From.Mailbox.String(),
+			decoded.Envelope.From.Mailbox.String())
+	}
+
+	if len(decoded.Envelope.To) != len(mail.Envelope.To) {
+		t.Errorf("Expected %d recipients, got %d",
+			len(mail.Envelope.To), len(decoded.Envelope.To))
+	}
+
+	if decoded.Content.Headers.Get("Subject") != mail.Content.Headers.Get("Subject") {
+		t.Errorf("Expected subject %q, got %q",
+			mail.Content.Headers.Get("Subject"),
+			decoded.Content.Headers.Get("Subject"))
+	}
+
+	if string(decoded.Content.Body) != string(mail.Content.Body) {
+		t.Errorf("Expected body %q, got %q",
+			string(mail.Content.Body),
+			string(decoded.Content.Body))
+	}
+
+	if len(decoded.Trace) != len(mail.Trace) {
+		t.Errorf("Expected %d trace fields, got %d",
+			len(mail.Trace), len(decoded.Trace))
+	}
+
+	// Test that MessagePack is more compact than JSON for this case
+	jsonData, err := mail.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	t.Logf("MessagePack size: %d bytes, JSON size: %d bytes, ratio: %.2f%%",
+		len(data), len(jsonData), float64(len(data))/float64(len(jsonData))*100)
+}

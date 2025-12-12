@@ -1,4 +1,7 @@
+// Package mime provides structures and functions for parsing and handling MIME messages.
 package mime
+
+//go:generate msgp
 
 import (
 	"bytes"

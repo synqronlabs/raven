@@ -70,7 +70,7 @@
 //
 // # Mail Builder
 //
-// Build emails fluently with full RFC compliance:
+// Build emails:
 //
 //	mail, err := raven.NewMailBuilder().
 //	    From("Sender <sender@example.com>").
@@ -78,6 +78,40 @@
 //	    Subject("Hello").
 //	    TextBody("Message content").
 //	    Build()
+//
+// # Serialization
+//
+// JSON Serialization:
+//
+//	jsonData, err := mail.ToJSON()
+//
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// JSON Deserialization:
+//
+//	mail, err := raven.FromJSON(jsonData)
+//
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// MessagePack Serialization:
+//
+//	msgpackData, err := mail.ToMessagePack()
+//
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// MessagePack Deserialization:
+//
+//	mail, err := raven.FromMessagePack(msgpackData)
+//
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 // # Connection Pooling
 //
