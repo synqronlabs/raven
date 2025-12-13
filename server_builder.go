@@ -141,6 +141,7 @@ type ServerBuilder struct {
 	middleware         []Middleware
 	gracefulShutdown   *bool
 	shutdownTimeout    time.Duration
+	spfOptions         *SPFVerifyOptions
 }
 
 // ExtensionConfig holds configuration for an SMTP extension.
@@ -167,7 +168,7 @@ func New(hostname string) *ServerBuilder {
 		writeTimeout:       5 * time.Minute,
 		dataTimeout:        10 * time.Minute,
 		idleTimeout:        5 * time.Minute,
-		maxLineLength:      MaxLineLength,
+		maxLineLength:      RecommendedLineLength,
 		maxReceivedHeaders: 100, // RFC 5321 Section 6.3 recommends at least 100
 		logger:             slog.Default(),
 	}
@@ -282,6 +283,41 @@ func (b *ServerBuilder) GracefulShutdown(enabled bool) *ServerBuilder {
 // Default: 30 seconds.
 func (b *ServerBuilder) ShutdownTimeout(d time.Duration) *ServerBuilder {
 	b.shutdownTimeout = d
+	return b
+}
+
+// SPF enables SPF (Sender Policy Framework) verification per RFC 7208.
+// SPF checks authorize the sending IP address against the domain's published
+// SPF record in DNS. This helps detect forged sender addresses.
+//
+// Parameters:
+//   - failAction: Action to take when SPF returns "fail" (explicit rejection)
+//   - softfailAction: Action to take when SPF returns "softfail" (weak rejection)
+//
+// Available actions:
+//   - SPFActionAccept: Accept the message and add a Received-SPF header
+//   - SPFActionReject: Reject the message with a 550 response
+//   - SPFActionMark: Accept and add headers marking it as suspicious
+//
+// Example:
+//
+//	server := raven.New("mail.example.com").
+//	    SPF(raven.SPFActionAccept, raven.SPFActionAccept).
+//	    Build()
+func (b *ServerBuilder) SPF(failAction, softfailAction SPFAction) *ServerBuilder {
+	b.spfOptions = &SPFVerifyOptions{
+		Enabled:        true,
+		FailAction:     failAction,
+		SoftFailAction: softfailAction,
+		CheckOptions:   DefaultSPFCheckOptions(),
+	}
+	return b
+}
+
+// SPFWithOptions enables SPF verification with custom options.
+// This provides full control over SPF verification behavior.
+func (b *ServerBuilder) SPFWithOptions(opts *SPFVerifyOptions) *ServerBuilder {
+	b.spfOptions = opts
 	return b
 }
 
@@ -457,6 +493,11 @@ func (b *ServerBuilder) Build() (*Server, error) {
 		config.EnableLoginAuth = b.authConfig.EnableLoginAuth
 	} else {
 		config.AuthMechanisms = nil // Disable AUTH if not configured
+	}
+
+	// Apply SPF configuration
+	if b.spfOptions != nil {
+		config.SPF = b.spfOptions
 	}
 
 	return NewServer(config)

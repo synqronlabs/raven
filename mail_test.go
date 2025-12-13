@@ -694,6 +694,106 @@ func TestRFC5322_Constants(t *testing.T) {
 	}
 }
 
+func TestRFC5322_HeaderValidation_LineTooLong(t *testing.T) {
+	// Test that header lines exceeding 998 characters are rejected
+	longValue := make([]byte, 1000)
+	for i := range longValue {
+		longValue[i] = 'a'
+	}
+
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: string(longValue)},
+	}
+
+	err := headers.Validate()
+	if err != ErrLineTooLong {
+		t.Errorf("Expected ErrLineTooLong for long header, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_AtLimit(t *testing.T) {
+	// Test that header lines exactly at 998 characters pass validation
+	// Header line: "Subject: " (9 chars) + value = 998, so value = 989
+	value := make([]byte, 989)
+	for i := range value {
+		value[i] = 'a'
+	}
+
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: string(value)},
+	}
+
+	err := headers.Validate()
+	if err != nil {
+		t.Errorf("Expected no error for header at limit (998 chars), got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_FoldedLines(t *testing.T) {
+	// Test that folded header lines are validated per-line
+	// A header with a folded value where each line is under the limit should pass
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: "Short line\r\n continues here"},
+	}
+
+	err := headers.Validate()
+	if err != nil {
+		t.Errorf("Expected no error for folded header with short lines, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_BareLF(t *testing.T) {
+	// Test that bare LF (without CR) in header values is rejected
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: "Line one\n continues"}, // bare LF
+	}
+
+	err := headers.Validate()
+	if err != ErrInvalidLineEnding {
+		t.Errorf("Expected ErrInvalidLineEnding for bare LF in header, got %v", err)
+	}
+}
+
+func TestRFC5322_ContentValidation_BareLF(t *testing.T) {
+	// Test that bare LF in body is rejected
+	content := Content{
+		Headers: Headers{
+			{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+			{Name: "From", Value: "sender@example.com"},
+		},
+		Body: []byte("Line one\nLine two\r\n"), // bare LF after "Line one"
+	}
+
+	err := content.Validate()
+	if err != ErrInvalidLineEnding {
+		t.Errorf("Expected ErrInvalidLineEnding for bare LF in body, got %v", err)
+	}
+}
+
+func TestRFC5322_ContentValidation_ValidCRLF(t *testing.T) {
+	// Test that proper CRLF line endings pass validation
+	content := Content{
+		Headers: Headers{
+			{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+			{Name: "From", Value: "sender@example.com"},
+		},
+		Body: []byte("Line one\r\nLine two\r\n"),
+	}
+
+	err := content.Validate()
+	if err != nil {
+		t.Errorf("Expected no error for valid CRLF line endings, got %v", err)
+	}
+}
+
 func TestMailBuilder_SenderHeader(t *testing.T) {
 	// Test that Sender header can be explicitly set
 	mail, err := NewMailBuilder().

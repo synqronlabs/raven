@@ -26,6 +26,7 @@ var (
 	ErrMultipleFromNoSender  = errors.New("rfc5322: multiple From addresses require Sender header")
 	ErrDuplicateSingleHeader = errors.New("rfc5322: header field appears more than once")
 	ErrLineTooLong           = errors.New("rfc5322: line exceeds maximum length of 998 characters")
+	ErrInvalidLineEnding     = errors.New("rfc5322: lines must be terminated with CRLF, not bare LF")
 )
 
 // BodyType specifies the encoding type of the message body (RFC 6152).
@@ -99,6 +100,10 @@ type Envelope struct {
 	DSNParams       *DSNEnvelopeParams `json:"dsn_params,omitempty"`
 	Auth            string             `json:"auth,omitempty"`
 	ExtensionParams map[string]string  `json:"extension_params,omitempty"`
+
+	// SPFResult contains the result of SPF verification performed during MAIL FROM.
+	// This is nil if SPF checking was not performed.
+	SPFResult *SPFCheckResult `json:"spf_result,omitempty"`
 }
 
 // DSNEnvelopeParams contains envelope-level DSN parameters.
@@ -162,7 +167,8 @@ var singleOccurrenceHeaders = map[string]bool{
 	"subject":     true,
 }
 
-// Validate validates headers.
+// Validate validates headers according to RFC 5322 requirements.
+// It checks for required headers, single-occurrence constraints, and line length limits.
 func (h Headers) Validate() error {
 	if h.Count("Date") == 0 {
 		return ErrMissingDateHeader
@@ -184,6 +190,27 @@ func (h Headers) Validate() error {
 	fromValue := h.Get("From")
 	if strings.Contains(fromValue, ",") && h.Count("Sender") == 0 {
 		return ErrMultipleFromNoSender
+	}
+
+	// Validate header line lengths per RFC 5322
+	// Each header field line must not exceed 998 characters (excluding CRLF)
+	// Also reject bare LF (must use CRLF)
+	for _, hdr := range h {
+		// Check for bare LF in header value (LF not preceded by CR)
+		for i := 0; i < len(hdr.Value); i++ {
+			if hdr.Value[i] == '\n' && (i == 0 || hdr.Value[i-1] != '\r') {
+				return ErrInvalidLineEnding
+			}
+		}
+
+		headerLine := hdr.Name + ": " + hdr.Value
+		// Check each line in case value contains folded lines (CRLF followed by whitespace)
+		lines := strings.SplitSeq(headerLine, "\r\n")
+		for line := range lines {
+			if len(line) > MaxLineLength {
+				return ErrLineTooLong
+			}
+		}
 	}
 
 	return nil
@@ -494,27 +521,30 @@ func FromMessagePack(data []byte) (*Mail, error) {
 }
 
 // Validate validates the Content according to RFC 5322 requirements.
-// It checks headers and body line lengths.
+// It checks headers and body line lengths, and ensures CRLF line endings.
 func (c *Content) Validate() error {
 	if err := c.Headers.Validate(); err != nil {
 		return err
 	}
 
-	// Validate body line lengths per RFC 5322
+	// Validate body line lengths and line endings per RFC 5322
 	if len(c.Body) > 0 {
 		lineStart := 0
 		for i := 0; i < len(c.Body); i++ {
 			if c.Body[i] == '\n' {
-				lineLen := i - lineStart
-				if lineLen > 0 && c.Body[i-1] == '\r' {
-					lineLen-- // Don't count CR
+				// Check for bare LF (LF not preceded by CR)
+				if i == 0 || c.Body[i-1] != '\r' {
+					return ErrInvalidLineEnding
 				}
+				// Line length excluding CRLF
+				lineLen := i - lineStart - 1 // -1 for CR
 				if lineLen > MaxLineLength {
 					return ErrLineTooLong
 				}
 				lineStart = i + 1
 			}
 		}
+		// Check final line (if no trailing CRLF)
 		if lineStart < len(c.Body) {
 			lineLen := len(c.Body) - lineStart
 			if lineLen > MaxLineLength {

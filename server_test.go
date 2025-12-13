@@ -109,6 +109,11 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// testServerConfig returns a ServerConfig with default values suitable for testing.
+func testServerConfig() ServerConfig {
+	return ServerConfig{}
+}
+
 // startTestServer starts a test server on a random port and returns the server and address.
 func startTestServer(t *testing.T, config ServerConfig) (*Server, string) {
 	// Find a free port
@@ -157,7 +162,7 @@ func TestBasicSMTPSession(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -234,7 +239,7 @@ func TestDATANoTrailingNewline(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -312,7 +317,7 @@ func TestDATAPreservesTrailingBlankLine(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -371,8 +376,104 @@ func TestDATAPreservesTrailingBlankLine(t *testing.T) {
 	}
 }
 
+// TestDATALineLengthRFC5322 verifies that the server enforces RFC 5322
+// line length limits (998 characters max, excluding CRLF) for DATA content.
+func TestDATALineLengthRFC5322(t *testing.T) {
+	config := testServerConfig()
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+	client.send("DATA")
+	client.expectCode(354)
+
+	// Send headers
+	client.send("Subject: Test")
+	client.send("")
+
+	// Send a line that exceeds 998 characters (RFC 5322 limit)
+	longLine := make([]byte, 1000)
+	for i := range longLine {
+		longLine[i] = 'a'
+	}
+	client.send(string(longLine))
+	client.send(".")
+
+	// Server should reject with syntax error (501) due to line too long
+	resp := client.readLine()
+	code := 0
+	fmt.Sscanf(resp, "%d", &code)
+	if code != 501 {
+		t.Errorf("Expected error code 501 for line too long, got: %s", resp)
+	}
+}
+
+// TestDATALineLengthAtLimit verifies that lines exactly at 998 chars are accepted.
+func TestDATALineLengthAtLimit(t *testing.T) {
+	var receivedMail *Mail
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			mu.Lock()
+			receivedMail = mail
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+	client.send("DATA")
+	client.expectCode(354)
+
+	// Send headers
+	client.send("Subject: Test")
+	client.send("")
+
+	// Send a line exactly at 998 characters (RFC 5322 limit)
+	line998 := make([]byte, 998)
+	for i := range line998 {
+		line998[i] = 'b'
+	}
+	client.send(string(line998))
+	client.send(".")
+	client.expectCode(250)
+
+	client.send("QUIT")
+	client.expectCode(221)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if receivedMail == nil {
+		t.Fatal("Expected to receive mail with 998-char line")
+	}
+}
+
 func TestHELO(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -392,7 +493,7 @@ func TestMultipleRecipients(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -443,7 +544,7 @@ func TestMultipleRecipients(t *testing.T) {
 }
 
 func TestRSET(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -477,7 +578,7 @@ func TestRSET(t *testing.T) {
 }
 
 func TestNOOP(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -499,7 +600,7 @@ func TestNOOP(t *testing.T) {
 }
 
 func TestHELP(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -545,7 +646,7 @@ func TestHELP(t *testing.T) {
 }
 
 func TestHELPCallback(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnHelp: func(ctx context.Context, conn *Connection, topic string) []string {
 			if topic == "CUSTOM" {
@@ -588,7 +689,7 @@ func TestHELPCallback(t *testing.T) {
 // ============================================================================
 
 func TestIntrinsicExtensionsAdvertised(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -642,7 +743,7 @@ func Test8BitMIME(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -692,7 +793,7 @@ func TestSMTPUTF8(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -738,7 +839,7 @@ func TestSMTPUTF8(t *testing.T) {
 }
 
 func Test8BitDataRejectedWithout8BITMIME(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 
 	server, addr := startTestServer(t, config)
 	defer server.Close()
@@ -772,7 +873,7 @@ func Test8BitDataRejectedWithout8BITMIME(t *testing.T) {
 }
 
 func TestUTF8AddressRequiresSMTPUTF8InMailFrom(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 
 	server, addr := startTestServer(t, config)
 	defer server.Close()
@@ -797,7 +898,7 @@ func TestUTF8AddressRequiresSMTPUTF8InMailFrom(t *testing.T) {
 }
 
 func TestUTF8AddressRequiresSMTPUTF8InRcptTo(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 
 	server, addr := startTestServer(t, config)
 	defer server.Close()
@@ -833,7 +934,7 @@ func TestUTF8AddressRequiresSMTPUTF8InRcptTo(t *testing.T) {
 }
 
 func TestUTF8DomainRequiresSMTPUTF8(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 
 	server, addr := startTestServer(t, config)
 	defer server.Close()
@@ -862,7 +963,7 @@ func TestUTF8DomainRequiresSMTPUTF8(t *testing.T) {
 // ============================================================================
 
 func TestSIZEExtensionAdvertised(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.MaxMessageSize = 10 * 1024 * 1024 // 10MB
 
 	server, addr := startTestServer(t, config)
@@ -895,7 +996,7 @@ func TestSIZEExtensionAdvertised(t *testing.T) {
 }
 
 func TestSIZEParameterAccepted(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.MaxMessageSize = 1024 * 1024 // 1MB
 
 	server, addr := startTestServer(t, config)
@@ -917,7 +1018,7 @@ func TestSIZEParameterAccepted(t *testing.T) {
 }
 
 func TestSIZEParameterRejected(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.MaxMessageSize = 1000 // 1KB
 
 	server, addr := startTestServer(t, config)
@@ -943,7 +1044,7 @@ func TestSIZEParameterRejected(t *testing.T) {
 // ============================================================================
 
 func TestDSNExtensionAdvertised(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableDSN = true
 
 	server, addr := startTestServer(t, config)
@@ -972,7 +1073,7 @@ func TestDSNExtensionAdvertised(t *testing.T) {
 }
 
 func TestDSNNotAdvertisedWhenDisabled(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableDSN = false
 
 	server, addr := startTestServer(t, config)
@@ -999,7 +1100,7 @@ func TestDSNParameters(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableDSN = true
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
@@ -1061,7 +1162,7 @@ func TestDSNParameters(t *testing.T) {
 }
 
 func TestDSNParametersRejectedWhenDisabled(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableDSN = false
 
 	server, addr := startTestServer(t, config)
@@ -1087,7 +1188,7 @@ func TestDSNParametersRejectedWhenDisabled(t *testing.T) {
 // ============================================================================
 
 func TestChunkingExtensionAdvertised(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableChunking = true
 
 	server, addr := startTestServer(t, config)
@@ -1125,7 +1226,7 @@ func TestBDATSingleChunk(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableChunking = true
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
@@ -1170,7 +1271,7 @@ func TestBDATMultipleChunks(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableChunking = true
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
@@ -1234,7 +1335,7 @@ func TestBDATMultipleChunks(t *testing.T) {
 }
 
 func TestBDATNotAvailableWhenDisabled(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.EnableChunking = false
 
 	server, addr := startTestServer(t, config)
@@ -1263,7 +1364,7 @@ func TestBDATNotAvailableWhenDisabled(t *testing.T) {
 // ============================================================================
 
 func TestAuthExtensionAdvertised(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
 	config.EnableLoginAuth = true
 
@@ -1296,7 +1397,7 @@ func TestAuthExtensionAdvertised(t *testing.T) {
 }
 
 func TestAuthPLAIN(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
 	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
@@ -1329,7 +1430,7 @@ func TestAuthPLAIN(t *testing.T) {
 }
 
 func TestAuthPLAINWithChallenge(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"PLAIN"}
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
@@ -1364,7 +1465,7 @@ func TestAuthPLAINWithChallenge(t *testing.T) {
 }
 
 func TestAuthLOGIN(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"LOGIN"}
 	config.EnableLoginAuth = true
 	config.Callbacks = &Callbacks{
@@ -1400,7 +1501,7 @@ func TestAuthLOGIN(t *testing.T) {
 }
 
 func TestAuthFailed(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"PLAIN"}
 	config.Callbacks = &Callbacks{
 		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
@@ -1427,7 +1528,7 @@ func TestAuthFailed(t *testing.T) {
 }
 
 func TestRequireAuth(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.AuthMechanisms = []string{"PLAIN"}
 	config.RequireAuth = true
 	config.Callbacks = &Callbacks{
@@ -1534,7 +1635,7 @@ func TestImplicitTLSBasicSession(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1587,7 +1688,7 @@ func TestImplicitTLSNoSTARTTLSAdvertised(t *testing.T) {
 		t.Fatalf("Failed to generate test cert: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1621,7 +1722,7 @@ func TestImplicitTLSWithAuth(t *testing.T) {
 
 	authenticated := false
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1674,7 +1775,7 @@ func TestImplicitTLSWithAuth(t *testing.T) {
 }
 
 func TestImplicitTLSRequiresTLSConfig(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Hostname = "test.example.com"
 	// No TLSConfig set
 
@@ -1703,7 +1804,7 @@ func TestImplicitTLSProtocolInReceivedHeader(t *testing.T) {
 	var receivedMail *Mail
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1761,7 +1862,7 @@ func TestSTARTTLSAdvertised(t *testing.T) {
 		t.Fatalf("Failed to generate test cert: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1792,7 +1893,7 @@ func TestSTARTTLSAdvertised(t *testing.T) {
 }
 
 func TestSTARTTLSNotAdvertisedWithoutConfig(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	// No TLSConfig
 
 	server, addr := startTestServer(t, config)
@@ -1821,7 +1922,7 @@ func TestSTARTTLSUpgrade(t *testing.T) {
 		t.Fatalf("Failed to generate test cert: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{
 		Certificates: []tls.Certificate{cert},
 	}
@@ -1874,7 +1975,7 @@ func TestSTARTTLSUpgrade(t *testing.T) {
 // ============================================================================
 
 func TestMaxRecipients(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.MaxRecipients = 3
 
 	server, addr := startTestServer(t, config)
@@ -1904,7 +2005,7 @@ func TestMaxRecipients(t *testing.T) {
 }
 
 func TestMaxMessageSize(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.MaxMessageSize = 500 // Small but realistic for testing
 
 	server, addr := startTestServer(t, config)
@@ -1939,7 +2040,7 @@ func TestMaxMessageSize(t *testing.T) {
 }
 
 func TestBadSequenceErrors(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -1970,7 +2071,7 @@ func TestBadSequenceErrors(t *testing.T) {
 }
 
 func TestUnknownCommand(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	server, addr := startTestServer(t, config)
 	defer server.Close()
 
@@ -1993,7 +2094,7 @@ func TestOnConnectCallback(t *testing.T) {
 	connectCalled := false
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnConnect: func(ctx context.Context, conn *Connection) error {
 			mu.Lock()
@@ -2022,7 +2123,7 @@ func TestOnConnectCallback(t *testing.T) {
 }
 
 func TestOnConnectReject(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnConnect: func(ctx context.Context, conn *Connection) error {
 			return fmt.Errorf("connection rejected")
@@ -2043,7 +2144,7 @@ func TestOnMailFromCallback(t *testing.T) {
 	var receivedFrom string
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMailFrom: func(ctx context.Context, conn *Connection, from Path, params map[string]string) error {
 			mu.Lock()
@@ -2076,7 +2177,7 @@ func TestOnMailFromCallback(t *testing.T) {
 }
 
 func TestOnMailFromReject(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMailFrom: func(ctx context.Context, conn *Connection, from Path, params map[string]string) error {
 			if strings.Contains(from.Mailbox.Domain, "blocked.com") {
@@ -2110,7 +2211,7 @@ func TestOnRcptToCallback(t *testing.T) {
 	var recipients []string
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnRcptTo: func(ctx context.Context, conn *Connection, to Path, params map[string]string) error {
 			mu.Lock()
@@ -2148,7 +2249,7 @@ func TestOnRcptToCallback(t *testing.T) {
 }
 
 func TestOnRcptToReject(t *testing.T) {
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnRcptTo: func(ctx context.Context, conn *Connection, to Path, params map[string]string) error {
 			if strings.Contains(to.Mailbox.LocalPart, "invalid") {
@@ -2184,7 +2285,7 @@ func TestOnDataCallback(t *testing.T) {
 	dataCalled := false
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnData: func(ctx context.Context, conn *Connection) error {
 			mu.Lock()
@@ -2233,7 +2334,7 @@ func TestOnEhloCallback(t *testing.T) {
 	var clientHostname string
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnEhlo: func(ctx context.Context, conn *Connection, hostname string) (map[Extension]string, error) {
 			mu.Lock()
@@ -2271,7 +2372,7 @@ func TestMultipleTransactions(t *testing.T) {
 	messageCount := 0
 	var mu sync.Mutex
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			mu.Lock()
@@ -2375,7 +2476,7 @@ func TestRequireTLSRejectsMailWithoutTLS(t *testing.T) {
 		t.Fatalf("Failed to generate test certificate: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	config.RequireTLS = true
 
@@ -2405,7 +2506,7 @@ func TestRequireTLSAllowsMailAfterSTARTTLS(t *testing.T) {
 		t.Fatalf("Failed to generate test certificate: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	config.RequireTLS = true
 
@@ -2455,7 +2556,7 @@ func TestRequireTLSHidesAuthWithoutTLS(t *testing.T) {
 		t.Fatalf("Failed to generate test certificate: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	config.RequireTLS = true
 	config.AuthMechanisms = []string{"PLAIN", "LOGIN"}
@@ -2879,7 +2980,7 @@ func TestREQUIRETLSExtensionAdvertisedAfterSTARTTLS(t *testing.T) {
 		t.Fatalf("Failed to generate test certificate: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 
 	server, addr := startTestServer(t, config)
@@ -2941,7 +3042,7 @@ func TestREQUIRETLSParameterAcceptedWithTLS(t *testing.T) {
 	}
 
 	var receivedMail *Mail
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
@@ -3015,7 +3116,7 @@ func TestREQUIRETLSParameterRejectedWithoutTLS(t *testing.T) {
 		t.Fatalf("Failed to generate test certificate: %v", err)
 	}
 
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 
 	server, addr := startTestServer(t, config)
@@ -3040,7 +3141,7 @@ func TestREQUIRETLSParameterRejectedWithoutTLS(t *testing.T) {
 // and stored in the envelope for relay handling.
 func TestTLSRequiredHeaderProcessing(t *testing.T) {
 	var receivedMail *Mail
-	config := DefaultServerConfig()
+	config := testServerConfig()
 	config.Callbacks = &Callbacks{
 		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
 			receivedMail = mail

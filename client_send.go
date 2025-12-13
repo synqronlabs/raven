@@ -48,6 +48,7 @@ type RecipientResult struct {
 }
 
 // Send sends a mail message to the server.
+// The mail content is validated against RFC 5322 requirements before sending.
 func (c *Client) Send(mail *Mail) (*SendResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -58,6 +59,13 @@ func (c *Client) Send(mail *Mail) (*SendResult, error) {
 
 	if len(mail.Envelope.To) == 0 {
 		return nil, ErrNoRecipients
+	}
+
+	// Validate mail content against RFC 5322 requirements
+	if c.config.ValidateBeforeSend {
+		if err := mail.Content.Validate(); err != nil {
+			return nil, fmt.Errorf("mail validation failed: %w", err)
+		}
 	}
 
 	result := &SendResult{

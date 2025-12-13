@@ -10,19 +10,20 @@ import (
 
 // Dialer provides methods for establishing SMTP connections.
 type Dialer struct {
-	Host           string
-	Port           int
-	LocalAddr      string // Local address to bind to
-	TLSConfig      *tls.Config
-	Auth           *ClientAuth
-	LocalName      string
-	ConnectTimeout time.Duration
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	SSL            bool // Implicit TLS (port 465)
-	StartTLS       bool
-	RequireTLS     bool
-	Debug          bool
+	Host               string
+	Port               int
+	LocalAddr          string // Local address to bind to
+	TLSConfig          *tls.Config
+	Auth               *ClientAuth
+	LocalName          string
+	ConnectTimeout     time.Duration
+	ReadTimeout        time.Duration
+	WriteTimeout       time.Duration
+	ValidateBeforeSend bool // Validate email content before sending
+	SSL                bool // Implicit TLS (port 465)
+	StartTLS           bool
+	RequireTLS         bool
+	Debug              bool
 }
 
 // NewDialer creates a new Dialer with sensible defaults.
@@ -44,14 +45,15 @@ func (d *Dialer) Dial() (*Client, error) {
 // DialContext establishes a new connection with context support.
 func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 	config := &ClientConfig{
-		LocalName:      d.LocalName,
-		LocalAddr:      d.LocalAddr,
-		TLSConfig:      d.TLSConfig,
-		Auth:           d.Auth,
-		ConnectTimeout: d.ConnectTimeout,
-		ReadTimeout:    d.ReadTimeout,
-		WriteTimeout:   d.WriteTimeout,
-		Debug:          d.Debug,
+		LocalName:          d.LocalName,
+		LocalAddr:          d.LocalAddr,
+		TLSConfig:          d.TLSConfig,
+		Auth:               d.Auth,
+		ConnectTimeout:     d.ConnectTimeout,
+		ReadTimeout:        d.ReadTimeout,
+		WriteTimeout:       d.WriteTimeout,
+		ValidateBeforeSend: d.ValidateBeforeSend,
+		Debug:              d.Debug,
 	}
 
 	if config.LocalName == "" {

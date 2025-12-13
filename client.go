@@ -28,15 +28,16 @@ var (
 
 // ClientConfig holds configuration for the SMTP client.
 type ClientConfig struct {
-	LocalName      string // Hostname for EHLO/HELO (default: "localhost")
-	LocalAddr      string // Local address to bind to (e.g., "ip:port")
-	TLSConfig      *tls.Config
-	Auth           *ClientAuth
-	ConnectTimeout time.Duration
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	Debug          bool
-	DebugWriter    io.Writer
+	LocalName          string // Hostname for EHLO/HELO (default: "localhost")
+	LocalAddr          string // Local address to bind to (e.g., "ip:port")
+	TLSConfig          *tls.Config
+	Auth               *ClientAuth
+	ConnectTimeout     time.Duration
+	ReadTimeout        time.Duration
+	WriteTimeout       time.Duration
+	ValidateBeforeSend bool
+	Debug              bool
+	DebugWriter        io.Writer
 }
 
 // ClientAuth holds authentication credentials.
@@ -49,10 +50,11 @@ type ClientAuth struct {
 // DefaultClientConfig returns a ClientConfig with sensible defaults.
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
-		LocalName:      "localhost",
-		ConnectTimeout: 30 * time.Second,
-		ReadTimeout:    5 * time.Minute,
-		WriteTimeout:   5 * time.Minute,
+		LocalName:          "localhost",
+		ConnectTimeout:     30 * time.Second,
+		ReadTimeout:        5 * time.Minute,
+		WriteTimeout:       5 * time.Minute,
+		ValidateBeforeSend: true,
 	}
 }
 

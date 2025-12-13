@@ -16,7 +16,6 @@ import (
 	"github.com/synqronlabs/raven/utils"
 )
 
-
 // detectLoop checks for mail loops by counting the "Received" headers,
 // and returns an error if the count exceeds maxAllowed.
 func detectLoop(mail *Mail, logger *slog.Logger, maxAllowed int) error {
@@ -222,6 +221,80 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		}
 	}
 
+	// SPF check per RFC 7208
+	var spfResult *SPFCheckResult
+	if s.config.SPF != nil && s.config.SPF.Enabled {
+		clientIP, err := utils.GetIPFromAddr(conn.RemoteAddr())
+		if err == nil {
+			// Determine the domain to check
+			var senderDomain string
+			if from.IsNull() {
+				// Null sender: use HELO domain per RFC 7208 Section 2.4
+				conn.mu.RLock()
+				senderDomain = conn.Trace.ClientHostname
+				conn.mu.RUnlock()
+			} else {
+				senderDomain = from.Mailbox.Domain
+			}
+
+			if senderDomain != "" {
+				// Prepare sender identity
+				sender := from.Mailbox.String()
+				if sender == "" {
+					sender = "postmaster@" + senderDomain
+				}
+
+				// Configure SPF check options
+				checkOpts := s.config.SPF.CheckOptions
+				if checkOpts == nil {
+					checkOpts = DefaultSPFCheckOptions()
+				}
+				// Set HELO domain for macro expansion
+				conn.mu.RLock()
+				checkOpts.HeloDomain = conn.Trace.ClientHostname
+				conn.mu.RUnlock()
+				checkOpts.ReceiverDomain = s.config.Hostname
+
+				// Perform SPF check
+				spfResult = CheckSPF(clientIP, senderDomain, sender, checkOpts)
+
+				// Handle SPF result based on configuration
+				switch spfResult.Result {
+				case SPFResultFail:
+					if s.config.SPF.FailAction == SPFActionReject {
+						return &Response{
+							Code:         CodeTransactionFailed,
+							EnhancedCode: string(ESCSecurityError),
+							Message:      fmt.Sprintf("SPF check failed: %s", spfResult.Domain),
+						}
+					}
+				case SPFResultSoftfail:
+					if s.config.SPF.SoftFailAction == SPFActionReject {
+						return &Response{
+							Code:         CodeTransactionFailed,
+							EnhancedCode: string(ESCSecurityError),
+							Message:      fmt.Sprintf("SPF check softfailed: %s", spfResult.Domain),
+						}
+					}
+				case SPFResultPermerror:
+					// Permanent error in SPF record - log but usually accept
+					s.config.Logger.Warn("SPF permerror",
+						slog.String("domain", senderDomain),
+						slog.String("client_ip", clientIP.String()),
+						slog.Any("error", spfResult.Error),
+					)
+				case SPFResultTemperror:
+					// Transient error - could temporarily reject
+					s.config.Logger.Warn("SPF temperror",
+						slog.String("domain", senderDomain),
+						slog.String("client_ip", clientIP.String()),
+						slog.Any("error", spfResult.Error),
+					)
+				}
+			}
+		}
+	}
+
 	if s.config.Callbacks != nil && s.config.Callbacks.OnMailFrom != nil {
 		if err := s.config.Callbacks.OnMailFrom(conn.Context(), conn, from, params); err != nil {
 			resp := ResponseMailboxNotFound(err.Error())
@@ -232,6 +305,11 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	// Start transaction
 	mail := conn.beginTransaction()
 	mail.Envelope.From = from
+
+	// Store SPF result if available
+	if spfResult != nil {
+		mail.Envelope.SPFResult = spfResult
+	}
 
 	// Set default body type to 7BIT
 	mail.Envelope.BodyType = BodyType7Bit
@@ -611,6 +689,14 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		Value: receivedHeader.String(),
 	}}, mail.Content.Headers...)
 
+	// Add Received-SPF header if SPF check was performed per RFC 7208 Section 9.1
+	if mail.Envelope.SPFResult != nil {
+		mail.Content.Headers = append(Headers{{
+			Name:  "Received-SPF",
+			Value: mail.Envelope.SPFResult.ReceivedSPFHeader()[len("Received-SPF: "):],
+		}}, mail.Content.Headers...)
+	}
+
 	if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
 		if err := s.config.Callbacks.OnMessage(conn.Context(), conn, mail); err != nil {
 			conn.resetTransaction()
@@ -638,6 +724,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 // readDataContent reads the message content until <CRLF>.<CRLF>.
 // Strictly requires CRLF line endings to prevent SMTP smuggling attacks.
 // If enforce7Bit is true, returns Err8BitIn7BitMode if any non-ASCII bytes are found.
+// Line length is enforced per RFC 5322 (998 characters max, excluding CRLF).
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
 	// Pre-allocate buffer with reasonable initial capacity
 	// Use maxSize as initial buffer capacity if it's set, within a reasonable limit, otherwise default to 4096
@@ -655,8 +742,12 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 	var sizeExceeded bool
 	var has8BitData bool
 
+	// Use RFC 5322 MaxLineLength (998) for message content, not SMTP command limit
+	// Add 2 for CRLF that ReadLine expects
+	maxContentLineLength := MaxLineLength + 2
+
 	for {
-		line, err := ravenio.ReadLine(reader, s.config.MaxLineLength, enforce7Bit)
+		line, err := ravenio.ReadLine(reader, maxContentLineLength, enforce7Bit)
 		if err != nil {
 			if errors.Is(err, ravenio.Err8BitIn7BitMode) {
 				// Mark that we found 8-bit data, but continue draining
@@ -826,6 +917,14 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 			Name:  "Received",
 			Value: receivedHeader.String(),
 		}}, mail.Content.Headers...)
+
+		// Add Received-SPF header if SPF check was performed per RFC 7208 Section 9.1
+		if mail.Envelope.SPFResult != nil {
+			mail.Content.Headers = append(Headers{{
+				Name:  "Received-SPF",
+				Value: mail.Envelope.SPFResult.ReceivedSPFHeader()[len("Received-SPF: "):],
+			}}, mail.Content.Headers...)
+		}
 
 		// OnMessage callback
 		if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {

@@ -93,7 +93,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		config.IdleTimeout = 5 * time.Minute
 	}
 	if config.MaxLineLength == 0 {
-		config.MaxLineLength = 512
+		config.MaxLineLength = 512 // RFC 5321 recommended line length for commands
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -261,7 +261,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		DataTimeout:    s.config.DataTimeout,
 	}
 
-	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, s.config.MaxLineLength/4)
+	conn := NewConnection(s.ctx, netConn, s.config.Hostname, limits, RecommendedLineLength+2) // +2 for CRLF
 	conn.Trace.ID = utils.GenerateID()
 
 	// Check if implicit TLS

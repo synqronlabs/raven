@@ -53,24 +53,6 @@ func main() {
 }
 ```
 
-### Using Callbacks
-
-```go
-config := raven.DefaultServerConfig()
-config.Hostname = "mail.example.com"
-config.Addr = ":2525"
-
-config.Callbacks = &raven.Callbacks{
-    OnMessage: func(ctx context.Context, conn *raven.Connection, mail *raven.Mail) error {
-        log.Printf("Received mail from %s", mail.Envelope.From.String())
-        return nil
-    },
-}
-
-server, _ := raven.NewServer(config)
-server.ListenAndServe()
-```
-
 ## SMTP Extensions
 
 Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** (must be enabled manually):
@@ -272,6 +254,47 @@ responses, err := client.PipelineCommands([]string{
 })
 ```
 
+## SPF Validation
+
+Raven supports SPF (Sender Policy Framework, RFC 7208) validation for incoming mail:
+
+### Basic SPF Validation
+
+```go
+server := raven.New("mail.example.com").
+    SPF(raven.SPFActionReject, raven.SPFActionAccept). // reject on fail, accept on softfail
+    OnMessage(func(ctx *raven.Context) error {
+        // SPF result is available in the envelope
+        if ctx.Mail.Envelope.SPFResult != nil {
+            log.Printf("SPF result: %s", ctx.Mail.Envelope.SPFResult.Result)
+        }
+        return nil
+    }).
+    Build()
+```
+
+### SPF with Custom Options
+
+```go
+server := raven.New("mail.example.com").
+    SPFWithOptions(&raven.SPFVerifyOptions{
+        Enabled:        true,
+        FailAction:     raven.SPFActionReject,  // Reject on hard fail
+        SoftfailAction: raven.SPFActionAccept,  // Accept on soft fail
+    }).
+    Build()
+```
+
+### SPF Actions
+
+| Action | Description |
+|--------|-------------|
+| `SPFActionAccept` | Accept the message (default for softfail) |
+| `SPFActionReject` | Reject with 550 error |
+| `SPFActionMark` | Accept but mark for downstream processing |
+
+The SPF result includes the check result (`pass`, `fail`, `softfail`, `neutral`, `none`, `temperror`, `permerror`), the sender domain, and generates a `Received-SPF` header automatically.
+
 ## DKIM Signing and Verification
 
 Raven supports DKIM (RFC 6376) for signing outbound messages and verifying inbound messages:
@@ -379,6 +402,8 @@ raven/
 ├── mail.go            # Mail and envelope types
 ├── mail_builder.go    # Fluent mail builder API
 ├── mail_test.go       # Mail builder tests
+├── dkim.go            # DKIM signing and verification (RFC 6376)
+├── spf.go             # SPF validation (RFC 7208)
 ├── response.go        # SMTP response codes and types
 ├── extensions.go      # SMTP extension definitions
 ├── middleware.go      # Built-in middleware

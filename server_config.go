@@ -10,22 +10,24 @@ import (
 // ServerConfig contains configuration options for the SMTP server.
 // Prefer using the builder pattern via raven.New().
 type ServerConfig struct {
-	Hostname           string
-	Addr               string
-	TLSConfig          *tls.Config
-	RequireTLS         bool
-	AuthMechanisms     []string
-	RequireAuth        bool
-	EnableLoginAuth    bool
-	MaxMessageSize     int64
-	MaxRecipients      int
-	MaxConnections     int
-	MaxCommands        int64
-	MaxErrors          int
-	ReadTimeout        time.Duration
-	WriteTimeout       time.Duration
-	DataTimeout        time.Duration
-	IdleTimeout        time.Duration
+	Hostname        string
+	Addr            string
+	TLSConfig       *tls.Config
+	RequireTLS      bool
+	AuthMechanisms  []string
+	RequireAuth     bool
+	EnableLoginAuth bool
+	MaxMessageSize  int64
+	MaxRecipients   int
+	MaxConnections  int
+	MaxCommands     int64
+	MaxErrors       int
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	DataTimeout     time.Duration
+	IdleTimeout     time.Duration
+	// MaxLineLength is the maximum length for SMTP command lines (RFC 5321 recommends 512).
+	// For message content line length limits, RFC 5322's MaxLineLength (998) is used.
 	MaxLineLength      int
 	EnableDSN          bool
 	EnableChunking     bool
@@ -34,37 +36,10 @@ type ServerConfig struct {
 	ShutdownTimeout    time.Duration
 	Logger             *slog.Logger
 	Callbacks          *Callbacks
-}
 
-// DefaultServerConfig returns a ServerConfig with sensible defaults.
-func DefaultServerConfig() ServerConfig {
-	return ServerConfig{
-		Addr:               ":25",
-		ReadTimeout:        5 * time.Minute,
-		WriteTimeout:       5 * time.Minute,
-		DataTimeout:        10 * time.Minute,
-		IdleTimeout:        5 * time.Minute,
-		MaxLineLength:      512,
-		MaxReceivedHeaders: 100, // RFC 5321 Section 6.3 recommends at least 100
-		// Opt-in extensions - disabled by default
-		EnableDSN:      false,
-		EnableChunking: false,
-		// Auth disabled by default (set AuthMechanisms to enable)
-		AuthMechanisms:   nil,
-		GracefulShutdown: true,
-		ShutdownTimeout:  30 * time.Second,
-		Logger:           slog.Default(),
-	}
-}
-
-// SubmissionConfig returns a ServerConfig for mail submission (port 587).
-func SubmissionConfig() ServerConfig {
-	config := DefaultServerConfig()
-	config.Addr = ":587"
-	config.AuthMechanisms = []string{"PLAIN"}
-	config.RequireAuth = true
-	config.RequireTLS = true
-	return config
+	// SPF contains SPF (Sender Policy Framework) verification options.
+	// If nil, SPF checking is disabled.
+	SPF *SPFVerifyOptions
 }
 
 // Callbacks defines event handlers for SMTP server events.

@@ -125,6 +125,27 @@
 //	    result, err := pool.Send(mail)
 //	}
 //
+// # SPF Validation
+//
+// Enable SPF (Sender Policy Framework, RFC 7208) validation for incoming mail:
+//
+//	server := raven.New("mail.example.com").
+//	    SPF(raven.SPFActionReject, raven.SPFActionAccept).
+//	    Build()
+//
+// Or with detailed options:
+//
+//	server := raven.New("mail.example.com").
+//	    SPFWithOptions(&raven.SPFVerifyOptions{
+//	        Enabled:        true,
+//	        FailAction:     raven.SPFActionReject,
+//	        SoftfailAction: raven.SPFActionAccept,
+//	    }).
+//	    Build()
+//
+// The SPF result is available in ctx.Mail.Envelope.SPFResult and a
+// Received-SPF header is automatically added to the message.
+//
 // # DKIM Signing and Verification
 //
 // Sign outbound messages with DKIM (RFC 6376):
