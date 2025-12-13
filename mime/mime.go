@@ -188,7 +188,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 	contentType := part.Header.Get("Content-Type")
 	if contentType == "" {
-		// Default to text/plain per RFC 2045
+		// Default to text/plain
 		mimePart.ContentType = "text/plain"
 		mimePart.Charset = "us-ascii"
 	} else {
@@ -278,8 +278,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 // Parse parses MIME content from headers and body.
 // It automatically detects whether the content is single-part or multipart.
-// Per RFC 2045 Section 5.2, defaults to text/plain; charset=us-ascii when
-// Content-Type is missing or invalid.
+// Defaults to text/plain; charset=us-ascii when Content-Type is missing or invalid.
 func Parse(headers HeaderGetter, body []byte) (*Part, error) {
 	contentType := headers.Get("Content-Type")
 	if contentType == "" {

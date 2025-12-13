@@ -64,22 +64,18 @@ const (
 	ESCTempSystemFull EnhancedCode = "4.2.2"
 
 	// ESCTempLocalError indicates temporary local processing error (4.3.0).
-	// Per RFC 3463: "other or undefined mail system status"
 	ESCTempLocalError EnhancedCode = "4.3.0"
 
 	// ESCTempInsufficientStorage indicates temporary insufficient storage (4.3.1).
-	// Per RFC 3463: "mail system full"
 	ESCTempInsufficientStorage EnhancedCode = "4.3.1"
 
 	// ESCTempSystemNotCapable indicates system temporarily not capable (4.3.5).
 	ESCTempSystemNotCapable EnhancedCode = "4.3.5"
 
 	// ESCTempTooManyRecipients indicates too many recipients (4.5.3).
-	// Per RFC 3463: "too many recipients"
 	ESCTempTooManyRecipients EnhancedCode = "4.5.3"
 
 	// ESCTempInvalidArgs indicates invalid command arguments (4.5.4).
-	// Per RFC 3463: "invalid command arguments"
 	ESCTempInvalidArgs EnhancedCode = "4.5.4"
 
 	// ESCTempAuthFailed indicates temporary authentication failure (4.7.0).
@@ -91,7 +87,6 @@ const (
 	ESCPermFailure EnhancedCode = "5.0.0"
 
 	// ESCBadDestMailbox indicates bad destination mailbox address (5.1.1).
-	// Per RFC 3463: "bad destination mailbox address"
 	ESCBadDestMailbox EnhancedCode = "5.1.1"
 
 	// ESCBadDestSystem indicates bad destination system address (5.1.2).
@@ -110,65 +105,51 @@ const (
 	ESCMessageTooLarge EnhancedCode = "5.2.3"
 
 	// ESCMailSystemFull indicates mail system storage exceeded (5.3.4).
-	// Per RFC 3463: "message too big for system"
 	ESCMailSystemFull EnhancedCode = "5.3.4"
 
 	// ESCRoutingLoop indicates mail routing loop detected (5.4.6).
-	// Per RFC 3463: "routing loop detected"
 	ESCRoutingLoop EnhancedCode = "5.4.6"
 
 	// ESCInvalidCommand indicates invalid/unrecognized command (5.5.0).
-	// Per RFC 3463: "other or undefined protocol status"
 	ESCInvalidCommand EnhancedCode = "5.5.0"
 
 	// ESCBadCommandSequence indicates bad command sequence (5.5.1).
-	// Per RFC 3463: "invalid command"
 	ESCBadCommandSequence EnhancedCode = "5.5.1"
 
 	// ESCSyntaxError indicates syntax error in command or arguments (5.5.2).
-	// Per RFC 3463: "syntax error"
 	ESCSyntaxError EnhancedCode = "5.5.2"
 
 	// ESCTooManyRecipients indicates too many recipients (permanent) (5.5.3).
 	ESCTooManyRecipients EnhancedCode = "5.5.3"
 
 	// ESCInvalidArgs indicates invalid command arguments (5.5.4).
-	// Per RFC 3463: "invalid command arguments"
 	ESCInvalidArgs EnhancedCode = "5.5.4"
 
 	// ESCContentError indicates message content/media error (5.6.0).
-	// Per RFC 3463: "other or undefined media error"
 	ESCContentError EnhancedCode = "5.6.0"
 
 	// ESCMediaNotSupported indicates media not supported (5.6.1).
 	ESCMediaNotSupported EnhancedCode = "5.6.1"
 
 	// ESCNonASCIINoSMTPUTF8 indicates non-ASCII used without SMTPUTF8 (5.6.7).
-	// Per RFC 6531: internationalized address requires SMTPUTF8
 	ESCNonASCIINoSMTPUTF8 EnhancedCode = "5.6.7"
 
 	// ESCSecurityError indicates security or policy error (5.7.0).
-	// Per RFC 3463: "other or undefined security status"
 	ESCSecurityError EnhancedCode = "5.7.0"
 
 	// ESCDeliveryNotAuth indicates delivery not authorized (5.7.1).
-	// Per RFC 3463: "delivery not authorized, message refused"
 	ESCDeliveryNotAuth EnhancedCode = "5.7.1"
 
 	// ESCAuthCredentialsInvalid indicates auth credentials invalid (5.7.8).
-	// Per RFC 4954: "authentication credentials invalid"
 	ESCAuthCredentialsInvalid EnhancedCode = "5.7.8"
 
 	// ESCAuthMechanismWeak indicates auth mechanism too weak (5.7.9).
-	// Per RFC 4954: "authentication mechanism too weak"
 	ESCAuthMechanismWeak EnhancedCode = "5.7.9"
 
 	// ESCEncryptionRequired indicates encryption required (5.7.11).
-	// Per RFC 5248: "encryption required for requested authentication mechanism"
 	ESCEncryptionRequired EnhancedCode = "5.7.11"
 
 	// ESCRequireTLSRequired indicates REQUIRETLS is required (5.7.30).
-	// Per RFC 8689: "REQUIRETLS support required"
 	ESCRequireTLSRequired EnhancedCode = "5.7.30"
 )
 
@@ -292,7 +273,7 @@ func ResponseOK(message string, enhancedCode string) Response {
 }
 
 // ResponseServiceReady creates a 220 service ready response.
-// Per RFC 5321, the domain MUST be the first word after the code.
+// The domain must be the first word after the code.
 func ResponseServiceReady(domain string, message string) Response {
 	msg := domain
 	if message != "" {
@@ -305,7 +286,7 @@ func ResponseServiceReady(domain string, message string) Response {
 }
 
 // ResponseServiceClosing creates a 221 service closing response.
-// Per RFC 5321, the domain MUST be the first word after the code.
+// The domain must be the first word after the code.
 func ResponseServiceClosing(domain string, message string) Response {
 	msg := domain
 	if message != "" {
@@ -318,7 +299,7 @@ func ResponseServiceClosing(domain string, message string) Response {
 }
 
 // ResponseServiceUnavailable creates a 421 service unavailable response.
-// Per RFC 5321, the domain MUST be the first word after the code.
+// The domain must be the first word after the code.
 func ResponseServiceUnavailable(domain string, message string) Response {
 	msg := domain
 	if message != "" {
@@ -371,8 +352,7 @@ func ResponseMailboxNotFound(message string) Response {
 }
 
 // ResponseCannotVRFY creates a 252 response for VRFY when verification is disabled.
-// Per RFC 5321, this indicates the server cannot verify the address
-// but will accept the message and attempt delivery.
+// Indicates the server cannot verify the address but will attempt delivery.
 func ResponseCannotVRFY(message string) Response {
 	if message == "" {
 		message = "Cannot VRFY user, but will accept message and attempt delivery"
@@ -384,7 +364,7 @@ func ResponseCannotVRFY(message string) Response {
 }
 
 // ResponseUserNotLocalWillForward creates a 251 response for forwarding.
-// Per RFC 5321, the forward-path must be included.
+// The forward-path must be included.
 func ResponseUserNotLocalWillForward(forwardPath string) Response {
 	return Response{
 		Code:    CodeUserNotLocalWillForward,
@@ -393,7 +373,7 @@ func ResponseUserNotLocalWillForward(forwardPath string) Response {
 }
 
 // ResponseUserNotLocalTryForward creates a 551 response for user not local.
-// Per RFC 5321, the forward-path must be included for the client to retry.
+// The forward-path must be included for the client to retry.
 func ResponseUserNotLocalTryForward(forwardPath string) Response {
 	return Response{
 		Code:    CodeUserNotLocalTryForward,
@@ -402,7 +382,7 @@ func ResponseUserNotLocalTryForward(forwardPath string) Response {
 }
 
 // ResponseParamsNotRecognized creates a 555 response for unrecognized parameters.
-// Per RFC 5321, used when MAIL FROM/RCPT TO parameters are not recognized.
+// Used when MAIL FROM/RCPT TO parameters are not recognized.
 func ResponseParamsNotRecognized(param string) Response {
 	return Response{
 		Code:         CodeParamsNotRecognized,
@@ -412,7 +392,7 @@ func ResponseParamsNotRecognized(param string) Response {
 }
 
 // ResponseUnableToAccommodateParams creates a 455 response for parameter accommodation failure.
-// Per RFC 5321, this is a transient error - client may retry later.
+// This is a transient error - client may retry later.
 func ResponseUnableToAccommodateParams(message string) Response {
 	return Response{
 		Code:         CodeUnableToAccommodateParams,
@@ -422,7 +402,7 @@ func ResponseUnableToAccommodateParams(message string) Response {
 }
 
 // ResponseAuthRequired creates a 530 authentication required response.
-// Per RFC 4954, used when authentication is required before proceeding.
+// Used when authentication is required before proceeding.
 func ResponseAuthRequired(message string) Response {
 	if message == "" {
 		message = "Authentication required"
@@ -435,7 +415,7 @@ func ResponseAuthRequired(message string) Response {
 }
 
 // ResponseAuthCredentialsInvalid creates a 535 authentication credentials invalid response.
-// Per RFC 4954, used when authentication fails due to invalid credentials.
+// Used when authentication fails due to invalid credentials.
 func ResponseAuthCredentialsInvalid(message string) Response {
 	if message == "" {
 		message = "Authentication credentials invalid"
@@ -457,7 +437,7 @@ func ResponseTransactionFailed(message string, enhancedCode EnhancedCode) Respon
 }
 
 // ResponseLocalError creates a 451 local error response.
-// Per RFC 5321, this indicates the action was aborted due to a server error.
+// Indicates the action was aborted due to a server error.
 func ResponseLocalError(message string) Response {
 	return Response{
 		Code:         CodeLocalError,
@@ -479,7 +459,7 @@ func ResponseExceededStorage(message string) Response {
 }
 
 // ResponseInsufficientStorage creates a 452 insufficient storage response.
-// Per RFC 5321, this is a transient error - client may retry later.
+// This is a transient error - client may retry later.
 func ResponseInsufficientStorage(message string) Response {
 	if message == "" {
 		message = "Insufficient system storage"

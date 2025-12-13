@@ -77,6 +77,14 @@ Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** 
 | DSN | RFC 3461 | `.Extension(raven.DSN())` |
 | CHUNKING | RFC 3030 | `.Extension(raven.Chunking())` |
 
+### Security / Authentication Extensions
+
+| Extension | RFC | How to Enable |
+|-----------|-----|---------------|
+| SPF | RFC 7208 | `.SPF()` or `.SPFWithOptions()` |
+| DKIM | RFC 6376 | `mail.SignDKIM()` / `mail.VerifyDKIM()` |
+| DMARC | RFC 7489 | `.DMARCWithOptions()` |
+
 ```go
 // Enable opt-in extensions
 server := raven.New("mail.example.com").
@@ -343,6 +351,82 @@ for _, result := range results {
 
 The library uses secure defaults (RSA-SHA256, relaxed canonicalization) and performs DNS lookups to retrieve public keys automatically.
 
+## DMARC Validation
+
+Raven supports DMARC (Domain-based Message Authentication, Reporting, and Conformance, RFC 7489) for validating incoming mail. DMARC builds on SPF and DKIM to provide domain-level authentication by verifying that the From header domain aligns with authenticated domains.
+
+### Basic DMARC Validation
+
+```go
+server := raven.New("mail.example.com").
+    SPF(raven.SPFActionMark, raven.SPFActionAccept).  // SPF needed for DMARC
+    DMARCWithOptions(&raven.DMARCVerifyOptions{
+        Enabled:          true,
+        RejectAction:     raven.DMARCActionReject,     // Reject on p=reject
+        QuarantineAction: raven.DMARCActionMark,       // Mark on p=quarantine
+    }).
+    OnMessage(func(ctx *raven.Context) error {
+        // DMARC result is available in the envelope
+        if ctx.Mail.Envelope.DMARCResult != nil {
+            log.Printf("DMARC result: %s (policy: %s)", 
+                ctx.Mail.Envelope.DMARCResult.Result,
+                ctx.Mail.Envelope.DMARCResult.Policy)
+        }
+        return nil
+    }).
+    Build()
+```
+
+### DMARC Actions
+
+| Action | Description |
+|--------|-------------|
+| `DMARCActionNone` | Take no action (accept the message) |
+| `DMARCActionReject` | Reject with 550 error |
+| `DMARCActionMark` | Accept but mark for downstream processing |
+
+### DMARC Results
+
+| Result | Description |
+|--------|-------------|
+| `DMARCPass` | Message passed DMARC authentication |
+| `DMARCFail` | Message failed DMARC authentication |
+| `DMARCNone` | No DMARC policy published for domain |
+| `DMARCTempError` | Temporary error during verification |
+| `DMARCPermError` | Permanent error (invalid policy) |
+
+### How DMARC Works
+
+1. **SPF Alignment**: Checks if the envelope sender domain (MAIL FROM) aligns with the From header domain
+2. **DKIM Alignment**: Checks if any DKIM signature domain (d= tag) aligns with the From header domain
+3. **Alignment Modes**: 
+   - **Strict**: Domains must match exactly
+   - **Relaxed** (default): Organizational domains must match (e.g., `mail.example.com` aligns with `example.com`)
+
+### Standalone DMARC Check
+
+```go
+// Perform a DMARC check manually
+result := raven.CheckDMARC(
+    "sender@example.com",           // From header
+    spfResult,                      // SPF result (*SPFCheckResult)
+    dkimResults,                    // DKIM results ([]*DKIMVerifyResult)
+    raven.DefaultDMARCVerifyOptions(),
+)
+
+if result.Result == raven.DMARCPass {
+    log.Println("DMARC passed")
+} else {
+    log.Printf("DMARC %s: policy=%s, spf_aligned=%v, dkim_aligned=%v",
+        result.Result, result.Policy, result.SPFAligned, result.DKIMAligned)
+}
+
+// Generate Authentication-Results header
+header := raven.AuthenticationResultsHeader("mail.example.com", result)
+```
+
+The DMARC implementation automatically generates an `Authentication-Results` header (RFC 7001) with the verification outcome.
+
 ## Serialization
 
 Raven supports both JSON and MessagePack serialization for Mail objects.
@@ -403,6 +487,7 @@ raven/
 ├── mail_builder.go    # Fluent mail builder API
 ├── mail_test.go       # Mail builder tests
 ├── dkim.go            # DKIM signing and verification (RFC 6376)
+├── dmarc.go           # DMARC validation (RFC 7489)
 ├── spf.go             # SPF validation (RFC 7208)
 ├── response.go        # SMTP response codes and types
 ├── extensions.go      # SMTP extension definitions

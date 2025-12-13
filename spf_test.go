@@ -645,7 +645,7 @@ func TestCheckSPF_NoRecord(t *testing.T) {
 }
 
 func TestCheckSPF_MultipleRecords(t *testing.T) {
-	// Multiple SPF records is a permerror per RFC 7208 Section 4.5
+	// Multiple SPF records is a permerror per RFC 7208
 	dnsRecords := map[string][]string{
 		"example.com": {
 			"v=spf1 ip4:192.0.2.0/24 -all",

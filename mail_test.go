@@ -549,7 +549,7 @@ func TestClient_SelectAuthMechanism_RespectsClientPreference(t *testing.T) {
 // ===== RFC 5322 Compliance Tests =====
 
 func TestRFC5322_HeaderFolding(t *testing.T) {
-	// Test that long headers are properly folded per RFC 5322 Section 2.2.3
+	// Test that long headers are properly folded per
 	mail, err := NewMailBuilder().
 		From("sender@example.com").
 		To("recipient@example.com").

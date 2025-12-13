@@ -25,7 +25,7 @@ func (p *Plain) Name() string {
 // Start processes the initial response or requests credentials.
 func (p *Plain) Start(initialResponse string) (challenge string, done bool, err error) {
 	if initialResponse == "" {
-		// Request credentials - send empty challenge per RFC 4954
+		// Request credentials - send empty challenge
 		return "", false, nil
 	}
 

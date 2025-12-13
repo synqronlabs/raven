@@ -169,7 +169,7 @@ func New(hostname string) *ServerBuilder {
 		dataTimeout:        10 * time.Minute,
 		idleTimeout:        5 * time.Minute,
 		maxLineLength:      RecommendedLineLength,
-		maxReceivedHeaders: 100, // RFC 5321 Section 6.3 recommends at least 100
+		maxReceivedHeaders: 100, // Recommended minimum for loop detection
 		logger:             slog.Default(),
 	}
 }
@@ -261,9 +261,8 @@ func (b *ServerBuilder) MaxLineLength(n int) *ServerBuilder {
 }
 
 // MaxReceivedHeaders sets the maximum number of Received headers allowed
-// before rejecting the message (loop detection per RFC 5321 Section 6.3).
-// RFC 5321 recommends a large threshold, normally at least 100.
-// Default: 100 (0 = unlimited)
+// before rejecting the message (loop detection).
+// Recommended: at least 100. Default: 100 (0 = unlimited)
 func (b *ServerBuilder) MaxReceivedHeaders(n int) *ServerBuilder {
 	b.maxReceivedHeaders = n
 	return b
@@ -286,7 +285,7 @@ func (b *ServerBuilder) ShutdownTimeout(d time.Duration) *ServerBuilder {
 	return b
 }
 
-// SPF enables SPF (Sender Policy Framework) verification per RFC 7208.
+// SPF enables SPF (Sender Policy Framework) verification.
 // SPF checks authorize the sending IP address against the domain's published
 // SPF record in DNS. This helps detect forged sender addresses.
 //

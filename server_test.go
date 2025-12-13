@@ -1043,57 +1043,50 @@ func TestSIZEParameterRejected(t *testing.T) {
 // Extension Tests - DSN
 // ============================================================================
 
-func TestDSNExtensionAdvertised(t *testing.T) {
-	config := testServerConfig()
-	config.EnableDSN = true
-
-	server, addr := startTestServer(t, config)
-	defer server.Close()
-
-	client := newTestClient(t, addr)
-	defer client.close()
-
-	client.expectCode(220)
-	client.send("EHLO client.example.com")
-	lines := client.expectMultilineCode(250)
-
-	found := false
-	for _, line := range lines {
-		if strings.Contains(line, "DSN") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Expected DSN extension to be advertised")
+func TestDSNExtensionAdvertisement(t *testing.T) {
+	tests := []struct {
+		name      string
+		enableDSN bool
+		expectDSN bool
+	}{
+		{"Enabled", true, true},
+		{"Disabled", false, false},
 	}
 
-	client.send("QUIT")
-	client.expectCode(221)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := testServerConfig()
+			config.EnableDSN = tt.enableDSN
 
-func TestDSNNotAdvertisedWhenDisabled(t *testing.T) {
-	config := testServerConfig()
-	config.EnableDSN = false
+			server, addr := startTestServer(t, config)
+			defer server.Close()
 
-	server, addr := startTestServer(t, config)
-	defer server.Close()
+			client := newTestClient(t, addr)
+			defer client.close()
 
-	client := newTestClient(t, addr)
-	defer client.close()
+			client.expectCode(220)
+			client.send("EHLO client.example.com")
+			lines := client.expectMultilineCode(250)
 
-	client.expectCode(220)
-	client.send("EHLO client.example.com")
-	lines := client.expectMultilineCode(250)
+			found := false
+			for _, line := range lines {
+				if strings.Contains(line, "DSN") && !strings.Contains(line, "Hello") {
+					found = true
+					break
+				}
+			}
 
-	for _, line := range lines {
-		if strings.Contains(line, "DSN") && !strings.Contains(line, "Hello") {
-			t.Error("DSN should not be advertised when disabled")
-		}
+			if tt.expectDSN && !found {
+				t.Error("Expected DSN extension to be advertised")
+			}
+			if !tt.expectDSN && found {
+				t.Error("DSN should not be advertised when disabled")
+			}
+
+			client.send("QUIT")
+			client.expectCode(221)
+		})
 	}
-
-	client.send("QUIT")
-	client.expectCode(221)
 }
 
 func TestDSNParameters(t *testing.T) {
@@ -2973,7 +2966,7 @@ func TestMultipleMiddlewareChaining(t *testing.T) {
 }
 
 // TestREQUIRETLSExtensionAdvertisedAfterSTARTTLS tests that REQUIRETLS is advertised
-// in EHLO response only after TLS is established (per RFC 8689 Section 2).
+// in EHLO response only after TLS is established (per RFC 8689).
 func TestREQUIRETLSExtensionAdvertisedAfterSTARTTLS(t *testing.T) {
 	cert, err := generateTestCert()
 	if err != nil {
@@ -3191,4 +3184,848 @@ func TestTLSRequiredHeaderProcessing(t *testing.T) {
 	if receivedMail.Envelope.ExtensionParams["TLS-OPTIONAL"] != "yes" {
 		t.Error("Expected TLS-OPTIONAL flag to be set when TLS-Required: No header present")
 	}
+}
+
+// ============================================================================
+// VRFY and EXPN Command Tests
+// ============================================================================
+
+func TestVRFY(t *testing.T) {
+	t.Run("WithoutCallback", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// VRFY without callback returns 252 (cannot verify)
+		client.send("VRFY user@example.com")
+		client.expectCode(252) // Cannot VRFY user
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("WithCallback", func(t *testing.T) {
+		config := testServerConfig()
+		config.Callbacks = &Callbacks{
+			OnVerify: func(ctx context.Context, conn *Connection, address string) (MailboxAddress, error) {
+				if address == "valid@example.com" {
+					return MailboxAddress{LocalPart: "valid", Domain: "example.com"}, nil
+				}
+				return MailboxAddress{}, fmt.Errorf("user not found")
+			},
+		}
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// Valid address
+		client.send("VRFY valid@example.com")
+		resp := client.expectCode(250)
+		if !strings.Contains(resp, "valid@example.com") {
+			t.Errorf("Expected verified address in response, got: %s", resp)
+		}
+
+		// Invalid address
+		client.send("VRFY invalid@example.com")
+		client.expectCode(550) // User not found
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("SyntaxError", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// VRFY without argument
+		client.send("VRFY")
+		client.expectCode(501) // Syntax error
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+}
+
+func TestEXPN(t *testing.T) {
+	t.Run("WithoutCallback", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// EXPN without callback returns 252 (cannot expand)
+		client.send("EXPN staff")
+		client.expectCode(252) // Cannot EXPN list
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("WithCallback", func(t *testing.T) {
+		config := testServerConfig()
+		config.Callbacks = &Callbacks{
+			OnExpand: func(ctx context.Context, conn *Connection, listName string) ([]MailboxAddress, error) {
+				if listName == "staff" {
+					return []MailboxAddress{
+						{LocalPart: "alice", Domain: "example.com"},
+						{LocalPart: "bob", Domain: "example.com"},
+					}, nil
+				}
+				return nil, fmt.Errorf("list not found")
+			},
+		}
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// Valid list
+		client.send("EXPN staff")
+		lines := client.expectMultilineCode(250)
+		if len(lines) < 2 {
+			t.Errorf("Expected multiline response with list members, got %d lines", len(lines))
+		}
+
+		// Invalid list
+		client.send("EXPN nonexistent")
+		client.expectCode(550) // List not found
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("SyntaxError", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// EXPN without argument
+		client.send("EXPN")
+		client.expectCode(501) // Syntax error
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+}
+
+// ============================================================================
+// Callback Tests - Additional
+// ============================================================================
+
+func TestOnDisconnectCallback(t *testing.T) {
+	disconnectCalled := false
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.Callbacks = &Callbacks{
+		OnDisconnect: func(ctx context.Context, conn *Connection) {
+			mu.Lock()
+			disconnectCalled = true
+			mu.Unlock()
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	client.expectCode(220)
+	client.send("QUIT")
+	client.expectCode(221)
+	client.close()
+
+	// Wait a bit for disconnect callback to be called
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	if !disconnectCalled {
+		t.Error("OnDisconnect callback was not called")
+	}
+	mu.Unlock()
+}
+
+func TestOnResetCallback(t *testing.T) {
+	resetCalled := false
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.Callbacks = &Callbacks{
+		OnReset: func(ctx context.Context, conn *Connection) {
+			mu.Lock()
+			resetCalled = true
+			mu.Unlock()
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+	client.send("MAIL FROM:<sender@example.com>")
+	client.expectCode(250)
+
+	// RSET should trigger callback
+	client.send("RSET")
+	client.expectCode(250)
+
+	mu.Lock()
+	if !resetCalled {
+		t.Error("OnReset callback was not called")
+	}
+	mu.Unlock()
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// ============================================================================
+// Mail Loop Detection Tests
+// ============================================================================
+
+func TestMailLoopDetection(t *testing.T) {
+	t.Run("Enabled", func(t *testing.T) {
+		config := testServerConfig()
+		config.MaxReceivedHeaders = 3 // Low limit for testing
+
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+		client.send("MAIL FROM:<sender@example.com>")
+		client.expectCode(250)
+		client.send("RCPT TO:<recipient@example.com>")
+		client.expectCode(250)
+		client.send("DATA")
+		client.expectCode(354)
+
+		// Send message with too many Received headers (simulating loop)
+		client.send("Received: from hop1.example.com by hop2.example.com")
+		client.send("Received: from hop2.example.com by hop3.example.com")
+		client.send("Received: from hop3.example.com by hop4.example.com")
+		client.send("Received: from hop4.example.com by hop5.example.com")
+		client.send("Subject: Test")
+		client.send("")
+		client.send("Body")
+		client.send(".")
+
+		// Should be rejected due to loop detection
+		resp := client.readLine()
+		code := 0
+		fmt.Sscanf(resp, "%d", &code)
+		if code != 554 {
+			t.Errorf("Expected 554 for mail loop, got: %s", resp)
+		}
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("Disabled", func(t *testing.T) {
+		var receivedMail *Mail
+		var mu sync.Mutex
+
+		config := testServerConfig()
+		config.MaxReceivedHeaders = 0 // Disabled
+
+		config.Callbacks = &Callbacks{
+			OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+				mu.Lock()
+				receivedMail = mail
+				mu.Unlock()
+				return nil
+			},
+		}
+
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+		client.send("MAIL FROM:<sender@example.com>")
+		client.expectCode(250)
+		client.send("RCPT TO:<recipient@example.com>")
+		client.expectCode(250)
+		client.send("DATA")
+		client.expectCode(354)
+
+		// Many Received headers should be accepted when detection is disabled
+		for i := range 10 {
+			client.send(fmt.Sprintf("Received: from hop%d.example.com by hop%d.example.com", i, i+1))
+		}
+		client.send("Subject: Test")
+		client.send("")
+		client.send("Body")
+		client.send(".")
+		client.expectCode(250)
+
+		mu.Lock()
+		if receivedMail == nil {
+			t.Error("Expected to receive mail when loop detection is disabled")
+		}
+		mu.Unlock()
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+}
+
+// ============================================================================
+// AUTH Cancellation Tests
+// ============================================================================
+
+func TestAuthCancellation(t *testing.T) {
+	authAttempted := false
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.AuthMechanisms = []string{"PLAIN"}
+	config.Callbacks = &Callbacks{
+		OnAuth: func(ctx context.Context, conn *Connection, mechanism, identity, password string) error {
+			mu.Lock()
+			authAttempted = true
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// Start AUTH PLAIN without initial response
+	client.send("AUTH PLAIN")
+	client.expectCode(334) // Challenge
+
+	// Cancel with "*"
+	client.send("*")
+	resp := client.readLine()
+	code := 0
+	fmt.Sscanf(resp, "%d", &code)
+	if code < 400 || code >= 600 {
+		t.Errorf("Expected 4xx or 5xx code for cancelled auth, got: %s", resp)
+	}
+
+	// Auth callback should not be called for cancelled auth
+	mu.Lock()
+	if authAttempted {
+		t.Error("OnAuth callback should not be called when auth is cancelled")
+	}
+	mu.Unlock()
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// ============================================================================
+// BDAT with BINARYMIME Tests
+// ============================================================================
+
+func TestBDATWithBinaryMIME(t *testing.T) {
+	var receivedMail *Mail
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.EnableChunking = true
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			mu.Lock()
+			receivedMail = mail
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	lines := client.expectMultilineCode(250)
+
+	// Verify BINARYMIME is advertised
+	foundBinaryMIME := false
+	for _, line := range lines {
+		if strings.Contains(line, "BINARYMIME") {
+			foundBinaryMIME = true
+			break
+		}
+	}
+	if !foundBinaryMIME {
+		t.Error("Expected BINARYMIME to be advertised when CHUNKING is enabled")
+	}
+
+	// Use BODY=BINARYMIME
+	client.send("MAIL FROM:<sender@example.com> BODY=BINARYMIME")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+
+	// Send binary data using BDAT
+	// Include some bytes that would be invalid in 7bit (NUL, high bytes)
+	binaryData := []byte("Subject: Binary test\r\n\r\nBinary data: \x00\x01\x02\xff\xfe")
+	client.send(fmt.Sprintf("BDAT %d LAST", len(binaryData)))
+	client.sendRaw(binaryData)
+	client.expectCode(250)
+
+	mu.Lock()
+	if receivedMail == nil {
+		t.Error("Expected to receive mail")
+	} else if receivedMail.Envelope.BodyType != BodyTypeBinaryMIME {
+		t.Errorf("Expected body type BINARYMIME, got %s", receivedMail.Envelope.BodyType)
+	}
+	mu.Unlock()
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+func TestBinaryMIMERequiresChunking(t *testing.T) {
+	config := testServerConfig()
+	config.EnableChunking = false // BINARYMIME requires CHUNKING
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// BODY=BINARYMIME should fail when CHUNKING is disabled
+	client.send("MAIL FROM:<sender@example.com> BODY=BINARYMIME")
+	client.expectCode(504) // Parameter not implemented
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// ============================================================================
+// MaxErrors Tests
+// ============================================================================
+
+func TestMaxErrorsLimit(t *testing.T) {
+	config := testServerConfig()
+	config.MaxErrors = 3
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+
+	// Generate errors up to the limit
+	for i := range 3 {
+		client.send("INVALID_COMMAND")
+		resp := client.readLine()
+		code := 0
+		fmt.Sscanf(resp, "%d", &code)
+		if code < 400 {
+			t.Errorf("Error %d: Expected error code, got: %s", i+1, resp)
+		}
+	}
+
+	// Next error should disconnect
+	client.send("ANOTHER_INVALID")
+
+	// Connection should be closed or we get a 421 (service not available)
+	resp, err := client.reader.ReadString('\n')
+	if err == nil {
+		code := 0
+		fmt.Sscanf(resp, "%d", &code)
+		if code != 421 {
+			t.Errorf("Expected 421 or connection close after max errors, got: %s", resp)
+		}
+	}
+	// If err != nil, connection was closed as expected
+}
+
+// ============================================================================
+// MaxCommands Tests
+// ============================================================================
+
+func TestMaxCommandsLimit(t *testing.T) {
+	config := testServerConfig()
+	config.MaxCommands = 5
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+
+	// Send commands up to the limit
+	for i := range 5 {
+		client.send("NOOP")
+		resp := client.readLine()
+		code := 0
+		fmt.Sscanf(resp, "%d", &code)
+		if code != 250 {
+			t.Errorf("Command %d: Expected 250, got: %s", i+1, resp)
+		}
+	}
+
+	// Next command should fail or disconnect
+	client.send("NOOP")
+	resp, err := client.reader.ReadString('\n')
+	if err == nil {
+		code := 0
+		fmt.Sscanf(resp, "%d", &code)
+		// Could be 421 (service not available) or 503 (bad sequence)
+		if code < 400 {
+			t.Errorf("Expected error after max commands, got: %s", resp)
+		}
+	}
+}
+
+// ============================================================================
+// Pipelining Tests
+// ============================================================================
+
+func TestPipelining(t *testing.T) {
+	t.Run("Advertised", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		lines := client.expectMultilineCode(250)
+
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, "PIPELINING") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("Expected PIPELINING extension to be advertised")
+		}
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("PipelinedCommands", func(t *testing.T) {
+		var receivedMail *Mail
+		var mu sync.Mutex
+
+		config := testServerConfig()
+		config.Callbacks = &Callbacks{
+			OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+				mu.Lock()
+				receivedMail = mail
+				mu.Unlock()
+				return nil
+			},
+		}
+
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+
+		// Send pipelined commands (multiple commands without waiting for responses)
+		client.sendRaw([]byte("MAIL FROM:<sender@example.com>\r\nRCPT TO:<recipient@example.com>\r\nDATA\r\n"))
+
+		// Read all three responses
+		client.expectCode(250) // MAIL FROM
+		client.expectCode(250) // RCPT TO
+		client.expectCode(354) // DATA
+
+		// Send data and terminator
+		client.send("Subject: Pipelined Test")
+		client.send("")
+		client.send("Body")
+		client.send(".")
+		client.expectCode(250)
+
+		mu.Lock()
+		if receivedMail == nil {
+			t.Error("Expected to receive mail via pipelining")
+		}
+		mu.Unlock()
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+}
+
+// ============================================================================
+// Enhanced Status Codes Tests
+// ============================================================================
+
+func TestEnhancedStatusCodes(t *testing.T) {
+	t.Run("Advertised", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		lines := client.expectMultilineCode(250)
+
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, "ENHANCEDSTATUSCODES") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("Expected ENHANCEDSTATUSCODES extension to be advertised")
+		}
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+
+	t.Run("InResponses", func(t *testing.T) {
+		config := testServerConfig()
+		server, addr := startTestServer(t, config)
+		defer server.Close()
+
+		client := newTestClient(t, addr)
+		defer client.close()
+
+		client.expectCode(220)
+		client.send("EHLO client.example.com")
+		client.expectMultilineCode(250)
+		client.send("MAIL FROM:<sender@example.com>")
+		resp := client.expectCode(250)
+
+		// Response should contain enhanced status code like "2.1.0"
+		if !strings.Contains(resp, "2.1.") {
+			t.Errorf("Expected enhanced status code in response, got: %s", resp)
+		}
+
+		client.send("QUIT")
+		client.expectCode(221)
+	})
+}
+
+// ============================================================================
+// Connection Info Tests
+// ============================================================================
+
+func TestConnectionInfoAvailableInCallbacks(t *testing.T) {
+	var capturedRemoteAddr string
+	var capturedLocalAddr string
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.Callbacks = &Callbacks{
+		OnConnect: func(ctx context.Context, conn *Connection) error {
+			mu.Lock()
+			capturedRemoteAddr = conn.RemoteAddr().String()
+			capturedLocalAddr = conn.LocalAddr().String()
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+
+	mu.Lock()
+	if capturedRemoteAddr == "" {
+		t.Error("Expected RemoteAddr to be captured")
+	}
+	if capturedLocalAddr == "" {
+		t.Error("Expected LocalAddr to be captured")
+	}
+	mu.Unlock()
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// ============================================================================
+// Server Hostname Validation Tests
+// ============================================================================
+
+func TestServerRequiresHostname(t *testing.T) {
+	config := ServerConfig{
+		// Hostname not set
+		Addr: "127.0.0.1:0",
+	}
+
+	_, err := NewServer(config)
+	if err == nil {
+		t.Error("Expected error when hostname is not set")
+	}
+	if !strings.Contains(err.Error(), "hostname") {
+		t.Errorf("Expected hostname error, got: %v", err)
+	}
+}
+
+// ============================================================================
+// Null Sender (Bounce) Tests
+// ============================================================================
+
+func TestNullSender(t *testing.T) {
+	var receivedMail *Mail
+	var mu sync.Mutex
+
+	config := testServerConfig()
+	config.Callbacks = &Callbacks{
+		OnMessage: func(ctx context.Context, conn *Connection, mail *Mail) error {
+			mu.Lock()
+			receivedMail = mail
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+	client.send("EHLO client.example.com")
+	client.expectMultilineCode(250)
+
+	// Null sender (empty reverse-path) used for bounce messages
+	client.send("MAIL FROM:<>")
+	client.expectCode(250)
+	client.send("RCPT TO:<recipient@example.com>")
+	client.expectCode(250)
+	client.send("DATA")
+	client.expectCode(354)
+	client.send("Subject: Bounce notification")
+	client.send("")
+	client.send("Your message could not be delivered.")
+	client.send(".")
+	client.expectCode(250)
+
+	mu.Lock()
+	if receivedMail == nil {
+		t.Error("Expected to receive mail with null sender")
+	} else if !receivedMail.Envelope.From.IsNull() {
+		t.Errorf("Expected null sender, got: %v", receivedMail.Envelope.From)
+	}
+	mu.Unlock()
+
+	client.send("QUIT")
+	client.expectCode(221)
+}
+
+// ============================================================================
+// Case Insensitivity Tests
+// ============================================================================
+
+func TestCommandsCaseInsensitive(t *testing.T) {
+	config := testServerConfig()
+	server, addr := startTestServer(t, config)
+	defer server.Close()
+
+	client := newTestClient(t, addr)
+	defer client.close()
+
+	client.expectCode(220)
+
+	// Test various case combinations
+	client.send("ehlo client.example.com") // lowercase
+	client.expectMultilineCode(250)
+
+	client.send("mail from:<sender@example.com>") // lowercase
+	client.expectCode(250)
+
+	client.send("RCPT TO:<recipient@example.com>") // uppercase
+	client.expectCode(250)
+
+	client.send("rSeT") // mixed case
+	client.expectCode(250)
+
+	client.send("NoOp") // mixed case
+	client.expectCode(250)
+
+	client.send("quit") // lowercase
+	client.expectCode(221)
 }

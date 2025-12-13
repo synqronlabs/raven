@@ -37,6 +37,9 @@ var (
 	ErrDKIMKeyUnavailable          = errors.New("dkim: key unavailable (temporary failure)")
 )
 
+// Pre-compiled regex for stripping DKIM signature value (performance optimization)
+var dkimBTagPattern = regexp.MustCompile(`(\bb=)([A-Za-z0-9+/=\s]*)`)
+
 // DKIMAlgorithm represents a DKIM signing algorithm (RFC 6376).
 type DKIMAlgorithm string
 
@@ -76,7 +79,7 @@ type DKIMSignature struct {
 	Raw                    string
 }
 
-// DKIMPublicKey represents a DKIM public key record per RFC 6376 Section 3.6.1.
+// DKIMPublicKey represents a DKIM public key record.
 type DKIMPublicKey struct {
 	// Version (v=) - RECOMMENDED. Should be "DKIM1" if present.
 	Version string
@@ -131,7 +134,7 @@ type DKIMSignOptions struct {
 
 	// Headers specifies which headers to sign.
 	// If empty, a default secure set will be used.
-	// The From header is ALWAYS included per RFC 6376.
+	// The From header is always included.
 	Headers []string
 
 	// AUID is the Agent or User Identifier (i= tag).
@@ -140,7 +143,7 @@ type DKIMSignOptions struct {
 
 	// BodyLength limits the body length to sign.
 	// If 0 or negative, the entire body is signed (RECOMMENDED for security).
-	// WARNING: Using body length limits can enable certain attacks (see RFC 6376 Section 8.2).
+	// WARNING: Using body length limits can enable certain attacks.
 	BodyLength int64
 
 	// AddTimestamp adds the t= timestamp tag.
@@ -168,13 +171,11 @@ type DKIMVerifyOptions struct {
 	IgnoreExpiration bool
 
 	// AllowSHA1 allows verification of rsa-sha1 signatures.
-	// Default is false per RFC 8301 which deprecates SHA-1.
-	// WARNING: SHA-1 is cryptographically weak and should not be trusted.
+	// Default is false. SHA-1 is deprecated and cryptographically weak.
 	AllowSHA1 bool
 
 	// MinKeyBits is the minimum RSA key size to accept.
-	// Default is 1024 bits per RFC 6376 Section 3.3.3.
-	// Recommended: 2048 bits for better security.
+	// Default is 1024 bits. Recommended: 2048 bits for better security.
 	MinKeyBits int
 
 	// MaxSignaturesToVerify limits the number of signatures to verify.
@@ -203,7 +204,7 @@ type DKIMResult struct {
 	Signature *DKIMSignature
 }
 
-// DKIMStatus represents the status of DKIM verification per RFC 6376.
+// DKIMStatus represents the status of DKIM verification.
 type DKIMStatus string
 
 const (
@@ -221,7 +222,7 @@ const (
 	DKIMStatusNone DKIMStatus = "none"
 )
 
-// DefaultDKIMSignOptions returns DKIMSignOptions with secure defaults per RFC 6376.
+// DefaultDKIMSignOptions returns DKIMSignOptions with secure defaults.
 func DefaultDKIMSignOptions() *DKIMSignOptions {
 	return &DKIMSignOptions{
 		Algorithm:              DKIMAlgorithmRSASHA256,
@@ -229,9 +230,9 @@ func DefaultDKIMSignOptions() *DKIMSignOptions {
 		BodyCanonicalization:   DKIMCanonicalizationRelaxed,
 		AddTimestamp:           true,
 		QueryMethods:           []string{"dns/txt"},
-		// Default headers to sign per RFC 6376 Section 5.4.1
+		// Default headers to sign (From is required)
 		Headers: []string{
-			"From", // REQUIRED per RFC 6376
+			"From",
 			"To",
 			"Cc",
 			"Subject",
@@ -260,12 +261,8 @@ func DefaultDKIMVerifyOptions() *DKIMVerifyOptions {
 
 // SignDKIM signs the mail with DKIM and adds a DKIM-Signature header.
 // This method should be called by servers before sending the message.
-//
-// Per RFC 6376 Section 5, the signature is computed over the message headers
-// (specified in opts.Headers) and body, using the specified canonicalization
-// algorithms.
-//
-// The DKIM-Signature header is prepended to the message headers per RFC 6376 Section 5.6.
+// The signature is computed over the specified headers and body using the
+// configured canonicalization algorithms. The DKIM-Signature header is prepended.
 func (m *Mail) SignDKIM(opts *DKIMSignOptions) error {
 	if opts == nil {
 		return errors.New("dkim: sign options required")
@@ -296,12 +293,12 @@ func (m *Mail) SignDKIM(opts *DKIMSignOptions) error {
 		opts.QueryMethods = []string{"dns/txt"}
 	}
 
-	// Only rsa-sha256 is allowed for signing per RFC 8301
+	// Only rsa-sha256 is allowed for signing
 	if opts.Algorithm != DKIMAlgorithmRSASHA256 {
 		return fmt.Errorf("dkim: only rsa-sha256 is allowed for signing (got %s)", opts.Algorithm)
 	}
 
-	// Ensure "From" is always signed per RFC 6376 Section 5.4
+	// Ensure "From" is always signed
 	hasFrom := false
 	for _, h := range opts.Headers {
 		if strings.EqualFold(h, "From") {
@@ -363,7 +360,7 @@ func (m *Mail) SignDKIM(opts *DKIMSignOptions) error {
 
 	finalHeaderValue := sig.buildHeaderValue(base64.StdEncoding.EncodeToString(signature))
 
-	// Per RFC 6376 Section 5.6: MUST be inserted before any other DKIM-Signature fields
+	// Must be inserted before any other DKIM-Signature fields
 	m.Content.Headers = append(Headers{{
 		Name:  "DKIM-Signature",
 		Value: finalHeaderValue,
@@ -374,13 +371,6 @@ func (m *Mail) SignDKIM(opts *DKIMSignOptions) error {
 
 // VerifyDKIM verifies DKIM signatures on the mail.
 // This method should be called by clients after receiving a message.
-//
-// Per RFC 6376 Section 6, verification involves:
-// 1. Extracting and parsing DKIM-Signature headers
-// 2. Retrieving the public key from DNS
-// 3. Computing and comparing the body hash
-// 4. Verifying the header signature
-//
 // Returns a slice of DKIMResult, one for each DKIM-Signature header found.
 // A message may have multiple signatures from different domains.
 func (m *Mail) VerifyDKIM(opts *DKIMVerifyOptions) []DKIMResult {
@@ -423,8 +413,7 @@ func (m *Mail) VerifyDKIM(opts *DKIMVerifyOptions) []DKIMResult {
 		result := m.verifySingleDKIMSignature(sigValue, opts)
 		results = append(results, result)
 
-		// Per RFC 6376 Section 6.1: Verifiers SHOULD continue to check signatures
-		// until a signature successfully verifies
+		// Continue checking signatures until one successfully verifies
 		if result.Status == DKIMStatusPass {
 			break
 		}
@@ -552,8 +541,7 @@ func (m *Mail) verifyDKIMSignatureData(sig *DKIMSignature, pubKey *DKIMPublicKey
 		return ErrDKIMBodyHashMismatch
 	}
 
-	// Per RFC 6376: The value of the "b=" tag (including all surrounding whitespace)
-	// must be deleted (i.e., treated as the empty string).
+	// The b= tag value must be treated as empty when computing header hash
 	headerValueWithoutSig := stripDKIMSignatureValue(sig.Raw)
 	headerHash, err := m.computeDKIMHeaderHash(sig.Algorithm, sig.HeaderCanonicalization, sig.SignedHeaders, headerValueWithoutSig)
 	if err != nil {
@@ -568,15 +556,12 @@ func (m *Mail) verifyDKIMSignatureData(sig *DKIMSignature, pubKey *DKIMPublicKey
 }
 
 // stripDKIMSignatureValue removes the b= tag value from a DKIM-Signature header value.
-// Per RFC 6376, the signature value (including surrounding whitespace) must be
-// treated as empty when computing the header hash for verification.
+// The signature value must be treated as empty when computing the header hash.
 func stripDKIMSignatureValue(headerValue string) string {
 	// Find the b= tag and remove its value (but keep "b=")
 	// The b= tag value is base64 and may contain whitespace for folding
-
-	// Use a regex to find b= followed by base64 characters and whitespace
-	bTagPattern := regexp.MustCompile(`(\bb=)([A-Za-z0-9+/=\s]*)`)
-	return bTagPattern.ReplaceAllString(headerValue, "${1}")
+	// Uses pre-compiled dkimBTagPattern for performance
+	return dkimBTagPattern.ReplaceAllString(headerValue, "${1}")
 }
 
 // computeDKIMBodyHash computes the body hash
@@ -602,25 +587,29 @@ func (m *Mail) computeDKIMBodyHash(alg DKIMAlgorithm, canon DKIMCanonicalization
 
 // computeDKIMHeaderHash computes the header hash
 func (m *Mail) computeDKIMHeaderHash(alg DKIMAlgorithm, canon DKIMCanonicalization, signedHeaders []string, dkimSigValue string) ([]byte, error) {
+	// Pre-allocate buffer with estimated capacity
 	var buf bytes.Buffer
+	buf.Grow(len(signedHeaders) * 64) // Estimate ~64 bytes per header
 
-	// Process headers in order specified in h= tag
-	// Per RFC 6376: headers are processed from bottom to top
-	headerCounts := make(map[string]int)
+	// Build a map of header occurrences (bottom to top) in a single pass
+	// Only include headers that are in signedHeaders to reduce map size
+	headerNeeded := make(map[string]int, len(signedHeaders))
 	for _, hdrName := range signedHeaders {
-		headerCounts[strings.ToLower(hdrName)]++
+		headerNeeded[strings.ToLower(hdrName)]++
 	}
 
-	// Build a map of header occurrences (bottom to top)
-	headerOccurrences := make(map[string][]Header)
+	headerOccurrences := make(map[string][]Header, len(headerNeeded))
 	for i := len(m.Content.Headers) - 1; i >= 0; i-- {
 		h := m.Content.Headers[i]
 		name := strings.ToLower(h.Name)
-		headerOccurrences[name] = append(headerOccurrences[name], h)
+		// Only track headers we actually need
+		if _, needed := headerNeeded[name]; needed {
+			headerOccurrences[name] = append(headerOccurrences[name], h)
+		}
 	}
 
 	// Process headers in h= tag order
-	usedCounts := make(map[string]int)
+	usedCounts := make(map[string]int, len(headerNeeded))
 	for _, hdrName := range signedHeaders {
 		name := strings.ToLower(hdrName)
 		idx := usedCounts[name]
@@ -663,7 +652,7 @@ func canonicalizeBody(body []byte, canon DKIMCanonicalization) []byte {
 	}
 }
 
-// canonicalizeBodySimple implements simple body canonicalization per RFC 6376
+// canonicalizeBodySimple implements simple body canonicalization.
 // Ignores all empty lines at the end of the message body.
 // If there is no body or no trailing CRLF, a CRLF is added.
 func canonicalizeBodySimple(body []byte) []byte {
@@ -694,17 +683,17 @@ func canonicalizeBodySimple(body []byte) []byte {
 	return result
 }
 
-// canonicalizeBodyRelaxed implements relaxed body canonicalization per RFC 6376 Section 3.4.4.
+// canonicalizeBodyRelaxed implements relaxed body canonicalization.
 // Reduces whitespace and ignores empty lines at the end.
 func canonicalizeBodyRelaxed(body []byte) []byte {
 	if len(body) == 0 {
 		return []byte{}
 	}
 
-	var result bytes.Buffer
 	lines := bytes.Split(body, []byte("\r\n"))
+	// Pre-allocate with estimated capacity
+	processedLines := make([][]byte, 0, len(lines))
 
-	var processedLines [][]byte
 	for _, line := range lines {
 		// Reduce whitespace within line
 		processed := reduceWhitespace(line)
@@ -722,36 +711,47 @@ func canonicalizeBodyRelaxed(body []byte) []byte {
 		return []byte{}
 	}
 
-	// Reconstruct body with CRLF
+	// Calculate total size needed for pre-allocation
+	totalSize := 0
+	for _, line := range processedLines {
+		totalSize += len(line) + 2 // +2 for CRLF
+	}
+
+	// Pre-allocate result buffer
+	result := make([]byte, 0, totalSize)
 	for i, line := range processedLines {
-		result.Write(line)
+		result = append(result, line...)
 		if i < len(processedLines)-1 {
-			result.WriteString("\r\n")
+			result = append(result, '\r', '\n')
 		}
 	}
-	result.WriteString("\r\n")
+	result = append(result, '\r', '\n')
 
-	return result.Bytes()
+	return result
 }
 
 // reduceWhitespace reduces sequences of WSP to a single space.
 func reduceWhitespace(data []byte) []byte {
-	var result bytes.Buffer
+	if len(data) == 0 {
+		return data
+	}
+	// Pre-allocate buffer with capacity equal to input length (worst case: no reduction)
+	result := make([]byte, 0, len(data))
 	inWhitespace := false
 
 	for _, b := range data {
 		if b == ' ' || b == '\t' {
 			if !inWhitespace {
-				result.WriteByte(' ')
+				result = append(result, ' ')
 				inWhitespace = true
 			}
 		} else {
-			result.WriteByte(b)
+			result = append(result, b)
 			inWhitespace = false
 		}
 	}
 
-	return result.Bytes()
+	return result
 }
 
 // canonicalizeHeader canonicalizes a header field
@@ -975,8 +975,8 @@ func parseDKIMSignature(value string) (*DKIMSignature, error) {
 		sig.CopiedHeaders = make(map[string]string)
 		pairs := strings.SplitSeq(z, "|")
 		for pair := range pairs {
-			if idx := strings.Index(pair, ":"); idx != -1 {
-				sig.CopiedHeaders[pair[:idx]] = pair[idx+1:]
+			if before, after, ok0 := strings.Cut(pair, ":"); ok0 {
+				sig.CopiedHeaders[before] = after
 			}
 		}
 	}
@@ -997,13 +997,13 @@ func parseDKIMTagList(value string) map[string]string {
 		}
 
 		// Split by first equals sign
-		idx := strings.Index(pair, "=")
-		if idx == -1 {
+		before, after, ok := strings.Cut(pair, "=")
+		if !ok {
 			continue
 		}
 
-		tagName := strings.TrimSpace(pair[:idx])
-		tagValue := strings.TrimSpace(pair[idx+1:])
+		tagName := strings.TrimSpace(before)
+		tagValue := strings.TrimSpace(after)
 		tags[tagName] = tagValue
 	}
 
@@ -1173,9 +1173,7 @@ func ParseDKIMPrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 }
 
 // GenerateDKIMKeyPair generates a new RSA key pair for DKIM signing.
-// The keyBits parameter specifies the key size. Per RFC 6376 Section 3.3.3,
-// Signers MUST use RSA keys of at least 1024 bits for long-lived keys.
-// A minimum of 2048 bits is RECOMMENDED for security.
+// Minimum key size is 1024 bits; 2048 bits is recommended.
 func GenerateDKIMKeyPair(keyBits int) (*rsa.PrivateKey, error) {
 	if keyBits < 1024 {
 		return nil, errors.New("dkim: key size must be at least 1024 bits")
@@ -1220,7 +1218,7 @@ func (m *Mail) GetDKIMSignatures() []string {
 	return sigs
 }
 
-// dkimSafeDNSRegex validates DNS names per RFC 6376.
+// dkimSafeDNSRegex validates DNS names for DKIM operations.
 var dkimSafeDNSRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$`)
 
 // ValidateDKIMDomain validates that a domain is safe for DKIM operations.

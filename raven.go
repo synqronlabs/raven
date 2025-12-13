@@ -165,6 +165,25 @@
 //	    }
 //	}
 //
+// # DMARC Validation
+//
+// Enable DMARC (Domain-based Message Authentication, Reporting, and
+// Conformance, RFC 7489) validation for incoming mail. DMARC builds on
+// SPF and DKIM to provide domain-level authentication:
+//
+//	server := raven.New("mail.example.com").
+//	    SPF(raven.SPFActionMark, raven.SPFActionAccept).
+//	    DMARCWithOptions(&raven.DMARCVerifyOptions{
+//	        Enabled:       true,
+//	        RejectAction:  raven.DMARCActionReject,
+//	        QuarantineAction: raven.DMARCActionMark,
+//	    }).
+//	    Build()
+//
+// DMARC verifies that the From header domain aligns with authenticated
+// SPF and/or DKIM domains. The result is available in ctx.Mail.Envelope.DMARCResult
+// and an Authentication-Results header is automatically added.
+//
 // # Server Capability Probing
 //
 // Discover what a server supports without sending mail:
@@ -189,4 +208,7 @@
 //   - SIZE (RFC 1870) - use .MaxMessageSize(size)
 //   - DSN (RFC 3461) - use .Extension(raven.DSN())
 //   - CHUNKING (RFC 3030) - use .Extension(raven.Chunking())
+//   - SPF (RFC 7208) - use .SPF() or .SPFWithOptions()
+//   - DKIM (RFC 6376) - use mail.SignDKIM() or mail.VerifyDKIM()
+//   - DMARC (RFC 7489) - use .DMARCWithOptions()
 package raven

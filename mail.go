@@ -104,6 +104,10 @@ type Envelope struct {
 	// SPFResult contains the result of SPF verification performed during MAIL FROM.
 	// This is nil if SPF checking was not performed.
 	SPFResult *SPFCheckResult `json:"spf_result,omitempty"`
+
+	// DMARCResult contains the result of DMARC verification performed after message receipt.
+	// This is nil if DMARC checking was not performed.
+	DMARCResult *DMARCCheckResult `json:"dmarc_result,omitempty"`
 }
 
 // DSNEnvelopeParams contains envelope-level DSN parameters.
@@ -192,7 +196,7 @@ func (h Headers) Validate() error {
 		return ErrMultipleFromNoSender
 	}
 
-	// Validate header line lengths per RFC 5322
+	// Validate header line lengths
 	// Each header field line must not exceed 998 characters (excluding CRLF)
 	// Also reject bare LF (must use CRLF)
 	for _, hdr := range h {
@@ -247,7 +251,7 @@ type TraceField struct {
 	ID string `json:"id,omitempty"`
 
 	// For is the recipient address (for single-recipient messages).
-	// Per RFC 5321, the FOR clause MUST contain exactly one path
+	// The FOR clause should contain exactly one recipient path
 	// when present, even if multiple RCPT TO commands were given.
 	// For security, this should be omitted for multi-recipient messages.
 	For string `json:"for,omitempty"`
@@ -307,7 +311,7 @@ func (t TraceField) String() string {
 		parts = append(parts, "via "+t.Via)
 	}
 
-	// WITH clause (optional) - protocol per RFC 5321 and RFC 3848
+	// WITH clause (optional) - protocol identifier
 	if t.With != "" {
 		parts = append(parts, "with "+t.With)
 	}
@@ -317,7 +321,7 @@ func (t TraceField) String() string {
 		parts = append(parts, "id "+t.ID)
 	}
 
-	// FOR clause (optional) - per RFC 5321, MUST contain exactly one path
+	// FOR clause (optional) - should contain exactly one path
 	// For security, should be omitted for multi-recipient messages
 	if t.For != "" {
 		parts = append(parts, "for <"+t.For+">")
@@ -437,9 +441,9 @@ func (m *Mail) SetNullSender() {
 }
 
 // AddReturnPath adds a Return-Path header for final delivery.
-// Per RFC 5321, the SMTP server making final delivery
-// MUST insert a Return-Path line at the beginning of the mail data.
-// This preserves the reverse-path from MAIL FROM for bounce messages.
+// The SMTP server making final delivery should insert this header
+// at the beginning of the mail data. This preserves the reverse-path
+// from MAIL FROM for bounce messages.
 //
 // This method should be called by the application when making final
 // delivery (i.e., when the message leaves the SMTP environment).
@@ -527,7 +531,7 @@ func (c *Content) Validate() error {
 		return err
 	}
 
-	// Validate body line lengths and line endings per RFC 5322
+	// Validate body line lengths and line endings
 	if len(c.Body) > 0 {
 		lineStart := 0
 		for i := 0; i < len(c.Body); i++ {
@@ -590,7 +594,7 @@ func (c *Content) FromMIME(part *ravenmime.Part) error {
 
 // FromRaw parses raw message data and populates Headers and Body fields.
 // This also sets the Encoding field based on Content-Transfer-Encoding header,
-// defaulting to "7bit" per RFC 2045 if not specified.
+// defaulting to "7bit" if not specified.
 func (c *Content) FromRaw(data []byte) {
 	c.Headers, c.Body = parseRawContent(data)
 
@@ -614,8 +618,8 @@ func (c *Content) FromRaw(data []byte) {
 				}
 			} else {
 				// Unquoted - extract until semicolon or end
-				if semiIdx := strings.Index(charset, ";"); semiIdx != -1 {
-					c.Charset = strings.TrimSpace(charset[:semiIdx])
+				if before, _, ok := strings.Cut(charset, ";"); ok {
+					c.Charset = strings.TrimSpace(before)
 				} else {
 					c.Charset = strings.TrimSpace(charset)
 				}
@@ -626,7 +630,7 @@ func (c *Content) FromRaw(data []byte) {
 
 // ToRaw serializes the Content back to raw RFC 5322 format.
 // It reconstructs the message from Headers and Body.
-// Header lines are folded per RFC 5322 to comply with line length limits.
+// Header lines are folded to comply with line length limits.
 func (c *Content) ToRaw() []byte {
 	// Estimate size: headers + blank line + body (with some extra for folding)
 	estimatedSize := len(c.Body) + 2 // +2 for CRLF before body
@@ -651,7 +655,7 @@ func (c *Content) ToRaw() []byte {
 	return buf
 }
 
-// foldHeader folds a header line per RFC 5322.
+// foldHeader folds a header line.
 // Lines MUST be no more than 998 characters, SHOULD be no more than 78.
 // Folding is done by inserting CRLF before whitespace.
 func foldHeader(name, value string) []byte {
@@ -720,7 +724,7 @@ func foldHeader(name, value string) []byte {
 	return result
 }
 
-// parseRawContent parses raw message data into headers and body per RFC 5322.
+// parseRawContent parses raw message data into headers and body.
 // The header section is separated from the body by an empty line (CRLF CRLF).
 func parseRawContent(data []byte) (Headers, []byte) {
 	// Find the header/body separator (empty line)

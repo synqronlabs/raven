@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// SPF Errors per RFC 7208
+// SPF Errors
 var (
 	ErrSPFNoRecord           = errors.New("spf: no SPF record found")
 	ErrSPFMultipleRecords    = errors.New("spf: multiple SPF records found")
@@ -22,7 +22,7 @@ var (
 	ErrSPFInvalidMacro       = errors.New("spf: invalid macro")
 )
 
-// SPFResult represents the result of SPF verification per RFC 7208 Section 2.6.
+// SPFResult represents the result of SPF verification.
 type SPFResult string
 
 const (
@@ -50,7 +50,7 @@ const (
 	SPFResultPermerror SPFResult = "permerror"
 )
 
-// SPFQualifier represents a mechanism qualifier per RFC 7208 Section 4.6.2.
+// SPFQualifier represents a mechanism qualifier.
 type SPFQualifier string
 
 const (
@@ -90,7 +90,7 @@ type SPFModifier struct {
 	Value string
 }
 
-// SPFRecord represents a parsed SPF record per RFC 7208.
+// SPFRecord represents a parsed SPF record.
 type SPFRecord struct {
 	Version    string
 	Mechanisms []SPFMechanism
@@ -150,19 +150,19 @@ type SPFCheckOptions struct {
 	ReceiverDomain string
 
 	// MaxDNSLookups is the maximum number of DNS lookups allowed.
-	// Default is 10 per RFC 7208 Section 4.6.4.
+	// Default is 10.
 	MaxDNSLookups int
 
 	// MaxVoidLookups is the maximum number of void lookups allowed.
-	// Default is 2 per RFC 7208 Section 4.6.4.
+	// Default is 2.
 	MaxVoidLookups int
 
 	// Timeout is the maximum time for the entire SPF check.
-	// Default is 20 seconds per RFC 7208 Section 4.6.4.
+	// Default is 20 seconds.
 	Timeout time.Duration
 }
 
-// DefaultSPFCheckOptions returns SPFCheckOptions with defaults per RFC 7208.
+// DefaultSPFCheckOptions returns SPFCheckOptions with secure defaults.
 func DefaultSPFCheckOptions() *SPFCheckOptions {
 	return &SPFCheckOptions{
 		DNSResolver:    net.LookupTXT,
@@ -187,7 +187,7 @@ type spfChecker struct {
 	voidLookups  int
 }
 
-// CheckSPF performs an SPF check for the given parameters per RFC 7208.
+// CheckSPF performs an SPF check for the given parameters.
 //
 // Parameters:
 //   - ip: The IP address of the SMTP client
@@ -207,8 +207,7 @@ func CheckSPF(ip net.IP, domain, sender string, opts *SPFCheckOptions) *SPFCheck
 		ClientIP: ip,
 	}
 
-	// Initial processing per RFC 7208 Section 4.3
-	// Check for malformed domain
+	// Initial processing: check for malformed domain
 	if !isValidDomain(domain) {
 		result.Result = SPFResultNone
 		result.Error = ErrSPFInvalidDomain
@@ -241,7 +240,7 @@ func CheckSPF(ip net.IP, domain, sender string, opts *SPFCheckOptions) *SPFCheck
 	return result
 }
 
-// checkHost implements the check_host() function per RFC 7208 Section 4.
+// checkHost implements the check_host() function.
 func (c *spfChecker) checkHost(domain string) (SPFResult, string, error) {
 	// Lookup SPF record
 	record, err := c.lookupSPF(domain)
@@ -279,7 +278,7 @@ func (c *spfChecker) lookupSPF(domain string) (*SPFRecord, error) {
 	// Find SPF records (those starting with "v=spf1")
 	var spfRecords []string
 	for _, txt := range records {
-		// Per RFC 7208 Section 4.5, records must begin with "v=spf1"
+		// Records must begin with "v=spf1"
 		// followed by SP or end of record
 		if txt == "v=spf1" || strings.HasPrefix(txt, "v=spf1 ") {
 			spfRecords = append(spfRecords, txt)
@@ -290,7 +289,7 @@ func (c *spfChecker) lookupSPF(domain string) (*SPFRecord, error) {
 		return nil, ErrSPFNoRecord
 	}
 
-	// Per RFC 7208 Section 4.5, multiple records is permerror
+	// Multiple records is a permerror
 	if len(spfRecords) > 1 {
 		return nil, ErrSPFMultipleRecords
 	}
@@ -322,9 +321,9 @@ func parseSPFRecord(raw string) (*SPFRecord, error) {
 			!strings.HasPrefix(part, "-") && !strings.HasPrefix(part, "~") &&
 			!strings.HasPrefix(part, "?") {
 			// It's a modifier
-			idx := strings.Index(part, "=")
-			name := strings.ToLower(part[:idx])
-			value := part[idx+1:]
+			before, after, _ := strings.Cut(part, "=")
+			name := strings.ToLower(before)
+			value := after
 
 			switch name {
 			case "redirect":
@@ -332,7 +331,7 @@ func parseSPFRecord(raw string) (*SPFRecord, error) {
 			case "exp":
 				record.Exp = value
 			default:
-				// Unknown modifiers are ignored per RFC 7208 Section 6
+				// Unknown modifiers are ignored
 			}
 			continue
 		}
@@ -386,11 +385,11 @@ func parseMechanism(s string) (SPFMechanism, error) {
 	}
 
 	// Parse mechanism type
-	colonIdx := strings.Index(s, ":")
+	before, after, ok := strings.Cut(s, ":")
 	var mechType, value string
-	if colonIdx != -1 {
-		mechType = s[:colonIdx]
-		value = s[colonIdx+1:]
+	if ok {
+		mechType = before
+		value = after
 	} else {
 		mechType = s
 		value = ""
@@ -519,7 +518,7 @@ func (c *spfChecker) evaluateRecord(record *SPFRecord, domain string) (SPFResult
 	}
 
 	// No mechanism matched
-	// Check for redirect modifier per RFC 7208 Section 6.1
+	// Check for redirect modifier
 	if record.Redirect != "" {
 		// redirect is only used if no mechanisms matched
 		// and there is no "all" mechanism
@@ -543,7 +542,7 @@ func (c *spfChecker) evaluateRecord(record *SPFRecord, domain string) (SPFResult
 			}
 
 			result, mech, err := c.checkHost(redirectDomain)
-			// Per RFC 7208 Section 6.1, if redirect returns none, it becomes permerror
+			// If redirect returns none, it becomes permerror
 			if result == SPFResultNone {
 				return SPFResultPermerror, mech, err
 			}
@@ -551,7 +550,7 @@ func (c *spfChecker) evaluateRecord(record *SPFRecord, domain string) (SPFResult
 		}
 	}
 
-	// Default result is neutral per RFC 7208 Section 4.7
+	// Default result is neutral
 	return SPFResultNeutral, "default", nil
 }
 
@@ -586,7 +585,7 @@ func (c *spfChecker) evaluateMechanism(mech SPFMechanism, domain string) (bool, 
 	return false, nil
 }
 
-// evalInclude evaluates the "include" mechanism per RFC 7208 Section 5.2.
+// evalInclude evaluates the "include" mechanism.
 func (c *spfChecker) evalInclude(mech SPFMechanism, domain string) (bool, error) {
 	targetDomain := mech.Value
 	if targetDomain == "" {
@@ -602,14 +601,9 @@ func (c *spfChecker) evalInclude(mech SPFMechanism, domain string) (bool, error)
 
 	result, _, err := c.checkHost(targetDomain)
 
-	// Per RFC 7208 Section 5.2:
-	// pass -> match
-	// fail -> not match
-	// softfail -> not match
-	// neutral -> not match
-	// temperror -> return temperror
-	// permerror -> return permerror
-	// none -> return permerror
+	// Include result mapping:
+	// pass -> match, fail/softfail/neutral -> not match
+	// temperror/permerror -> propagate error, none -> permerror
 
 	switch result {
 	case SPFResultPass:
@@ -627,7 +621,7 @@ func (c *spfChecker) evalInclude(mech SPFMechanism, domain string) (bool, error)
 	return false, nil
 }
 
-// evalA evaluates the "a" mechanism per RFC 7208 Section 5.3.
+// evalA evaluates the "a" mechanism.
 func (c *spfChecker) evalA(mech SPFMechanism, domain string) (bool, error) {
 	targetDomain := mech.Value
 	if targetDomain == "" {
@@ -674,7 +668,7 @@ func (c *spfChecker) evalA(mech SPFMechanism, domain string) (bool, error) {
 	return false, nil
 }
 
-// evalMX evaluates the "mx" mechanism per RFC 7208 Section 5.4.
+// evalMX evaluates the "mx" mechanism.
 func (c *spfChecker) evalMX(mech SPFMechanism, domain string) (bool, error) {
 	targetDomain := mech.Value
 	if targetDomain == "" {
@@ -710,7 +704,7 @@ func (c *spfChecker) evalMX(mech SPFMechanism, domain string) (bool, error) {
 		return false, nil
 	}
 
-	// Per RFC 7208 Section 4.6.4, limit to 10 MX records
+	// Limit to 10 MX records
 	if len(mxRecords) > 10 {
 		return false, ErrSPFTooManyDNSLookups
 	}
@@ -744,8 +738,8 @@ func (c *spfChecker) evalMX(mech SPFMechanism, domain string) (bool, error) {
 	return false, nil
 }
 
-// evalPTR evaluates the "ptr" mechanism per RFC 7208 Section 5.5.
-// Note: This mechanism is deprecated and SHOULD NOT be used.
+// evalPTR evaluates the "ptr" mechanism.
+// Note: This mechanism is deprecated and should not be used.
 func (c *spfChecker) evalPTR(mech SPFMechanism, domain string) (bool, error) {
 	targetDomain := mech.Value
 	if targetDomain == "" {
@@ -782,7 +776,7 @@ func (c *spfChecker) evalPTR(mech SPFMechanism, domain string) (bool, error) {
 		return false, nil
 	}
 
-	// Per RFC 7208 Section 4.6.4, limit PTR processing
+	// Limit PTR processing
 	if len(names) > 10 {
 		names = names[:10]
 	}
@@ -823,7 +817,7 @@ func (c *spfChecker) evalPTR(mech SPFMechanism, domain string) (bool, error) {
 	return false, nil
 }
 
-// evalIP4 evaluates the "ip4" mechanism per RFC 7208 Section 5.6.
+// evalIP4 evaluates the "ip4" mechanism.
 func (c *spfChecker) evalIP4(mech SPFMechanism) bool {
 	// Only match IPv4 addresses
 	if c.ip.To4() == nil {
@@ -837,7 +831,7 @@ func (c *spfChecker) evalIP4(mech SPFMechanism) bool {
 	return mech.IPNet.Contains(c.ip)
 }
 
-// evalIP6 evaluates the "ip6" mechanism per RFC 7208 Section 5.6.
+// evalIP6 evaluates the "ip6" mechanism.
 func (c *spfChecker) evalIP6(mech SPFMechanism) bool {
 	if mech.IPNet == nil {
 		return false
@@ -846,7 +840,7 @@ func (c *spfChecker) evalIP6(mech SPFMechanism) bool {
 	return mech.IPNet.Contains(c.ip)
 }
 
-// evalExists evaluates the "exists" mechanism per RFC 7208 Section 5.7.
+// evalExists evaluates the "exists" mechanism.
 func (c *spfChecker) evalExists(mech SPFMechanism, domain string) (bool, error) {
 	targetDomain := c.expandMacros(mech.Value, domain)
 
@@ -856,7 +850,7 @@ func (c *spfChecker) evalExists(mech SPFMechanism, domain string) (bool, error) 
 		return false, ErrSPFTooManyDNSLookups
 	}
 
-	// Per RFC 7208 Section 5.7, only A records are checked (even for IPv6)
+	// Only A records are checked (even for IPv6)
 	ips, err := c.lookupA(targetDomain)
 	if err != nil {
 		c.voidLookups++
@@ -898,12 +892,18 @@ func (c *spfChecker) ipMatches(ip net.IP, cidr int) bool {
 	return ipNet.Contains(c.ip)
 }
 
-// expandMacros expands SPF macros in the given string per RFC 7208 Section 7.
+// expandMacros expands SPF macros in the given string.
 func (c *spfChecker) expandMacros(s, domain string) string {
 	// Simple macro expansion - handles the most common cases
 	// Full macro expansion with transformers would require more complex parsing
 
+	// Early exit: if no '%' character, no macros to expand (performance optimization)
+	if !strings.Contains(s, "%") {
+		return s
+	}
+
 	result := strings.Builder{}
+	result.Grow(len(s)) // Pre-allocate estimated capacity
 	i := 0
 
 	for i < len(s) {
@@ -1076,20 +1076,20 @@ func (c *spfChecker) applyTransformers(value, transformer string) string {
 	return strings.Join(parts, ".")
 }
 
-// urlEncode URL-encodes characters not in the unreserved set per RFC 3986.
+// urlEncode URL-encodes characters not in the unreserved set.
 func urlEncode(s string) string {
 	result := strings.Builder{}
 	for _, ch := range s {
 		if isUnreserved(byte(ch)) {
 			result.WriteByte(byte(ch))
 		} else {
-			result.WriteString(fmt.Sprintf("%%%02X", ch))
+			fmt.Fprintf(&result, "%%%02X", ch)
 		}
 	}
 	return result.String()
 }
 
-// isUnreserved checks if a character is in the unreserved set per RFC 3986.
+// isUnreserved checks if a character is in the unreserved set.
 func isUnreserved(ch byte) bool {
 	return (ch >= 'A' && ch <= 'Z') ||
 		(ch >= 'a' && ch <= 'z') ||
@@ -1128,7 +1128,7 @@ func mechToString(mech SPFMechanism) string {
 	return result
 }
 
-// isValidDomain checks if a domain is valid per RFC 7208 Section 4.3.
+// isValidDomain checks if a domain is valid for SPF operations.
 func isValidDomain(domain string) bool {
 	if domain == "" {
 		return false
@@ -1179,7 +1179,7 @@ func parseSender(sender string) (local, domain string) {
 	return sender[:atIdx], sender[atIdx+1:]
 }
 
-// SPFReceivedHeader generates a Received-SPF header field per RFC 7208 Section 9.1.
+// SPFReceivedHeader generates a Received-SPF header field.
 func (r *SPFCheckResult) ReceivedSPFHeader() string {
 	var sb strings.Builder
 

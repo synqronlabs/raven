@@ -73,7 +73,7 @@ func canonicalizeVerb(verb string) (Command, error) {
 }
 
 // parsePathWithParams parses an address path with optional parameters.
-// Duplicate parameters are rejected per RFC 3461.
+// Duplicate parameters are rejected.
 func parsePathWithParams(s string) (Path, map[string]string, error) {
 	start := strings.IndexByte(s, '<')
 	end := strings.IndexByte(s, '>')

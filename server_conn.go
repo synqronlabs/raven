@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ConnectionState represents the current state of an SMTP session per RFC 5321.
+// ConnectionState represents the current state of an SMTP session.
 type ConnectionState int
 
 const (
@@ -233,7 +233,7 @@ func (c *Connection) beginTransaction() *Mail {
 }
 
 // resetTransaction aborts the current mail transaction (RSET command).
-// Returns the connection to the GREETED state per RFC 5321.
+// Returns the connection to the GREETED state.
 func (c *Connection) resetTransaction() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -378,7 +378,7 @@ func (c *Connection) UpgradeToTLS(config *tls.Config) error {
 		c.TLS.PeerCertificates = append(c.TLS.PeerCertificates, cert.Raw)
 	}
 
-	// Reset state after STARTTLS per RFC 3207
+	// Reset state after STARTTLS
 	c.state = StateConnect
 
 	return nil
@@ -390,7 +390,7 @@ func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Determine protocol per RFC 5321, RFC 6531, and RFC 3848.
+	// Determine protocol identifier
 	// Protocol values: SMTP, ESMTP, ESMTPS, ESMTPA, ESMTPSA,
 	// UTF8SMTP, UTF8SMTPS, UTF8SMTPA, UTF8SMTPSA
 	var protocol string

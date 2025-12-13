@@ -221,7 +221,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		}
 	}
 
-	// SPF check per RFC 7208
+	// SPF check
 	var spfResult *SPFCheckResult
 	if s.config.SPF != nil && s.config.SPF.Enabled {
 		clientIP, err := utils.GetIPFromAddr(conn.RemoteAddr())
@@ -229,7 +229,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 			// Determine the domain to check
 			var senderDomain string
 			if from.IsNull() {
-				// Null sender: use HELO domain per RFC 7208 Section 2.4
+				// Null sender: use HELO domain
 				conn.mu.RLock()
 				senderDomain = conn.Trace.ClientHostname
 				conn.mu.RUnlock()
@@ -317,7 +317,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	// Process parameters
 	if bodyType, ok := params["BODY"]; ok {
 		bodyTypeUpper := BodyType(strings.ToUpper(bodyType))
-		// Validate BODY parameter per RFC 6152
+		// Validate BODY parameter
 		switch bodyTypeUpper {
 		case BodyType7Bit, BodyType8BitMIME, BodyTypeBinaryMIME:
 			mail.Envelope.BodyType = bodyTypeUpper
@@ -647,7 +647,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		return &resp
 	}
 
-	// Parse message content into headers and body per RFC 5322 using FromRaw
+	// Parse message content into headers and body using FromRaw
 	mail.Content.FromRaw(data)
 
 	// If the REQUIRETLS MAIL FROM parameter was not specified,
@@ -689,12 +689,57 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		Value: receivedHeader.String(),
 	}}, mail.Content.Headers...)
 
-	// Add Received-SPF header if SPF check was performed per RFC 7208 Section 9.1
+	// Add Received-SPF header if SPF check was performed
 	if mail.Envelope.SPFResult != nil {
 		mail.Content.Headers = append(Headers{{
 			Name:  "Received-SPF",
 			Value: mail.Envelope.SPFResult.ReceivedSPFHeader()[len("Received-SPF: "):],
 		}}, mail.Content.Headers...)
+	}
+
+	// DMARC check
+	if s.config.DMARC != nil && s.config.DMARC.Enabled {
+		dmarcResult := s.performDMARCCheck(conn, mail, logger)
+		if dmarcResult != nil {
+			mail.Envelope.DMARCResult = dmarcResult
+
+			// Add Authentication-Results header
+			mail.Content.Headers = append(Headers{{
+				Name:  "Authentication-Results",
+				Value: dmarcResult.AuthenticationResultsHeader(s.config.Hostname)[len("Authentication-Results: "):],
+			}}, mail.Content.Headers...)
+
+			// Handle DMARC failure based on policy and configuration
+			if dmarcResult.Result == DMARCResultFail {
+				switch dmarcResult.Policy {
+				case DMARCPolicyReject:
+					if s.config.DMARC.FailAction == DMARCActionReject {
+						conn.resetTransaction()
+						return &Response{
+							Code:         CodeTransactionFailed,
+							EnhancedCode: string(ESCSecurityError),
+							Message:      fmt.Sprintf("DMARC policy violation: message failed authentication for domain %s", dmarcResult.Domain),
+						}
+					}
+				case DMARCPolicyQuarantine:
+					if s.config.DMARC.QuarantineAction == DMARCActionReject {
+						conn.resetTransaction()
+						return &Response{
+							Code:         CodeTransactionFailed,
+							EnhancedCode: string(ESCSecurityError),
+							Message:      fmt.Sprintf("DMARC quarantine policy: message failed authentication for domain %s", dmarcResult.Domain),
+						}
+					}
+					// Add X-DMARC-Quarantine header if marking
+					if s.config.DMARC.QuarantineAction == DMARCActionMark || s.config.DMARC.QuarantineAction == DMARCActionQuarantine {
+						mail.Content.Headers = append(Headers{{
+							Name:  "X-DMARC-Quarantine",
+							Value: "true",
+						}}, mail.Content.Headers...)
+					}
+				}
+			}
+		}
 	}
 
 	if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
@@ -724,7 +769,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 // readDataContent reads the message content until <CRLF>.<CRLF>.
 // Strictly requires CRLF line endings to prevent SMTP smuggling attacks.
 // If enforce7Bit is true, returns Err8BitIn7BitMode if any non-ASCII bytes are found.
-// Line length is enforced per RFC 5322 (998 characters max, excluding CRLF).
+// Line length is enforced to 998 characters max (excluding CRLF).
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
 	// Pre-allocate buffer with reasonable initial capacity
 	// Use maxSize as initial buffer capacity if it's set, within a reasonable limit, otherwise default to 4096
@@ -918,12 +963,57 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 			Value: receivedHeader.String(),
 		}}, mail.Content.Headers...)
 
-		// Add Received-SPF header if SPF check was performed per RFC 7208 Section 9.1
+		// Add Received-SPF header if SPF check was performed
 		if mail.Envelope.SPFResult != nil {
 			mail.Content.Headers = append(Headers{{
 				Name:  "Received-SPF",
 				Value: mail.Envelope.SPFResult.ReceivedSPFHeader()[len("Received-SPF: "):],
 			}}, mail.Content.Headers...)
+		}
+
+		// DMARC check (same as in DATA handler)
+		if s.config.DMARC != nil && s.config.DMARC.Enabled {
+			dmarcResult := s.performDMARCCheck(conn, mail, logger)
+			if dmarcResult != nil {
+				mail.Envelope.DMARCResult = dmarcResult
+
+				// Add Authentication-Results header
+				mail.Content.Headers = append(Headers{{
+					Name:  "Authentication-Results",
+					Value: dmarcResult.AuthenticationResultsHeader(s.config.Hostname)[len("Authentication-Results: "):],
+				}}, mail.Content.Headers...)
+
+				// Handle DMARC failure based on policy and configuration
+				if dmarcResult.Result == DMARCResultFail {
+					switch dmarcResult.Policy {
+					case DMARCPolicyReject:
+						if s.config.DMARC.FailAction == DMARCActionReject {
+							conn.resetTransaction()
+							return &Response{
+								Code:         CodeTransactionFailed,
+								EnhancedCode: string(ESCSecurityError),
+								Message:      fmt.Sprintf("DMARC policy violation: message failed authentication for domain %s", dmarcResult.Domain),
+							}
+						}
+					case DMARCPolicyQuarantine:
+						if s.config.DMARC.QuarantineAction == DMARCActionReject {
+							conn.resetTransaction()
+							return &Response{
+								Code:         CodeTransactionFailed,
+								EnhancedCode: string(ESCSecurityError),
+								Message:      fmt.Sprintf("DMARC quarantine policy: message failed authentication for domain %s", dmarcResult.Domain),
+							}
+						}
+						// Add X-DMARC-Quarantine header if marking
+						if s.config.DMARC.QuarantineAction == DMARCActionMark || s.config.DMARC.QuarantineAction == DMARCActionQuarantine {
+							mail.Content.Headers = append(Headers{{
+								Name:  "X-DMARC-Quarantine",
+								Value: "true",
+							}}, mail.Content.Headers...)
+						}
+					}
+				}
+			}
 		}
 
 		// OnMessage callback
@@ -1148,4 +1238,68 @@ func (s *Server) handleStartTLS(conn *Connection) *Response {
 	}
 
 	return nil
+}
+
+// performDMARCCheck performs DMARC verification on the message.
+func (s *Server) performDMARCCheck(conn *Connection, mail *Mail, logger *slog.Logger) *DMARCCheckResult {
+	// Get client IP for SPF check
+	clientIP, err := utils.GetIPFromAddr(conn.RemoteAddr())
+	if err != nil {
+		logger.Warn("DMARC: failed to get client IP", slog.Any("error", err))
+		return nil
+	}
+
+	// Get MAIL FROM for SPF alignment check
+	mailFrom := mail.Envelope.From.Mailbox.String()
+	if mailFrom == "" {
+		// Null sender - use HELO domain for SPF
+		conn.mu.RLock()
+		mailFrom = "postmaster@" + conn.Trace.ClientHostname
+		conn.mu.RUnlock()
+	}
+
+	// Configure DMARC check options
+	checkOpts := s.config.DMARC.CheckOptions
+	if checkOpts == nil {
+		checkOpts = DefaultDMARCCheckOptions()
+	}
+
+	// Reuse existing SPF result if available
+	if mail.Envelope.SPFResult != nil {
+		checkOpts.SkipSPF = true
+	}
+
+	// Perform DMARC check
+	result := CheckDMARC(mail, clientIP, mailFrom, checkOpts)
+
+	// If we have existing SPF result, use it for alignment check
+	if mail.Envelope.SPFResult != nil {
+		result.SPFResult = mail.Envelope.SPFResult
+		// Re-check SPF alignment with the existing result
+		if result.Record != nil {
+			fromDomain, _ := extractFromDomain(mail)
+			orgDomain := getOrganizationalDomain(fromDomain, isPublicSuffix)
+			result.SPFAligned = checkSPFAlignment(mail.Envelope.SPFResult, fromDomain, orgDomain, result.Record.SPFAlignment)
+
+			// Update final result
+			if result.DKIMAligned || result.SPFAligned {
+				result.Result = DMARCResultPass
+			}
+		}
+	}
+
+	// Log the result
+	logLevel := slog.LevelDebug
+	if result.Result == DMARCResultFail {
+		logLevel = slog.LevelWarn
+	}
+	logger.Log(conn.Context(), logLevel, "DMARC check completed",
+		slog.String("domain", result.Domain),
+		slog.String("result", string(result.Result)),
+		slog.String("policy", string(result.Policy)),
+		slog.Bool("spf_aligned", result.SPFAligned),
+		slog.Bool("dkim_aligned", result.DKIMAligned),
+	)
+
+	return result
 }
