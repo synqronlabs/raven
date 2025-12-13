@@ -17,9 +17,9 @@ import (
 )
 
 
-// checkLoopDetection checks for mail loops by counting the "Received" headers,
+// detectLoop checks for mail loops by counting the "Received" headers,
 // and returns an error if the count exceeds maxAllowed.
-func checkLoopDetection(mail *Mail, logger *slog.Logger, maxAllowed int) error {
+func detectLoop(mail *Mail, logger *slog.Logger, maxAllowed int) error {
 	if maxAllowed > 0 {
 		receivedCount := mail.Content.Headers.Count("Received")
 		if receivedCount >= maxAllowed {
@@ -591,7 +591,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 	// Loop detection via Received header count
 	// Simple counting of Received headers is an effective method of detecting loops.
 	// RFC recommends a large rejection threshold, normally at least 100.
-	if err := checkLoopDetection(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+	if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
 		conn.resetTransaction()
 		resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
 		return &resp
@@ -806,7 +806,7 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		// Loop detection via Received header count
 		// Simple counting of Received headers is an effective method of detecting loops.
 		// RFC recommends a large rejection threshold, normally at least 100.
-		if err := checkLoopDetection(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+		if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
 			conn.resetTransaction()
 			resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
 			return &resp
