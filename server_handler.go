@@ -16,6 +16,24 @@ import (
 	"github.com/synqronlabs/raven/utils"
 )
 
+
+// detectLoop checks for mail loops by counting the "Received" headers,
+// and returns an error if the count exceeds maxAllowed.
+func detectLoop(mail *Mail, logger *slog.Logger, maxAllowed int) error {
+	if maxAllowed > 0 {
+		receivedCount := mail.Content.Headers.Count("Received")
+		if receivedCount >= maxAllowed {
+			logger.Warn("mail loop detected",
+				slog.Int("received_count", receivedCount),
+				slog.Int("max_allowed", maxAllowed),
+				slog.String("from", mail.Envelope.From.String()),
+			)
+			return errors.New("mail loop detected")
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
 	if hostname == "" {
 		resp := ResponseSyntaxError("Hostname required")
@@ -51,32 +69,7 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		return &resp
 	}
 
-	extensions := make(map[Extension]string)
-
-	// Intrinsic extensions (always enabled)
-	extensions[Ext8BitMIME] = ""
-	conn.SetExtension(Ext8BitMIME, "")
-	extensions[ExtSMTPUTF8] = ""
-	conn.SetExtension(ExtSMTPUTF8, "")
-	extensions[ExtEnhancedStatusCodes] = ""
-	conn.SetExtension(ExtEnhancedStatusCodes, "")
-	extensions[ExtPipelining] = ""
-	conn.SetExtension(ExtPipelining, "")
-
-	// Opt-in extensions
-	if s.config.TLSConfig != nil && !conn.IsTLS() {
-		extensions[ExtSTARTTLS] = ""
-		conn.SetExtension(ExtSTARTTLS, "")
-	}
-	if s.config.MaxMessageSize > 0 {
-		sizeStr := strconv.FormatInt(s.config.MaxMessageSize, 10)
-		extensions[ExtSize] = sizeStr
-		conn.SetExtension(ExtSize, sizeStr)
-	}
-	if s.config.EnableDSN {
-		extensions[ExtDSN] = ""
-		conn.SetExtension(ExtDSN, "")
-	}
+	extensions := s.buildExtensions(conn)
 	if s.config.EnableChunking {
 		extensions[ExtChunking] = ""
 		conn.SetExtension(ExtChunking, "")
@@ -132,6 +125,38 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 
 	s.writeMultilineResponse(conn, CodeOK, lines)
 	return nil
+}
+
+// buildExtensions centralizes all SMTP extension setup for a given connection.
+func (s *Server) buildExtensions(conn *Connection) map[Extension]string {
+	extensions := make(map[Extension]string)
+
+	// Intrinsic extensions (always enabled)
+	extensions[Ext8BitMIME] = ""
+	conn.SetExtension(Ext8BitMIME, "")
+	extensions[ExtSMTPUTF8] = ""
+	conn.SetExtension(ExtSMTPUTF8, "")
+	extensions[ExtEnhancedStatusCodes] = ""
+	conn.SetExtension(ExtEnhancedStatusCodes, "")
+	extensions[ExtPipelining] = ""
+	conn.SetExtension(ExtPipelining, "")
+
+	// Opt-in extensions
+	if s.config.TLSConfig != nil && !conn.IsTLS() {
+		extensions[ExtSTARTTLS] = ""
+		conn.SetExtension(ExtSTARTTLS, "")
+	}
+	if s.config.MaxMessageSize > 0 {
+		sizeStr := strconv.FormatInt(s.config.MaxMessageSize, 10)
+		extensions[ExtSize] = sizeStr
+		conn.SetExtension(ExtSize, sizeStr)
+	}
+	if s.config.EnableDSN {
+		extensions[ExtDSN] = ""
+		conn.SetExtension(ExtDSN, "")
+	}
+
+	return extensions
 }
 
 func (s *Server) handleMail(conn *Connection, args string) *Response {
@@ -566,18 +591,10 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 	// Loop detection via Received header count
 	// Simple counting of Received headers is an effective method of detecting loops.
 	// RFC recommends a large rejection threshold, normally at least 100.
-	if s.config.MaxReceivedHeaders > 0 {
-		receivedCount := mail.Content.Headers.Count("Received")
-		if receivedCount >= s.config.MaxReceivedHeaders {
-			logger.Warn("mail loop detected",
-				slog.Int("received_count", receivedCount),
-				slog.Int("max_allowed", s.config.MaxReceivedHeaders),
-				slog.String("from", mail.Envelope.From.String()),
-			)
-			conn.resetTransaction()
-			resp := ResponseTransactionFailed("Mail loop detected", ESCRoutingLoop)
-			return &resp
-		}
+	if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+		conn.resetTransaction()
+		resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
+		return &resp
 	}
 
 	mail.ID = utils.GenerateID()
@@ -623,7 +640,18 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 // If enforce7Bit is true, returns Err8BitIn7BitMode if any non-ASCII bytes are found.
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
 	// Pre-allocate buffer with reasonable initial capacity
-	buf := bytes.NewBuffer(make([]byte, 0, 4096))
+	// Use maxSize as initial buffer capacity if it's set, within a reasonable limit, otherwise default to 4096
+	const maxInitialAlloc = 10 * 1024 * 1024 // 10MB cap for initial alloc to avoid OOM
+	var initCap int
+	switch {
+	case maxSize > 0 && maxSize <= maxInitialAlloc:
+		initCap = int(maxSize)
+	case maxSize > maxInitialAlloc:
+		initCap = maxInitialAlloc
+	default:
+		initCap = 4096
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, initCap))
 	var sizeExceeded bool
 	var has8BitData bool
 
@@ -778,18 +806,10 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		// Loop detection via Received header count
 		// Simple counting of Received headers is an effective method of detecting loops.
 		// RFC recommends a large rejection threshold, normally at least 100.
-		if s.config.MaxReceivedHeaders > 0 {
-			receivedCount := mail.Content.Headers.Count("Received")
-			if receivedCount >= s.config.MaxReceivedHeaders {
-				logger.Warn("mail loop detected",
-					slog.Int("received_count", receivedCount),
-					slog.Int("max_allowed", s.config.MaxReceivedHeaders),
-					slog.String("from", mail.Envelope.From.String()),
-				)
-				conn.resetTransaction()
-				resp := ResponseTransactionFailed("Mail loop detected", ESCRoutingLoop)
-				return &resp
-			}
+		if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+			conn.resetTransaction()
+			resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
+			return &resp
 		}
 
 		mail.ID = utils.GenerateID()
