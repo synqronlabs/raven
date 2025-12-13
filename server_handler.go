@@ -28,7 +28,7 @@ func checkLoopDetection(mail *Mail, logger *slog.Logger, maxAllowed int) error {
 				slog.Int("max_allowed", maxAllowed),
 				slog.String("from", mail.Envelope.From.String()),
 			)
-			return errors.New("Mail loop detected")
+			return errors.New("mail loop detected")
 		}
 	}
 	return nil
