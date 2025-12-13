@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/synqronlabs/raven.svg)](https://pkg.go.dev/github.com/synqronlabs/raven)
 
-Raven is a high-performance, RFC-compliant SMTP server and client library for Go. It provides a flexible and extensible framework for building mail transfer agents (MTAs), mail submission agents (MSAs), and custom email processing applications.
+Raven is a high-performance, RFC-compliant ESMTP server and client library for Go. It provides a flexible and extensible framework for building mail transfer agents (MTAs), mail submission agents (MSAs), and custom email processing applications.
 
 ## Installation
 

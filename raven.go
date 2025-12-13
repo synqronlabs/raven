@@ -1,7 +1,4 @@
-// Package raven provides a high-performance, RFC-compliant SMTP library for Go.
-//
-// Raven includes both server and client components for building mail transfer agents (MTAs),
-// mail submission agents (MSAs), and custom email processing applications.
+// Raven is a high-performance, RFC-compliant ESMTP library for Go.
 //
 // # Server
 //

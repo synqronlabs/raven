@@ -35,7 +35,6 @@ type ClientConfig struct {
 	ConnectTimeout time.Duration
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
-	RetryConfig    *RetryConfig
 	Debug          bool
 	DebugWriter    io.Writer
 }
@@ -45,14 +44,6 @@ type ClientAuth struct {
 	Username   string
 	Password   string
 	Mechanisms []string // Preferred SASL mechanisms (auto-select if empty)
-}
-
-// RetryConfig controls retry behavior.
-type RetryConfig struct {
-	MaxRetries   int
-	InitialDelay time.Duration
-	MaxDelay     time.Duration
-	Multiplier   float64
 }
 
 // DefaultClientConfig returns a ClientConfig with sensible defaults.

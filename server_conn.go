@@ -170,27 +170,27 @@ func (c *Connection) State() ConnectionState {
 	return c.state
 }
 
-// StateInfo returns multiple state values in a single lock acquisition.
+// stateInfo returns multiple state values in a single lock acquisition.
 // This reduces lock contention when multiple state checks are needed.
-type StateInfo struct {
+type stateInfo struct {
 	State           ConnectionState
 	IsTLS           bool
 	IsAuthenticated bool
 }
 
-// GetStateInfo returns connection state, TLS status, and auth status atomically.
-func (c *Connection) GetStateInfo() StateInfo {
+// getStateInfo returns connection state, TLS status, and auth status atomically.
+func (c *Connection) getStateInfo() stateInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return StateInfo{
+	return stateInfo{
 		State:           c.state,
 		IsTLS:           c.TLS.Enabled,
 		IsAuthenticated: c.Auth.Authenticated,
 	}
 }
 
-// SetState sets the connection state.
-func (c *Connection) SetState(state ConnectionState) {
+// setState sets the connection state.
+func (c *Connection) setState(state ConnectionState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.state = state
@@ -223,8 +223,8 @@ func (c *Connection) CurrentMail() *Mail {
 	return c.currentMail
 }
 
-// BeginTransaction starts a new mail transaction.
-func (c *Connection) BeginTransaction() *Mail {
+// beginTransaction starts a new mail transaction.
+func (c *Connection) beginTransaction() *Mail {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.currentMail = NewMail()
@@ -232,9 +232,9 @@ func (c *Connection) BeginTransaction() *Mail {
 	return c.currentMail
 }
 
-// ResetTransaction aborts the current mail transaction (RSET command).
+// resetTransaction aborts the current mail transaction (RSET command).
 // Returns the connection to the GREETED state per RFC 5321.
-func (c *Connection) ResetTransaction() {
+func (c *Connection) resetTransaction() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.currentMail = nil
@@ -244,9 +244,9 @@ func (c *Connection) ResetTransaction() {
 	}
 }
 
-// CompleteTransaction finalizes the current mail transaction.
+// completeTransaction finalizes the current mail transaction.
 // Returns the completed Mail and resets for the next transaction.
-func (c *Connection) CompleteTransaction() *Mail {
+func (c *Connection) completeTransaction() *Mail {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	mail := c.currentMail
@@ -257,22 +257,22 @@ func (c *Connection) CompleteTransaction() *Mail {
 	return mail
 }
 
-// AppendBDATChunk appends data to the BDAT buffer during chunked transfers.
-func (c *Connection) AppendBDATChunk(data []byte) {
+// appendBDATChunk appends data to the BDAT buffer during chunked transfers.
+func (c *Connection) appendBDATChunk(data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bdatBuffer = append(c.bdatBuffer, data...)
 }
 
-// BDATBufferSize returns the current size of the BDAT buffer.
-func (c *Connection) BDATBufferSize() int64 {
+// getBDATBufferSize returns the current size of the BDAT buffer.
+func (c *Connection) getBDATBufferSize() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return int64(len(c.bdatBuffer))
 }
 
-// ConsumeBDATBuffer returns the accumulated BDAT data and clears the buffer.
-func (c *Connection) ConsumeBDATBuffer() []byte {
+// consumeBDATBuffer returns the accumulated BDAT data and clears the buffer.
+func (c *Connection) consumeBDATBuffer() []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	data := c.bdatBuffer
@@ -304,16 +304,16 @@ func (c *Connection) Done() <-chan struct{} {
 	return c.closedChan
 }
 
-// UpdateActivity updates the last activity timestamp and increments command count.
-func (c *Connection) UpdateActivity() {
+// updateActivity updates the last activity timestamp and increments command count.
+func (c *Connection) updateActivity() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Trace.LastActivity = time.Now()
 	c.Trace.CommandCount++
 }
 
-// RecordError records an error for this connection.
-func (c *Connection) RecordError(err error) {
+// recordError records an error for this connection.
+func (c *Connection) recordError(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Trace.Errors = append(c.Trace.Errors, err)
@@ -326,8 +326,8 @@ func (c *Connection) ErrorCount() int {
 	return len(c.Trace.Errors)
 }
 
-// SetClientHostname sets the hostname from EHLO/HELO.
-func (c *Connection) SetClientHostname(hostname string) {
+// setClientHostname sets the hostname from EHLO/HELO.
+func (c *Connection) setClientHostname(hostname string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Trace.ClientHostname = hostname

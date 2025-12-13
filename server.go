@@ -366,7 +366,7 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 			return
 		}
 
-		conn.UpdateActivity()
+		conn.updateActivity()
 
 		if conn.Limits.MaxCommands > 0 && conn.Trace.CommandCount > conn.Limits.MaxCommands {
 			resp := ResponseServiceUnavailable(s.config.Hostname, "Too many commands")
@@ -442,7 +442,7 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 func (s *Server) writeResponse(conn *Connection, resp Response) {
 	// Record error responses for session tracking
 	if resp.IsError() {
-		conn.RecordError(resp.ToError())
+		conn.recordError(resp.ToError())
 	}
 
 	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout)); err != nil {
@@ -452,7 +452,7 @@ func (s *Server) writeResponse(conn *Connection, resp Response) {
 	line := resp.String() + "\r\n"
 	_, err := conn.writer.WriteString(line)
 	if err != nil {
-		conn.RecordError(err)
+		conn.recordError(err)
 		return
 	}
 	_ = conn.writer.Flush()
@@ -464,7 +464,7 @@ func (s *Server) writeMultilineResponse(conn *Connection, code SMTPCode, lines [
 	// Record error responses for session tracking
 	if code >= 400 {
 		msg := strings.Join(lines, "; ")
-		conn.RecordError(fmt.Errorf("SMTP %d: %s", code, msg))
+		conn.recordError(fmt.Errorf("SMTP %d: %s", code, msg))
 	}
 
 	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.config.WriteTimeout)); err != nil {
@@ -480,7 +480,7 @@ func (s *Server) writeMultilineResponse(conn *Connection, code SMTPCode, lines [
 		}
 		_, err := conn.writer.WriteString(formatted)
 		if err != nil {
-			conn.RecordError(err)
+			conn.recordError(err)
 			return
 		}
 	}

@@ -29,9 +29,9 @@ func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
 		}
 	}
 
-	conn.SetClientHostname(hostname)
-	conn.SetState(StateGreeted)
-	conn.ResetTransaction()
+	conn.setClientHostname(hostname)
+	conn.setState(StateGreeted)
+	conn.resetTransaction()
 
 	ip, err := utils.GetIPFromAddr(conn.RemoteAddr())
 	if err != nil {
@@ -109,9 +109,9 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 		}
 	}
 
-	conn.SetClientHostname(hostname)
-	conn.SetState(StateGreeted)
-	conn.ResetTransaction()
+	conn.setClientHostname(hostname)
+	conn.setState(StateGreeted)
+	conn.resetTransaction()
 
 	ip, err := utils.GetIPFromAddr(conn.RemoteAddr())
 	if err != nil {
@@ -136,7 +136,7 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 
 func (s *Server) handleMail(conn *Connection, args string) *Response {
 	// Get state info in a single lock acquisition
-	stateInfo := conn.GetStateInfo()
+	stateInfo := conn.getStateInfo()
 
 	if stateInfo.State < StateGreeted {
 		resp := ResponseBadSequence("Send EHLO/HELO first")
@@ -205,7 +205,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	}
 
 	// Start transaction
-	mail := conn.BeginTransaction()
+	mail := conn.beginTransaction()
 	mail.Envelope.From = from
 
 	// Set default body type to 7BIT
@@ -313,7 +313,7 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	}
 	mail.Envelope.ExtensionParams = params
 
-	conn.SetState(StateMail)
+	conn.setState(StateMail)
 
 	return &Response{
 		Code:         CodeOK,
@@ -456,7 +456,7 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	}
 
 	mail.Envelope.To = append(mail.Envelope.To, rcpt)
-	conn.SetState(StateRcpt)
+	conn.setState(StateRcpt)
 
 	return &Response{
 		Code:         CodeOK,
@@ -484,7 +484,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		}
 	}
 
-	conn.SetState(StateData)
+	conn.setState(StateData)
 
 	// Send intermediate response
 	s.writeResponse(conn, Response{
@@ -500,7 +500,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 
 	// Check for BINARYMIME early - it requires BDAT command, not DATA
 	if mail.Envelope.BodyType == BodyTypeBinaryMIME {
-		conn.ResetTransaction()
+		conn.resetTransaction()
 		return &Response{
 			Code:         CodeBadSequence,
 			EnhancedCode: string(ESCInvalidCommand),
@@ -513,12 +513,12 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 	data, err := s.readDataContent(reader, conn.Limits.MaxMessageSize, enforce7Bit)
 	if err != nil {
 		if errors.Is(err, ErrMessageTooLarge) {
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			resp := ResponseExceededStorage("Message too large")
 			return &resp
 		}
 		if errors.Is(err, ravenio.ErrBadLineEnding) {
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			return &Response{
 				Code:         CodeSyntaxError,
 				EnhancedCode: string(ESCContentError),
@@ -526,12 +526,12 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 			}
 		}
 		if errors.Is(err, ravenio.Err8BitIn7BitMode) {
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			resp := ResponseTransactionFailed("Message contains 8-bit data but BODY=8BITMIME was not specified", ESCContentError)
 			return &resp
 		}
 		if errors.Is(err, ravenio.ErrLineTooLong) {
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			return &Response{
 				Code:         CodeSyntaxError,
 				EnhancedCode: string(ESCContentError),
@@ -539,7 +539,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 			}
 		}
 		logger.Error("data read error", slog.Any("error", err))
-		conn.ResetTransaction()
+		conn.resetTransaction()
 		resp := ResponseLocalError("Error reading message")
 		return &resp
 	}
@@ -574,7 +574,7 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 				slog.Int("max_allowed", s.config.MaxReceivedHeaders),
 				slog.String("from", mail.Envelope.From.String()),
 			)
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			resp := ResponseTransactionFailed("Mail loop detected", ESCRoutingLoop)
 			return &resp
 		}
@@ -596,13 +596,13 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 
 	if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
 		if err := s.config.Callbacks.OnMessage(conn.Context(), conn, mail); err != nil {
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
 			return &resp
 		}
 	}
 
-	conn.CompleteTransaction()
+	conn.completeTransaction()
 
 	logger.Info("message received",
 		slog.String("mail_id", mail.ID),
@@ -730,11 +730,11 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	}
 
 	// Check if adding this chunk would exceed max message size
-	currentSize := conn.BDATBufferSize()
+	currentSize := conn.getBDATBufferSize()
 	if conn.Limits.MaxMessageSize > 0 && currentSize+chunkSize > conn.Limits.MaxMessageSize {
 		// Discard the chunk data to keep protocol in sync
 		s.discardBDATChunk(reader, chunkSize)
-		conn.ResetTransaction()
+		conn.resetTransaction()
 		resp := ResponseExceededStorage("Message too large")
 		return &resp
 	}
@@ -743,13 +743,13 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		if err := s.config.Callbacks.OnBDAT(conn.Context(), conn, chunkSize, isLast); err != nil {
 			// Discard the chunk data to keep protocol in sync
 			s.discardBDATChunk(reader, chunkSize)
-			conn.ResetTransaction()
+			conn.resetTransaction()
 			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
 			return &resp
 		}
 	}
 
-	conn.SetState(StateBDAT)
+	conn.setState(StateBDAT)
 
 	// Set data timeout
 	if err := conn.conn.SetReadDeadline(time.Now().Add(s.config.DataTimeout)); err != nil {
@@ -761,18 +761,18 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 	chunkData, err := s.readBDATChunk(reader, chunkSize)
 	if err != nil {
 		logger.Error("BDAT read error", slog.Any("error", err))
-		conn.ResetTransaction()
+		conn.resetTransaction()
 		resp := ResponseLocalError("Error reading chunk data")
 		return &resp
 	}
 
 	// Append chunk to connection's BDAT buffer
-	conn.AppendBDATChunk(chunkData)
+	conn.appendBDATChunk(chunkData)
 
 	// If this is the last chunk, complete the transaction
 	if isLast {
 		// Get accumulated data and parse into headers and body
-		rawData := conn.ConsumeBDATBuffer()
+		rawData := conn.consumeBDATBuffer()
 		mail.Content.FromRaw(rawData)
 
 		// Loop detection via Received header count
@@ -786,7 +786,7 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 					slog.Int("max_allowed", s.config.MaxReceivedHeaders),
 					slog.String("from", mail.Envelope.From.String()),
 				)
-				conn.ResetTransaction()
+				conn.resetTransaction()
 				resp := ResponseTransactionFailed("Mail loop detected", ESCRoutingLoop)
 				return &resp
 			}
@@ -810,14 +810,14 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		// OnMessage callback
 		if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
 			if err := s.config.Callbacks.OnMessage(conn.Context(), conn, mail); err != nil {
-				conn.ResetTransaction()
+				conn.resetTransaction()
 				resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
 				return &resp
 			}
 		}
 
 		// Complete transaction
-		conn.CompleteTransaction()
+		conn.completeTransaction()
 
 		logger.Info("message received via BDAT",
 			slog.String("mail_id", mail.ID),
@@ -861,7 +861,7 @@ func (s *Server) handleRset(conn *Connection) *Response {
 		s.config.Callbacks.OnReset(conn.Context(), conn)
 	}
 
-	conn.ResetTransaction()
+	conn.resetTransaction()
 
 	resp := ResponseOK("OK", string(ESCSuccess))
 	return &resp
@@ -990,7 +990,7 @@ func (s *Server) handleHelp(conn *Connection, topic string) *Response {
 }
 
 func (s *Server) handleQuit(conn *Connection) *Response {
-	conn.SetState(StateQuit)
+	conn.setState(StateQuit)
 	resp := ResponseServiceClosing(s.config.Hostname, fmt.Sprintf("Service closing transmission channel [%s]", conn.Trace.ID))
 	return &resp
 }
