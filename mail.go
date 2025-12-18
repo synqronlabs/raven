@@ -100,14 +100,6 @@ type Envelope struct {
 	DSNParams       *DSNEnvelopeParams `json:"dsn_params,omitempty"`
 	Auth            string             `json:"auth,omitempty"`
 	ExtensionParams map[string]string  `json:"extension_params,omitempty"`
-
-	// SPFResult contains the result of SPF verification performed during MAIL FROM.
-	// This is nil if SPF checking was not performed.
-	SPFResult *SPFCheckResult `json:"spf_result,omitempty"`
-
-	// DMARCResult contains the result of DMARC verification performed after message receipt.
-	// This is nil if DMARC checking was not performed.
-	DMARCResult *DMARCCheckResult `json:"dmarc_result,omitempty"`
 }
 
 // DSNEnvelopeParams contains envelope-level DSN parameters.
