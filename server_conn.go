@@ -107,20 +107,21 @@ type ConnectionLimits struct {
 
 // Connection represents an SMTP session.
 type Connection struct {
-	conn           net.Conn
-	ctx            context.Context
-	cancel         context.CancelFunc
-	reader         *bufio.Reader
-	writer         *bufio.Writer
-	mu             sync.RWMutex
-	state          ConnectionState
-	Trace          ConnectionTrace
-	TLS            TLSInfo
-	Auth           AuthInfo
-	Limits         ConnectionLimits
-	Extensions     map[Extension]string
-	currentMail    *Mail
-	serverHostname string
+	conn        net.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	reader      *bufio.Reader
+	writer      *bufio.Writer
+	mu          sync.RWMutex
+	state       ConnectionState
+	Trace       ConnectionTrace
+	TLS         TLSInfo
+	Auth        AuthInfo
+	Limits      ConnectionLimits
+	Extensions  map[Extension]string
+	currentMail *Mail
+	// Hostname of the server handling this connection.
+	ServerHostname string
 
 	// bdatBuffer accumulates chunk data during BDAT transfers.
 	bdatBuffer []byte
@@ -153,7 +154,7 @@ func NewConnection(ctx context.Context, conn net.Conn, serverHostname string, li
 		},
 		Limits:         limits,
 		Extensions:     make(map[Extension]string),
-		serverHostname: serverHostname,
+		ServerHostname: serverHostname,
 		closedChan:     make(chan struct{}),
 	}
 
@@ -422,7 +423,7 @@ func (c *Connection) GenerateReceivedHeader(forRecipient string) TraceField {
 		Type:       "Received",
 		FromDomain: c.Trace.ClientHostname,
 		FromIP:     c.Trace.RemoteAddr.String(),
-		ByDomain:   c.serverHostname,
+		ByDomain:   c.ServerHostname,
 		Via:        "TCP",
 		With:       protocol,
 		For:        forRecipient,

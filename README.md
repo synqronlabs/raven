@@ -77,25 +77,6 @@ Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** 
 | DSN | RFC 3461 | `.Extension(raven.DSN())` |
 | CHUNKING | RFC 3030 | `.Extension(raven.Chunking())` |
 
-### Security / Authentication Extensions
-
-| Extension | RFC | How to Enable |
-|-----------|-----|---------------|
-| SPF | RFC 7208 | `.SPF()` or `.SPFWithOptions()` |
-| DKIM | RFC 6376 | `mail.SignDKIM()` / `mail.VerifyDKIM()` |
-| DMARC | RFC 7489 | `.DMARCWithOptions()` |
-
-```go
-// Enable opt-in extensions
-server := raven.New("mail.example.com").
-    TLS(tlsConfig).                       // Enables STARTTLS
-    Auth([]string{"PLAIN"}, authHandler). // Enables AUTH
-    MaxMessageSize(25 * 1024 * 1024).     // Enables SIZE
-    Extension(raven.DSN()).               // Enables DSN
-    Extension(raven.Chunking()).          // Enables CHUNKING/BDAT
-    Build()
-```
-
 ## Documentation
 
 - **[API Reference](https://pkg.go.dev/github.com/synqronlabs/raven)** - Complete API documentation
@@ -262,171 +243,6 @@ responses, err := client.PipelineCommands([]string{
 })
 ```
 
-## SPF Validation
-
-Raven supports SPF (Sender Policy Framework, RFC 7208) validation for incoming mail:
-
-### Basic SPF Validation
-
-```go
-server := raven.New("mail.example.com").
-    SPF(raven.SPFActionReject, raven.SPFActionAccept). // reject on fail, accept on softfail
-    OnMessage(func(ctx *raven.Context) error {
-        // SPF result is available in the envelope
-        if ctx.Mail.Envelope.SPFResult != nil {
-            log.Printf("SPF result: %s", ctx.Mail.Envelope.SPFResult.Result)
-        }
-        return nil
-    }).
-    Build()
-```
-
-### SPF with Custom Options
-
-```go
-server := raven.New("mail.example.com").
-    SPFWithOptions(&raven.SPFVerifyOptions{
-        Enabled:        true,
-        FailAction:     raven.SPFActionReject,  // Reject on hard fail
-        SoftfailAction: raven.SPFActionAccept,  // Accept on soft fail
-    }).
-    Build()
-```
-
-### SPF Actions
-
-| Action | Description |
-|--------|-------------|
-| `SPFActionAccept` | Accept the message (default for softfail) |
-| `SPFActionReject` | Reject with 550 error |
-| `SPFActionMark` | Accept but mark for downstream processing |
-
-The SPF result includes the check result (`pass`, `fail`, `softfail`, `neutral`, `none`, `temperror`, `permerror`), the sender domain, and generates a `Received-SPF` header automatically.
-
-## DKIM Signing and Verification
-
-Raven supports DKIM (RFC 6376) for signing outbound messages and verifying inbound messages:
-
-### Signing Outbound Messages
-
-```go
-import "crypto/rsa"
-
-// Load your private key
-privateKey, _ := loadPrivateKey() // *rsa.PrivateKey
-
-// Build your mail
-mail, _ := raven.NewMailBuilder().
-    From("sender@example.com").
-    To("recipient@example.com").
-    Subject("Signed Message").
-    TextBody("This message will be DKIM signed.").
-    Build()
-
-// Sign with DKIM
-err := mail.SignDKIM(&raven.DKIMSignOptions{
-    Domain:     "example.com",
-    Selector:   "default",
-    PrivateKey: privateKey,
-})
-
-// Send the signed mail
-client.Send(mail)
-```
-
-### Verifying Inbound Messages
-
-```go
-// Verify DKIM signatures on received mail
-results := mail.VerifyDKIM(raven.DefaultDKIMVerifyOptions())
-
-for _, result := range results {
-    if result.Status == raven.DKIMStatusPass {
-        log.Printf("Valid signature from domain: %s", result.Domain)
-    } else {
-        log.Printf("DKIM verification failed: %v", result.Error)
-    }
-}
-```
-
-The library uses secure defaults (RSA-SHA256, relaxed canonicalization) and performs DNS lookups to retrieve public keys automatically.
-
-## DMARC Validation
-
-Raven supports DMARC (Domain-based Message Authentication, Reporting, and Conformance, RFC 7489) for validating incoming mail. DMARC builds on SPF and DKIM to provide domain-level authentication by verifying that the From header domain aligns with authenticated domains.
-
-### Basic DMARC Validation
-
-```go
-server := raven.New("mail.example.com").
-    SPF(raven.SPFActionMark, raven.SPFActionAccept).  // SPF needed for DMARC
-    DMARCWithOptions(&raven.DMARCVerifyOptions{
-        Enabled:          true,
-        RejectAction:     raven.DMARCActionReject,     // Reject on p=reject
-        QuarantineAction: raven.DMARCActionMark,       // Mark on p=quarantine
-    }).
-    OnMessage(func(ctx *raven.Context) error {
-        // DMARC result is available in the envelope
-        if ctx.Mail.Envelope.DMARCResult != nil {
-            log.Printf("DMARC result: %s (policy: %s)", 
-                ctx.Mail.Envelope.DMARCResult.Result,
-                ctx.Mail.Envelope.DMARCResult.Policy)
-        }
-        return nil
-    }).
-    Build()
-```
-
-### DMARC Actions
-
-| Action | Description |
-|--------|-------------|
-| `DMARCActionNone` | Take no action (accept the message) |
-| `DMARCActionReject` | Reject with 550 error |
-| `DMARCActionMark` | Accept but mark for downstream processing |
-
-### DMARC Results
-
-| Result | Description |
-|--------|-------------|
-| `DMARCPass` | Message passed DMARC authentication |
-| `DMARCFail` | Message failed DMARC authentication |
-| `DMARCNone` | No DMARC policy published for domain |
-| `DMARCTempError` | Temporary error during verification |
-| `DMARCPermError` | Permanent error (invalid policy) |
-
-### How DMARC Works
-
-1. **SPF Alignment**: Checks if the envelope sender domain (MAIL FROM) aligns with the From header domain
-2. **DKIM Alignment**: Checks if any DKIM signature domain (d= tag) aligns with the From header domain
-3. **Alignment Modes**: 
-   - **Strict**: Domains must match exactly
-   - **Relaxed** (default): Organizational domains must match (e.g., `mail.example.com` aligns with `example.com`)
-
-### Standalone DMARC Check
-
-```go
-// Perform a DMARC check manually
-result := raven.CheckDMARC(
-    "sender@example.com",           // From header
-    spfResult,                      // SPF result (*SPFCheckResult)
-    dkimResults,                    // DKIM results ([]*DKIMVerifyResult)
-    raven.DefaultDMARCVerifyOptions(),
-)
-
-if result.Result == raven.DMARCPass {
-    log.Println("DMARC passed")
-} else {
-    log.Printf("DMARC %s: policy=%s, spf_aligned=%v, dkim_aligned=%v",
-        result.Result, result.Policy, result.SPFAligned, result.DKIMAligned)
-}
-
-// Generate Authentication-Results header
-header := raven.AuthenticationResultsHeader("mail.example.com", result)
-```
-
-The DMARC implementation automatically generates an `Authentication-Results` header (RFC 7001) with the verification outcome.
-
 ## Serialization
 
 Raven supports both JSON and MessagePack serialization for Mail objects.
@@ -465,6 +281,354 @@ if err != nil {
 }
 ```
 
+## Email Authentication
+
+Raven includes subpackages for email authentication: DKIM, DMARC, SPF, and a flexible DNS resolver.
+
+### DNS Package
+
+The `dns` package provides DNS resolution with optional DNSSEC validation support, used by SPF, DKIM, and DMARC authentication.
+
+```go
+import "github.com/synqronlabs/raven/dns"
+
+// Create a DNSSEC-enabled resolver
+resolver := dns.NewResolver(dns.ResolverConfig{
+    Nameservers: []string{"8.8.8.8:53", "1.1.1.1:53"},
+    DNSSEC:      true,
+    Timeout:     5 * time.Second,
+})
+
+// Lookup TXT records
+result, err := resolver.LookupTXT(ctx, "example.com")
+if err != nil {
+    if dns.IsNotFound(err) {
+        // No records found
+    } else if dns.IsTemporary(err) {
+        // Temporary error, retry later
+    }
+}
+for _, txt := range result.Records {
+    fmt.Println(txt)
+}
+if result.Authentic {
+    fmt.Println("Response was DNSSEC-validated")
+}
+
+// Simple resolver without DNSSEC (uses standard library)
+stdResolver := dns.NewStdResolver()
+```
+
+### DKIM Package
+
+The `dkim` package implements DomainKeys Identified Mail (RFC 6376) for signing and verifying email messages.
+
+**Supported Algorithms:**
+- RSA-SHA256 (required by RFC 6376)
+- RSA-SHA1 (deprecated, for compatibility)
+- Ed25519-SHA256 (RFC 8463)
+- ECDSA-SHA256 (P-256, P-384, P-521 curves)
+
+#### Signing Messages
+
+```go
+import "github.com/synqronlabs/raven/dkim"
+
+// Load your private key
+privateKey, _ := x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
+
+// Create a signer
+signer := &dkim.Signer{
+    Domain:                 "example.com",
+    Selector:               "selector1",
+    PrivateKey:             privateKey,
+    Headers:                dkim.DefaultSignedHeaders, // Optional
+    HeaderCanonicalization: dkim.CanonRelaxed,
+    BodyCanonicalization:   dkim.CanonRelaxed,
+    Expiration:             7 * 24 * time.Hour, // Optional: signature expires in 7 days
+}
+
+// Sign the message
+signature, err := signer.Sign(rawMessage)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Prepend signature to message
+signedMessage := signature + "\r\n" + string(rawMessage)
+```
+
+#### Verifying Messages
+
+```go
+import (
+    "github.com/synqronlabs/raven/dkim"
+    "github.com/synqronlabs/raven/dns"
+)
+
+resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
+
+verifier := &dkim.Verifier{
+    Resolver:      resolver,
+    MinRSAKeyBits: 1024, // Reject weak keys
+}
+
+results, err := verifier.Verify(ctx, rawMessage)
+for _, r := range results {
+    switch r.Status {
+    case dkim.StatusPass:
+        fmt.Printf("DKIM pass for domain: %s\n", r.Signature.Domain)
+    case dkim.StatusFail:
+        fmt.Printf("DKIM failed: %v\n", r.Err)
+    case dkim.StatusTemperror:
+        fmt.Println("Temporary error (e.g., DNS timeout)")
+    case dkim.StatusPermerror:
+        fmt.Println("Permanent error (e.g., invalid signature)")
+    }
+}
+```
+
+#### DKIM Middleware
+
+```go
+import (
+    "github.com/synqronlabs/raven"
+    "github.com/synqronlabs/raven/dkim"
+    "github.com/synqronlabs/raven/dns"
+)
+
+resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
+
+server := raven.New("mx.example.com").
+    Use(dkim.Middleware(dkim.MiddlewareConfig{
+        Resolver:         resolver,
+        Logger:           logger,
+        RejectOnFail:     false, // Add Authentication-Results header but don't reject
+        RequireSignature: false, // Allow unsigned messages
+        MinRSAKeyBits:    1024,
+    })).
+    Build()
+
+// Access DKIM results in your handler
+server.OnMessage(func(ctx *raven.Context) error {
+    if results, ok := ctx.Keys[dkim.ContextKeyDKIMResults].([]dkim.Result); ok {
+        for _, r := range results {
+            if r.Status == dkim.StatusPass {
+                log.Printf("Valid DKIM signature from %s", r.Signature.Domain)
+            }
+        }
+    }
+    return nil
+})
+```
+
+### SPF Package
+
+The `spf` package implements Sender Policy Framework (RFC 7208) for verifying that sending servers are authorized to send mail for a domain.
+
+**SPF Result Statuses:**
+
+| Status | Description |
+|--------|-------------|
+| `StatusPass` | IP is authorized to send for the domain |
+| `StatusFail` | IP is explicitly not authorized |
+| `StatusSoftfail` | IP is probably not authorized (weak statement) |
+| `StatusNeutral` | Domain makes no assertion about the IP |
+| `StatusNone` | No SPF record found |
+| `StatusTemperror` | Temporary error (e.g., DNS timeout) |
+| `StatusPermerror` | Permanent error (e.g., invalid SPF record) |
+
+#### Verifying SPF
+
+```go
+import "github.com/synqronlabs/raven/spf"
+
+// Create resolver with DNSSEC support
+resolver := spf.NewResolver(spf.ResolverConfig{
+    DNSSEC: true,
+})
+
+// Or use defaults (system nameservers, DNSSEC enabled)
+resolver := spf.NewResolverWithDefaults()
+
+// Verify SPF for an incoming message
+args := spf.Args{
+    RemoteIP:       net.ParseIP("192.0.2.1"),    // Sender's IP
+    MailFromDomain: "example.com",               // Domain from MAIL FROM
+    MailFromLocal:  "sender",                    // Local part from MAIL FROM
+    HelloDomain:    "mail.example.com",          // EHLO/HELO domain
+    LocalHostname:  "mx.myserver.com",           // Receiving server hostname
+}
+
+received, err := spf.Verify(ctx, resolver, args)
+if err != nil {
+    log.Printf("SPF verification error: %v", err)
+}
+
+switch received.Result {
+case spf.StatusPass:
+    fmt.Println("SPF passed - sender is authorized")
+case spf.StatusFail:
+    fmt.Printf("SPF failed - sender not authorized: %s\n", received.Problem)
+case spf.StatusSoftfail:
+    fmt.Println("SPF softfail - treat with suspicion")
+case spf.StatusNone:
+    fmt.Println("No SPF record found")
+}
+
+// Generate Received-SPF header
+header := received.Header()
+// Output: Received-SPF: pass client-ip=192.0.2.1; envelope-from=sender@example.com; ...
+```
+
+#### SPF Middleware
+
+```go
+import (
+    "github.com/synqronlabs/raven"
+    "github.com/synqronlabs/raven/spf"
+)
+
+resolver := spf.NewResolverWithDefaults()
+
+server := raven.New("mx.example.com").
+    Use(spf.Middleware(spf.MiddlewareConfig{
+        Resolver: resolver,
+        Logger:   logger,
+        Policy:   spf.PolicyRejectFail, // Reject on hard fail
+        Timeout:  20 * time.Second,
+    })).
+    Build()
+
+// Access SPF results in your handler
+server.OnMessage(func(ctx *raven.Context) error {
+    if status, ok := ctx.Keys[spf.ContextKeySPFStatus].(spf.Status); ok {
+        if status == spf.StatusPass {
+            log.Println("SPF verification passed")
+        }
+    }
+    if domain, ok := ctx.Keys[spf.ContextKeySPFDomain].(string); ok {
+        log.Printf("Checked SPF for domain: %s", domain)
+    }
+    return nil
+})
+```
+
+**SPF Middleware Policies:**
+
+| Policy | Behavior |
+|--------|----------|
+| `PolicyMark` | Add Received-SPF header, never reject |
+| `PolicyRejectFail` | Reject on SPF `fail` result |
+| `PolicyRejectFailAndSoftfail` | Reject on `fail` and `softfail` |
+| `PolicyRejectAll` | Reject anything that isn't `pass` or `none` |
+
+### DMARC Package
+
+The `dmarc` package implements Domain-based Message Authentication, Reporting, and Conformance (RFC 7489).
+
+#### Looking Up DMARC Policy
+
+```go
+import (
+    "github.com/synqronlabs/raven/dmarc"
+    "github.com/synqronlabs/raven/dns"
+)
+
+resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
+
+status, domain, record, txt, authentic, err := dmarc.Lookup(ctx, resolver, "sender.example.com")
+if record != nil {
+    fmt.Printf("DMARC policy for %s:\n", domain)
+    fmt.Printf("  Policy: %s\n", record.Policy)           // none, quarantine, reject
+    fmt.Printf("  Subdomain Policy: %s\n", record.SubdomainPolicy)
+    fmt.Printf("  SPF Alignment: %s\n", record.ASPF)      // r (relaxed) or s (strict)
+    fmt.Printf("  DKIM Alignment: %s\n", record.ADKIM)
+    fmt.Printf("  Percentage: %d%%\n", record.Percentage) // pct= field
+}
+```
+
+#### Verifying DMARC
+
+```go
+import (
+    "github.com/synqronlabs/raven/dkim"
+    "github.com/synqronlabs/raven/dmarc"
+    "github.com/synqronlabs/raven/spf"
+)
+
+// First, run SPF and DKIM checks
+spfResult := spf.StatusPass // Result from SPF check
+dkimResults := []dkim.Result{...} // Results from DKIM verification
+
+// Then verify DMARC
+useResult, result := dmarc.Verify(ctx, resolver, dmarc.VerifyArgs{
+    FromDomain:  "sender.example.com",
+    SPFResult:   spfResult,
+    SPFDomain:   "sender.example.com", // MAIL FROM domain
+    DKIMResults: dkimResults,
+}, true) // applyRandomPercentage honors the pct= field
+
+if result.Status == dmarc.StatusPass {
+    fmt.Println("DMARC passed!")
+    if result.AlignedSPFPass {
+        fmt.Println("  - SPF aligned and passed")
+    }
+    if result.AlignedDKIMPass {
+        fmt.Println("  - DKIM aligned and passed")
+    }
+} else if result.Reject {
+    fmt.Printf("DMARC failed, policy=%s recommends rejection\n", result.Record.Policy)
+}
+```
+
+#### DMARC Middleware
+
+The DMARC middleware should be used **after** SPF and DKIM middleware:
+
+```go
+import (
+    "github.com/synqronlabs/raven"
+    "github.com/synqronlabs/raven/dkim"
+    "github.com/synqronlabs/raven/dmarc"
+    "github.com/synqronlabs/raven/dns"
+    "github.com/synqronlabs/raven/spf"
+)
+
+resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
+
+server := raven.New("mx.example.com").
+    Use(
+        spf.Middleware(spf.MiddlewareConfig{Resolver: resolver}),   // Run first
+        dkim.Middleware(dkim.MiddlewareConfig{Resolver: resolver}), // Run second
+        dmarc.Middleware(dmarc.MiddlewareConfig{                    // Run last
+            Resolver: resolver,
+            Logger:   logger,
+            Policy:   dmarc.MiddlewarePolicyEnforce, // Enforce published DMARC policy
+        }),
+    ).
+    Build()
+```
+
+**DMARC Middleware Policies:**
+
+| Policy | Behavior |
+|--------|----------|
+| `MiddlewarePolicyMark` | Add Authentication-Results header, never reject |
+| `MiddlewarePolicyEnforce` | Reject messages when DMARC policy is `reject` |
+| `MiddlewarePolicyStrict` | Reject all messages that fail DMARC |
+
+#### Utility Functions
+
+```go
+// Get the organizational domain using the Public Suffix List
+orgDomain := dmarc.OrganizationalDomain("mail.sub.example.com") // Returns "example.com"
+
+// Check domain alignment
+aligned := dmarc.DomainsAligned("mail.example.com", "example.com", dmarc.AlignRelaxed) // true
+aligned = dmarc.DomainsAligned("mail.example.com", "example.com", dmarc.AlignStrict)   // false
+```
+
 ## Project Structure
 
 The codebase is organized with clear file naming for easy navigation:
@@ -486,16 +650,17 @@ raven/
 ├── mail.go            # Mail and envelope types
 ├── mail_builder.go    # Fluent mail builder API
 ├── mail_test.go       # Mail builder tests
-├── dkim.go            # DKIM signing and verification (RFC 6376)
-├── dmarc.go           # DMARC validation (RFC 7489)
-├── spf.go             # SPF validation (RFC 7208)
 ├── response.go        # SMTP response codes and types
 ├── extensions.go      # SMTP extension definitions
 ├── middleware.go      # Built-in middleware
 ├── parser.go          # SMTP command parser
+├── dkim/              # DKIM signing and verification (RFC 6376)
+├── dmarc/             # DMARC policy evaluation (RFC 7489)
+├── dns/               # DNS resolution with DNSSEC support
 ├── io/                # I/O utilities
 ├── mime/              # MIME handling
 ├── sasl/              # SASL authentication mechanisms
+├── spf/               # SPF verification (RFC 7208)
 └── utils/             # Utility functions
 ```
 

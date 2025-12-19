@@ -36,15 +36,6 @@ type ServerConfig struct {
 	ShutdownTimeout    time.Duration
 	Logger             *slog.Logger
 	Callbacks          *Callbacks
-
-	// SPF contains SPF (Sender Policy Framework) verification options.
-	// If nil, SPF checking is disabled.
-	SPF *SPFVerifyOptions
-
-	// DMARC contains DMARC (Domain-based Message Authentication, Reporting, and Conformance)
-	// verification options. If nil, DMARC checking is disabled.
-	// DMARC checks are performed after the message content is received (after DATA/BDAT).
-	DMARC *DMARCVerifyOptions
 }
 
 // Callbacks defines event handlers for SMTP server events.
