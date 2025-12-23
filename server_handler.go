@@ -16,35 +16,27 @@ import (
 	"github.com/synqronlabs/raven/utils"
 )
 
-// detectLoop checks for mail loops by counting the "Received" headers,
-// and returns an error if the count exceeds maxAllowed.
-func detectLoop(mail *Mail, logger *slog.Logger, maxAllowed int) error {
-	if maxAllowed > 0 {
-		receivedCount := mail.Content.Headers.Count("Received")
-		if receivedCount >= maxAllowed {
-			logger.Warn("mail loop detected",
-				slog.Int("received_count", receivedCount),
-				slog.Int("max_allowed", maxAllowed),
-				slog.String("from", mail.Envelope.From.String()),
-			)
-			return errors.New("mail loop detected")
-		}
-	}
-	return nil
-}
-
+// handleHelo processes the HELO command.
 func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
 	if hostname == "" {
-		resp := ResponseSyntaxError("Hostname required")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Hostname required"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnHelo != nil {
-		if err := s.config.Callbacks.OnHelo(conn.Context(), conn, hostname); err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
+	// Create context with request data
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{
+		Command:  CmdHelo,
+		Args:     hostname,
+		Hostname: hostname,
 	}
+
+	return s.runHandlers(ctx, s.onHelo, s.defaultHeloHandler)
+}
+
+// defaultHeloHandler is the default HELO handler.
+func (s *Server) defaultHeloHandler(c *Context) *Response {
+	conn := c.Connection
+	hostname := c.Request.Hostname
 
 	conn.setClientHostname(hostname)
 	conn.setState(StateGreeted)
@@ -55,50 +47,57 @@ func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
 		ip = net.IPv4zero
 	}
 
-	msg := fmt.Sprintf("%s Hello %s [%s]", s.config.Hostname, ip.String(), conn.Trace.ID)
 	return &Response{
 		Code:    CodeOK,
-		Message: msg,
+		Message: fmt.Sprintf("%s Hello %s [%s]", s.hostname, ip.String(), conn.Trace.ID),
 	}
 }
 
+// handleEhlo processes the EHLO command.
 func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	if hostname == "" {
-		resp := ResponseSyntaxError("Hostname required")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Hostname required"}
 	}
 
+	// Build extensions map
 	extensions := s.buildExtensions(conn)
-	if s.config.EnableChunking {
+
+	// Create context with request data
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{
+		Command:    CmdEhlo,
+		Args:       hostname,
+		Hostname:   hostname,
+		Extensions: extensions,
+	}
+
+	return s.runHandlers(ctx, s.onEhlo, s.defaultEhloHandler)
+}
+
+// defaultEhloHandler is the default EHLO handler.
+func (s *Server) defaultEhloHandler(c *Context) *Response {
+	conn := c.Connection
+	hostname := c.Request.Hostname
+	extensions := c.Request.Extensions
+
+	// Add auth extensions if configured
+	if s.enableChunking {
 		extensions[ExtChunking] = ""
 		conn.SetExtension(ExtChunking, "")
-		// BINARYMIME requires CHUNKING
 		extensions[ExtBinaryMIME] = ""
 		conn.SetExtension(ExtBinaryMIME, "")
 	}
-	// AUTH - only advertise if TLS is not required or TLS is active
+
 	effectiveMechanisms := s.getEffectiveAuthMechanisms()
-	if len(effectiveMechanisms) > 0 && (!s.config.RequireTLS || conn.IsTLS()) {
+	if len(effectiveMechanisms) > 0 && (!s.requireTLS || conn.IsTLS()) {
 		authParams := strings.Join(effectiveMechanisms, " ")
 		extensions[ExtAuth] = authParams
 		conn.SetExtension(ExtAuth, authParams)
 	}
 
-	// REQUIRETLS - only advertised when TLS is active
-	if conn.IsTLS() && s.config.TLSConfig != nil {
+	if conn.IsTLS() && s.tlsConfig != nil {
 		extensions[ExtRequireTLS] = ""
 		conn.SetExtension(ExtRequireTLS, "")
-	}
-
-	if s.config.Callbacks != nil && s.config.Callbacks.OnEhlo != nil {
-		extOverride, err := s.config.Callbacks.OnEhlo(conn.Context(), conn, hostname)
-		if err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
-		if extOverride != nil {
-			extensions = extOverride
-		}
 	}
 
 	conn.setClientHostname(hostname)
@@ -111,7 +110,7 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	}
 
 	// Build multiline response
-	greeting := fmt.Sprintf("%s Hello %s [%s]", s.config.Hostname, ip.String(), conn.Trace.ID)
+	greeting := fmt.Sprintf("%s Hello %s [%s]", s.hostname, ip.String(), conn.Trace.ID)
 	lines := make([]string, 1, len(extensions)+1)
 	lines[0] = greeting
 	for ext, params := range extensions {
@@ -123,10 +122,10 @@ func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
 	}
 
 	s.writeMultilineResponse(conn, CodeOK, lines)
-	return nil
+	return nil // Response already sent
 }
 
-// buildExtensions centralizes all SMTP extension setup for a given connection.
+// buildExtensions builds the base extensions map for EHLO.
 func (s *Server) buildExtensions(conn *Connection) map[Extension]string {
 	extensions := make(map[Extension]string)
 
@@ -141,16 +140,16 @@ func (s *Server) buildExtensions(conn *Connection) map[Extension]string {
 	conn.SetExtension(ExtPipelining, "")
 
 	// Opt-in extensions
-	if s.config.TLSConfig != nil && !conn.IsTLS() {
+	if s.tlsConfig != nil && !conn.IsTLS() {
 		extensions[ExtSTARTTLS] = ""
 		conn.SetExtension(ExtSTARTTLS, "")
 	}
-	if s.config.MaxMessageSize > 0 {
-		sizeStr := strconv.FormatInt(s.config.MaxMessageSize, 10)
+	if conn.Limits.MaxMessageSize > 0 {
+		sizeStr := strconv.FormatInt(conn.Limits.MaxMessageSize, 10)
 		extensions[ExtSize] = sizeStr
 		conn.SetExtension(ExtSize, sizeStr)
 	}
-	if s.config.EnableDSN {
+	if s.enableDSN {
 		extensions[ExtDSN] = ""
 		conn.SetExtension(ExtDSN, "")
 	}
@@ -158,43 +157,35 @@ func (s *Server) buildExtensions(conn *Connection) map[Extension]string {
 	return extensions
 }
 
+// handleMail processes the MAIL FROM command.
 func (s *Server) handleMail(conn *Connection, args string) *Response {
-	// Get state info in a single lock acquisition
 	stateInfo := conn.getStateInfo()
 
 	if stateInfo.State < StateGreeted {
-		resp := ResponseBadSequence("Send EHLO/HELO first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send EHLO/HELO first"}
 	}
 	if stateInfo.State >= StateMail {
-		resp := ResponseBadSequence("MAIL command already given")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "MAIL command already given"}
 	}
 
-	// Check TLS requirement
-	if s.config.RequireTLS && !stateInfo.IsTLS {
-		resp := ResponseTransactionFailed("TLS required", ESCSecurityError)
-		return &resp
+	if s.requireTLS && !stateInfo.IsTLS {
+		return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCSecurityError), Message: "TLS required"}
 	}
 
-	// Check auth requirement
-	if s.config.RequireAuth && !stateInfo.IsAuthenticated {
-		resp := ResponseTransactionFailed("Authentication required", ESCSecurityError)
-		return &resp
+	if s.requireAuth && !stateInfo.IsAuthenticated {
+		return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCSecurityError), Message: "Authentication required"}
 	}
 
 	// Parse MAIL FROM:<address> [params]
 	args = strings.TrimSpace(args)
 	if !strings.HasPrefix(strings.ToUpper(args), "FROM:") {
-		resp := ResponseSyntaxError("Syntax: MAIL FROM:<address>")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: MAIL FROM:<address>"}
 	}
 	args = strings.TrimSpace(args[5:])
 
 	from, params, err := parsePathWithParams(args)
 	if err != nil {
-		resp := ResponseSyntaxError(err.Error())
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
 	// Non-ASCII addresses require SMTPUTF8 parameter
@@ -212,180 +203,128 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 	if sizeStr, ok := params["SIZE"]; ok {
 		size, err := strconv.ParseInt(sizeStr, 10, 64)
 		if err != nil {
-			resp := ResponseSyntaxError("Invalid SIZE parameter")
-			return &resp
+			return &Response{Code: CodeSyntaxError, Message: "Invalid SIZE parameter"}
 		}
 		if conn.Limits.MaxMessageSize > 0 && size > conn.Limits.MaxMessageSize {
-			resp := ResponseExceededStorage("Message too large")
-			return &resp
+			return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 		}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnMailFrom != nil {
-		if err := s.config.Callbacks.OnMailFrom(conn.Context(), conn, from, params); err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
+	// Create context with request data
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{
+		Command: CmdMail,
+		Args:    args,
+		From:    &from,
+		Params:  params,
 	}
+
+	return s.runHandlers(ctx, s.onMailFrom, s.defaultMailFromHandler)
+}
+
+// defaultMailFromHandler is the default MAIL FROM handler.
+func (s *Server) defaultMailFromHandler(c *Context) *Response {
+	conn := c.Connection
+	from := c.Request.From
+	params := c.Request.Params
 
 	// Start transaction
 	mail := conn.beginTransaction()
-	mail.Envelope.From = from
-
-	// Set default body type to 7BIT
+	mail.Envelope.From = *from
 	mail.Envelope.BodyType = BodyType7Bit
 
 	// Process parameters
 	if bodyType, ok := params["BODY"]; ok {
 		bodyTypeUpper := BodyType(strings.ToUpper(bodyType))
-		// Validate BODY parameter
 		switch bodyTypeUpper {
 		case BodyType7Bit, BodyType8BitMIME, BodyTypeBinaryMIME:
 			mail.Envelope.BodyType = bodyTypeUpper
 		default:
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "Invalid BODY parameter",
-			}
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "Invalid BODY parameter"}
 		}
-		// Check if BINARYMIME extension is enabled (requires CHUNKING - opt-in)
-		if bodyTypeUpper == BodyTypeBinaryMIME && !s.config.EnableChunking {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "BINARYMIME not supported",
-			}
+		if bodyTypeUpper == BodyTypeBinaryMIME && !s.enableChunking {
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "BINARYMIME not supported"}
 		}
 	}
+
 	if _, ok := params["SMTPUTF8"]; ok {
 		mail.Envelope.SMTPUTF8 = true
 	}
-	// The REQUIRETLS option MUST only be specified in the context of an SMTP
-	// session meeting the security requirements:
-	// - The session itself MUST employ TLS transmission
-	// - The server MUST advertise REQUIRETLS in EHLO response
+
 	if _, ok := params["REQUIRETLS"]; ok {
-		// Check if connection is using TLS
 		if !conn.IsTLS() {
-			return &Response{
-				Code:         CodeTransactionFailed,
-				EnhancedCode: string(ESCSecurityError),
-				Message:      "REQUIRETLS requires TLS connection",
-			}
+			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCSecurityError), Message: "REQUIRETLS requires TLS connection"}
 		}
-		// Check if REQUIRETLS extension is advertised (connection should have it after TLS)
 		if !conn.HasExtension(ExtRequireTLS) {
-			return &Response{
-				Code:         CodeTransactionFailed,
-				EnhancedCode: string(ESCRequireTLSRequired),
-				Message:      "REQUIRETLS support required",
-			}
+			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCRequireTLSRequired), Message: "REQUIRETLS support required"}
 		}
 		mail.Envelope.RequireTLS = true
 	}
+
 	if envID, ok := params["ENVID"]; ok {
-		if !s.config.EnableDSN {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "DSN not supported",
-			}
+		if !s.enableDSN {
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
 		}
-		// ENVID parameter max 100 characters
 		if len(envID) > 100 {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "ENVID parameter too long (max 100 characters)",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "ENVID parameter too long (max 100 characters)"}
 		}
 		mail.Envelope.EnvID = envID
 	}
+
 	if ret, ok := params["RET"]; ok {
-		if !s.config.EnableDSN {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "DSN not supported",
-			}
+		if !s.enableDSN {
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
 		}
-		// RET parameter max 8 characters
 		if len(ret) > 8 {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "RET parameter too long",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "RET parameter too long"}
 		}
-		// RET parameter must be FULL or HDRS
 		retUpper := strings.ToUpper(ret)
 		if retUpper != "FULL" && retUpper != "HDRS" {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "Invalid RET parameter: must be FULL or HDRS",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "Invalid RET parameter: must be FULL or HDRS"}
 		}
 		mail.Envelope.DSNParams = &DSNEnvelopeParams{RET: retUpper}
 	}
+
 	if sizeStr, ok := params["SIZE"]; ok {
 		mail.Envelope.Size, _ = strconv.ParseInt(sizeStr, 10, 64)
 	}
+
 	if conn.IsAuthenticated() {
 		mail.Envelope.Auth = conn.Auth.Identity
 	}
-	mail.Envelope.ExtensionParams = params
 
+	mail.Envelope.ExtensionParams = params
 	conn.setState(StateMail)
 
-	return &Response{
-		Code:         CodeOK,
-		EnhancedCode: string(ESCAddressValid),
-		Message:      "OK",
-	}
+	return &Response{Code: CodeOK, EnhancedCode: string(ESCAddressValid), Message: "OK"}
 }
 
+// handleRcpt processes the RCPT TO command.
 func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	if conn.State() < StateMail {
-		resp := ResponseBadSequence("Send MAIL first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send MAIL first"}
 	}
 
 	mail := conn.CurrentMail()
 	if mail == nil {
-		resp := ResponseBadSequence("No mail transaction")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "No mail transaction"}
 	}
 
-	// Check recipient limit
-	// Use 452 for "too many recipients"
-	// This is a transient error - the client may try fewer recipients.
 	if conn.Limits.MaxRecipients > 0 && len(mail.Envelope.To) >= conn.Limits.MaxRecipients {
-		return &Response{
-			Code:         CodeInsufficientStorage,
-			EnhancedCode: string(ESCTempTooManyRecipients),
-			Message:      "Too many recipients",
-		}
+		return &Response{Code: CodeInsufficientStorage, EnhancedCode: string(ESCTempTooManyRecipients), Message: "Too many recipients"}
 	}
 
-	// Parse RCPT TO:<address> [params]
 	args = strings.TrimSpace(args)
 	if !strings.HasPrefix(strings.ToUpper(args), "TO:") {
-		resp := ResponseSyntaxError("Syntax: RCPT TO:<address>")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: RCPT TO:<address>"}
 	}
 	args = strings.TrimSpace(args[3:])
 
 	to, params, err := parsePathWithParams(args)
 	if err != nil {
-		resp := ResponseSyntaxError(err.Error())
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: err.Error()}
 	}
 
-	// Non-ASCII addresses require SMTPUTF8 to have been requested in MAIL FROM
-	// SMTPUTF8 is an intrinsic extension (always enabled), but clients must
-	// explicitly request it for non-ASCII addresses per the RFC.
 	if utils.ContainsNonASCII(to.Mailbox.LocalPart) || utils.ContainsNonASCII(to.Mailbox.Domain) {
 		if !mail.Envelope.SMTPUTF8 {
 			return &Response{
@@ -396,31 +335,34 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 		}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnRcptTo != nil {
-		if err := s.config.Callbacks.OnRcptTo(conn.Context(), conn, to, params); err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
+	// Create context with request data
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{
+		Command: CmdRcpt,
+		Args:    args,
+		To:      &to,
+		Params:  params,
 	}
 
-	rcpt := Recipient{Address: to}
+	return s.runHandlers(ctx, s.onRcptTo, s.defaultRcptToHandler)
+}
+
+// defaultRcptToHandler is the default RCPT TO handler.
+func (s *Server) defaultRcptToHandler(c *Context) *Response {
+	conn := c.Connection
+	to := c.Request.To
+	params := c.Request.Params
+
+	mail := conn.CurrentMail()
+	rcpt := Recipient{Address: *to}
+
 	if notify, ok := params["NOTIFY"]; ok {
-		if !s.config.EnableDSN {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "DSN not supported",
-			}
+		if !s.enableDSN {
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
 		}
-		// NOTIFY parameter max 28 characters
 		if len(notify) > 28 {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "NOTIFY parameter too long (max 28 characters)",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "NOTIFY parameter too long (max 28 characters)"}
 		}
-		// Validate NOTIFY parameter values
 		notifyValues := strings.Split(strings.ToUpper(notify), ",")
 		hasNever := false
 		for _, v := range notifyValues {
@@ -430,48 +372,24 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 				hasNever = true
 			case "SUCCESS", "FAILURE", "DELAY":
 			default:
-				return &Response{
-					Code:         CodeSyntaxError,
-					EnhancedCode: string(ESCInvalidArgs),
-					Message:      "Invalid NOTIFY parameter value",
-				}
+				return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "Invalid NOTIFY parameter value"}
 			}
 		}
-		// NEVER must appear by itself
 		if hasNever && len(notifyValues) > 1 {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "NOTIFY=NEVER must appear alone",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "NOTIFY=NEVER must appear alone"}
 		}
-		rcpt.DSNParams = &DSNRecipientParams{
-			Notify: notifyValues,
-		}
+		rcpt.DSNParams = &DSNRecipientParams{Notify: notifyValues}
 	}
+
 	if orcpt, ok := params["ORCPT"]; ok {
-		if !s.config.EnableDSN {
-			return &Response{
-				Code:         CodeParameterNotImpl,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "DSN not supported",
-			}
+		if !s.enableDSN {
+			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
 		}
-		// ORCPT parameter max 500 characters
 		if len(orcpt) > 500 {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "ORCPT parameter too long (max 500 characters)",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "ORCPT parameter too long (max 500 characters)"}
 		}
-		// ORCPT format is addr-type ";" xtext
 		if !strings.Contains(orcpt, ";") {
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCInvalidArgs),
-				Message:      "Invalid ORCPT parameter: must be addr-type;address",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCInvalidArgs), Message: "Invalid ORCPT parameter: must be addr-type;address"}
 		}
 		if rcpt.DSNParams == nil {
 			rcpt.DSNParams = &DSNRecipientParams{}
@@ -482,104 +400,72 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	mail.Envelope.To = append(mail.Envelope.To, rcpt)
 	conn.setState(StateRcpt)
 
-	return &Response{
-		Code:         CodeOK,
-		EnhancedCode: string(ESCRecipientValid),
-		Message:      "OK",
-	}
+	return &Response{Code: CodeOK, EnhancedCode: string(ESCRecipientValid), Message: "OK"}
 }
 
+// handleData processes the DATA command.
 func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog.Logger) *Response {
 	if conn.State() < StateRcpt {
-		resp := ResponseBadSequence("Send RCPT first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send RCPT first"}
 	}
 
 	mail := conn.CurrentMail()
 	if mail == nil || len(mail.Envelope.To) == 0 {
-		resp := ResponseBadSequence("No recipients")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "No recipients"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnData != nil {
-		if err := s.config.Callbacks.OnData(conn.Context(), conn); err != nil {
-			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
-			return &resp
+	// Create context for handlers
+	ctx := s.newContext(conn, mail)
+	ctx.Request = Request{Command: CmdData}
+
+	// Run pre-data handlers
+	if len(s.onData) > 0 {
+		resp := s.runHandlers(ctx, s.onData, nil)
+		if resp != nil && resp.IsError() {
+			return resp
 		}
 	}
 
 	conn.setState(StateData)
 
 	// Send intermediate response
-	s.writeResponse(conn, Response{
-		Code:    CodeStartMailInput,
-		Message: "Start mail input; end with <CRLF>.<CRLF>",
-	})
+	s.writeResponse(conn, Response{Code: CodeStartMailInput, Message: "Start mail input; end with <CRLF>.<CRLF>"})
 
-	// Set data timeout
-	if err := conn.conn.SetReadDeadline(time.Now().Add(s.config.DataTimeout)); err != nil {
-		resp := ResponseLocalError("Internal error")
-		return &resp
+	if err := conn.conn.SetReadDeadline(time.Now().Add(conn.Limits.DataTimeout)); err != nil {
+		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Internal error"}
 	}
 
-	// Check for BINARYMIME early - it requires BDAT command, not DATA
 	if mail.Envelope.BodyType == BodyTypeBinaryMIME {
 		conn.resetTransaction()
-		return &Response{
-			Code:         CodeBadSequence,
-			EnhancedCode: string(ESCInvalidCommand),
-			Message:      "BINARYMIME requires BDAT command",
-		}
+		return &Response{Code: CodeBadSequence, EnhancedCode: string(ESCInvalidCommand), Message: "BINARYMIME requires BDAT command"}
 	}
 
-	// Read message data, validating 7BIT if required
 	enforce7Bit := mail.Envelope.BodyType == BodyType7Bit
 	data, err := s.readDataContent(reader, conn.Limits.MaxMessageSize, enforce7Bit)
 	if err != nil {
+		conn.resetTransaction()
 		if errors.Is(err, ErrMessageTooLarge) {
-			conn.resetTransaction()
-			resp := ResponseExceededStorage("Message too large")
-			return &resp
+			return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 		}
 		if errors.Is(err, ravenio.ErrBadLineEnding) {
-			conn.resetTransaction()
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCContentError),
-				Message:      "Message must use CRLF line endings",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCContentError), Message: "Message must use CRLF line endings"}
 		}
 		if errors.Is(err, ravenio.Err8BitIn7BitMode) {
-			conn.resetTransaction()
-			resp := ResponseTransactionFailed("Message contains 8-bit data but BODY=8BITMIME was not specified", ESCContentError)
-			return &resp
+			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCContentError), Message: "Message contains 8-bit data but BODY=8BITMIME was not specified"}
 		}
 		if errors.Is(err, ravenio.ErrLineTooLong) {
-			conn.resetTransaction()
-			return &Response{
-				Code:         CodeSyntaxError,
-				EnhancedCode: string(ESCContentError),
-				Message:      "Line length exceeds maximum allowed",
-			}
+			return &Response{Code: CodeSyntaxError, EnhancedCode: string(ESCContentError), Message: "Line length exceeds maximum allowed"}
 		}
 		logger.Error("data read error", slog.Any("error", err))
-		conn.resetTransaction()
-		resp := ResponseLocalError("Error reading message")
-		return &resp
+		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Error reading message"}
 	}
 
-	// Parse message content into headers and body using FromRaw
 	mail.Content.FromRaw(data)
 
-	// If the REQUIRETLS MAIL FROM parameter was not specified,
-	// check for TLS-Required header field in the message.
-	// Note: If REQUIRETLS MAIL FROM parameter is specified, the TLS-Required header
-	// field MUST be ignored (but MAY be included in onward relay).
+	// Check TLS-Required header
 	if !mail.Envelope.RequireTLS {
 		tlsRequiredHeader := mail.Content.Headers.Get("TLS-Required")
 		if strings.EqualFold(strings.TrimSpace(tlsRequiredHeader), "No") {
-			// TLS-Required: No indicates sender wants TLS policies to be ignored
-			// This is stored for the application to handle during relay
 			if mail.Envelope.ExtensionParams == nil {
 				mail.Envelope.ExtensionParams = make(map[string]string)
 			}
@@ -587,61 +473,74 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		}
 	}
 
-	// Loop detection via Received header count
-	// Simple counting of Received headers is an effective method of detecting loops.
-	// RFC recommends a large rejection threshold, normally at least 100.
-	if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+	// Loop detection
+	if err := detectLoop(mail, logger, s.maxReceivedHeaders); err != nil {
 		conn.resetTransaction()
-		resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
-		return &resp
+		return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCRoutingLoop), Message: err.Error()}
 	}
 
 	mail.ID = utils.GenerateID()
-	// Update ReceivedAt to reflect when message content was actually received
 	mail.ReceivedAt = time.Now()
 
 	receivedHeader := conn.GenerateReceivedHeader("")
 	receivedHeader.ID = mail.ID
 	mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
+	mail.Content.Headers = append(Headers{{Name: "Received", Value: receivedHeader.String()}}, mail.Content.Headers...)
 
-	// Prepend Received header to message content
-	mail.Content.Headers = append(Headers{{
-		Name:  "Received",
-		Value: receivedHeader.String(),
-	}}, mail.Content.Headers...)
+	// Update context with mail for OnMessage handlers
+	ctx.Mail = mail
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
-		if err := s.config.Callbacks.OnMessage(conn.Context(), conn, mail); err != nil {
-			conn.resetTransaction()
-			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
-			return &resp
-		}
+	// Run OnMessage handlers with default
+	resp := s.runHandlers(ctx, s.onMessage, s.defaultMessageHandler(logger, len(data)))
+	if resp != nil && resp.IsError() {
+		conn.resetTransaction()
+		return resp
 	}
 
 	conn.completeTransaction()
+	return resp
+}
 
-	logger.Info("message received",
-		slog.String("mail_id", mail.ID),
-		slog.String("from", mail.Envelope.From.String()),
-		slog.Int("recipients", len(mail.Envelope.To)),
-		slog.Int("size", len(data)),
-	)
+// defaultMessageHandler returns a handler that completes the message transaction.
+func (s *Server) defaultMessageHandler(logger *slog.Logger, size int) HandlerFunc {
+	return func(c *Context) *Response {
+		mail := c.Mail
+		conn := c.Connection
 
-	return &Response{
-		Code:         CodeOK,
-		EnhancedCode: string(ESCSuccess),
-		Message:      fmt.Sprintf("OK, queued as %s [%s]", mail.ID, conn.Trace.ID),
+		logger.Info("message received",
+			slog.String("mail_id", mail.ID),
+			slog.String("from", mail.Envelope.From.String()),
+			slog.Int("recipients", len(mail.Envelope.To)),
+			slog.Int("size", size),
+		)
+
+		return &Response{
+			Code:         CodeOK,
+			EnhancedCode: string(ESCSuccess),
+			Message:      fmt.Sprintf("OK, queued as %s [%s]", mail.ID, conn.Trace.ID),
+		}
 	}
 }
 
+// detectLoop checks for mail loops by counting the "Received" headers.
+func detectLoop(mail *Mail, logger *slog.Logger, maxAllowed int) error {
+	if maxAllowed > 0 {
+		receivedCount := mail.Content.Headers.Count("Received")
+		if receivedCount >= maxAllowed {
+			logger.Warn("mail loop detected",
+				slog.Int("received_count", receivedCount),
+				slog.Int("max_allowed", maxAllowed),
+				slog.String("from", mail.Envelope.From.String()),
+			)
+			return errors.New("mail loop detected")
+		}
+	}
+	return nil
+}
+
 // readDataContent reads the message content until <CRLF>.<CRLF>.
-// Strictly requires CRLF line endings to prevent SMTP smuggling attacks.
-// If enforce7Bit is true, returns Err8BitIn7BitMode if any non-ASCII bytes are found.
-// Line length is enforced to 998 characters max (excluding CRLF).
 func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bit bool) ([]byte, error) {
-	// Pre-allocate buffer with reasonable initial capacity
-	// Use maxSize as initial buffer capacity if it's set, within a reasonable limit, otherwise default to 4096
-	const maxInitialAlloc = 10 * 1024 * 1024 // 10MB cap for initial alloc to avoid OOM
+	const maxInitialAlloc = 10 * 1024 * 1024
 	var initCap int
 	switch {
 	case maxSize > 0 && maxSize <= maxInitialAlloc:
@@ -655,47 +554,37 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 	var sizeExceeded bool
 	var has8BitData bool
 
-	// Use RFC 5322 MaxLineLength (998) for message content, not SMTP command limit
-	// Add 2 for CRLF that ReadLine expects
 	maxContentLineLength := MaxLineLength + 2
 
 	for {
 		line, err := ravenio.ReadLine(reader, maxContentLineLength, enforce7Bit)
 		if err != nil {
 			if errors.Is(err, ravenio.Err8BitIn7BitMode) {
-				// Mark that we found 8-bit data, but continue draining
 				has8BitData = true
-				// Continue reading with 7-bit enforcement disabled to drain the rest
 				enforce7Bit = false
 				continue
 			}
 			return nil, err
 		}
 
-		// Check for end of data (line is ".", already stripped of CRLF)
 		if line == "." {
 			break
 		}
 
-		// If we've already exceeded the size or found 8-bit data, just drain remaining content
 		if sizeExceeded || has8BitData {
 			continue
 		}
 
-		// Remove dot-stuffing
 		if len(line) > 0 && line[0] == '.' {
 			line = line[1:]
 		}
 
-		// Check size limit (account for CRLF that will be added back)
 		newLen := int64(buf.Len()) + int64(len(line)) + 2
 		if maxSize > 0 && newLen > maxSize {
-			// Mark that we exceeded the size, but continue to drain the data
 			sizeExceeded = true
 			continue
 		}
 
-		// Write line and CRLF directly to avoid string concatenation
 		buf.WriteString(line)
 		buf.WriteString("\r\n")
 	}
@@ -703,7 +592,6 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 	if has8BitData {
 		return nil, ravenio.Err8BitIn7BitMode
 	}
-
 	if sizeExceeded {
 		return nil, ErrMessageTooLarge
 	}
@@ -713,156 +601,110 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 
 // handleBDAT processes the BDAT command (RFC 3030).
 func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
-	// Check if CHUNKING is enabled
-	if !s.config.EnableChunking {
-		resp := ResponseCommandNotImplemented("BDAT")
-		return &resp
+	if !s.enableChunking {
+		return &Response{Code: CodeCommandNotImplemented, Message: "BDAT not implemented"}
 	}
 
-	// Must have recipients first (either from StateRcpt or ongoing BDAT)
-	// Get state once to avoid multiple lock acquisitions
 	state := conn.State()
 	if state < StateRcpt && state != StateBDAT {
-		resp := ResponseBadSequence("Send RCPT first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send RCPT first"}
 	}
 
 	mail := conn.CurrentMail()
 	if mail == nil || len(mail.Envelope.To) == 0 {
-		resp := ResponseBadSequence("No recipients")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "No recipients"}
 	}
 
-	// Parse BDAT arguments: <size> [LAST]
 	args = strings.TrimSpace(args)
 	if args == "" {
-		resp := ResponseSyntaxError("Syntax: BDAT <size> [LAST]")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: BDAT <size> [LAST]"}
 	}
 
 	parts := strings.Fields(args)
 	if len(parts) < 1 || len(parts) > 2 {
-		resp := ResponseSyntaxError("Syntax: BDAT <size> [LAST]")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: BDAT <size> [LAST]"}
 	}
 
 	chunkSize, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || chunkSize < 0 {
-		resp := ResponseSyntaxError("Invalid chunk size")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Invalid chunk size"}
 	}
 
 	isLast := false
 	if len(parts) == 2 {
 		if strings.ToUpper(parts[1]) != "LAST" {
-			resp := ResponseSyntaxError("Syntax: BDAT <size> [LAST]")
-			return &resp
+			return &Response{Code: CodeSyntaxError, Message: "Syntax: BDAT <size> [LAST]"}
 		}
 		isLast = true
 	}
 
-	// Check if adding this chunk would exceed max message size
 	currentSize := conn.getBDATBufferSize()
 	if conn.Limits.MaxMessageSize > 0 && currentSize+chunkSize > conn.Limits.MaxMessageSize {
-		// Discard the chunk data to keep protocol in sync
 		s.discardBDATChunk(reader, chunkSize)
 		conn.resetTransaction()
-		resp := ResponseExceededStorage("Message too large")
-		return &resp
+		return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnBDAT != nil {
-		if err := s.config.Callbacks.OnBDAT(conn.Context(), conn, chunkSize, isLast); err != nil {
-			// Discard the chunk data to keep protocol in sync
+	// Run OnBdat handlers
+	if len(s.onBdat) > 0 {
+		ctx := s.newContext(conn, mail)
+		ctx.Request = Request{Command: CmdBdat, Args: args}
+		ctx.Set("size", chunkSize)
+		ctx.Set("last", isLast)
+
+		resp := s.runHandlers(ctx, s.onBdat, nil)
+		if resp != nil && resp.IsError() {
 			s.discardBDATChunk(reader, chunkSize)
 			conn.resetTransaction()
-			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
-			return &resp
+			return resp
 		}
 	}
 
 	conn.setState(StateBDAT)
 
-	// Set data timeout
-	if err := conn.conn.SetReadDeadline(time.Now().Add(s.config.DataTimeout)); err != nil {
-		resp := ResponseLocalError("Internal error")
-		return &resp
+	if err := conn.conn.SetReadDeadline(time.Now().Add(conn.Limits.DataTimeout)); err != nil {
+		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Internal error"}
 	}
 
-	// Read the chunk data (binary, exact size)
 	chunkData, err := s.readBDATChunk(reader, chunkSize)
 	if err != nil {
 		logger.Error("BDAT read error", slog.Any("error", err))
 		conn.resetTransaction()
-		resp := ResponseLocalError("Error reading chunk data")
-		return &resp
+		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Error reading chunk data"}
 	}
 
-	// Append chunk to connection's BDAT buffer
 	conn.appendBDATChunk(chunkData)
 
-	// If this is the last chunk, complete the transaction
 	if isLast {
-		// Get accumulated data and parse into headers and body
 		rawData := conn.consumeBDATBuffer()
 		mail.Content.FromRaw(rawData)
 
-		// Loop detection via Received header count
-		// Simple counting of Received headers is an effective method of detecting loops.
-		// RFC recommends a large rejection threshold, normally at least 100.
-		if err := detectLoop(mail, logger, s.config.MaxReceivedHeaders); err != nil {
+		if err := detectLoop(mail, logger, s.maxReceivedHeaders); err != nil {
 			conn.resetTransaction()
-			resp := ResponseTransactionFailed(err.Error(), ESCRoutingLoop)
-			return &resp
+			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCRoutingLoop), Message: err.Error()}
 		}
 
 		mail.ID = utils.GenerateID()
-		// Update ReceivedAt to reflect when message content was actually received
 		mail.ReceivedAt = time.Now()
 
-		// Add Received header to trace per
 		receivedHeader := conn.GenerateReceivedHeader("")
 		receivedHeader.ID = mail.ID
 		mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
+		mail.Content.Headers = append(Headers{{Name: "Received", Value: receivedHeader.String()}}, mail.Content.Headers...)
 
-		// Prepend Received header to message content
-		mail.Content.Headers = append(Headers{{
-			Name:  "Received",
-			Value: receivedHeader.String(),
-		}}, mail.Content.Headers...)
-
-		// OnMessage callback
-		if s.config.Callbacks != nil && s.config.Callbacks.OnMessage != nil {
-			if err := s.config.Callbacks.OnMessage(conn.Context(), conn, mail); err != nil {
-				conn.resetTransaction()
-				resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
-				return &resp
-			}
+		// Run OnMessage handlers
+		ctx := s.newContext(conn, mail)
+		resp := s.runHandlers(ctx, s.onMessage, s.defaultMessageHandler(logger, len(rawData)))
+		if resp != nil && resp.IsError() {
+			conn.resetTransaction()
+			return resp
 		}
 
-		// Complete transaction
 		conn.completeTransaction()
-
-		logger.Info("message received via BDAT",
-			slog.String("mail_id", mail.ID),
-			slog.String("from", mail.Envelope.From.String()),
-			slog.Int("recipients", len(mail.Envelope.To)),
-			slog.Int("size", len(rawData)),
-		)
-
-		return &Response{
-			Code:         CodeOK,
-			EnhancedCode: string(ESCSuccess),
-			Message:      fmt.Sprintf("OK, queued as %s [%s]", mail.ID, conn.Trace.ID),
-		}
+		return resp
 	}
 
-	// Not the last chunk, acknowledge and wait for more
-	return &Response{
-		Code:         CodeOK,
-		EnhancedCode: string(ESCSuccess),
-		Message:      fmt.Sprintf("OK, %d bytes received", chunkSize),
-	}
+	return &Response{Code: CodeOK, EnhancedCode: string(ESCSuccess), Message: fmt.Sprintf("OK, %d bytes received", chunkSize)}
 }
 
 // readBDATChunk reads exactly 'size' bytes of binary data for a BDAT chunk.
@@ -880,98 +722,98 @@ func (s *Server) discardBDATChunk(reader *bufio.Reader, size int64) {
 	_, _ = io.CopyN(io.Discard, reader, size)
 }
 
+// handleRset processes the RSET command.
 func (s *Server) handleRset(conn *Connection) *Response {
-	if s.config.Callbacks != nil && s.config.Callbacks.OnReset != nil {
-		s.config.Callbacks.OnReset(conn.Context(), conn)
-	}
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{Command: CmdRset}
 
-	conn.resetTransaction()
+	return s.runHandlers(ctx, s.onReset, s.defaultRsetHandler)
+}
 
-	resp := ResponseOK("OK", string(ESCSuccess))
-	return &resp
+// defaultRsetHandler is the default RSET handler.
+func (s *Server) defaultRsetHandler(c *Context) *Response {
+	c.Connection.resetTransaction()
+	return &Response{Code: CodeOK, EnhancedCode: string(ESCSuccess), Message: "OK"}
 }
 
 // handleVrfy processes the VRFY command.
 func (s *Server) handleVrfy(conn *Connection, args string) *Response {
 	if args == "" {
-		resp := ResponseSyntaxError("Syntax: VRFY <address>")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: VRFY <address>"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnVerify != nil {
-		addr, err := s.config.Callbacks.OnVerify(conn.Context(), conn, args)
-		if err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
-		resp := ResponseOK(addr.String(), "")
-		return &resp
-	}
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{Command: CmdVrfy, Args: args}
 
-	// When VRFY is disabled for security/privacy,
-	// the server SHOULD use 252 to indicate it cannot verify but will accept.
-	// Using 550 would incorrectly indicate the mailbox doesn't exist.
-	resp := ResponseCannotVRFY("")
-	return &resp
+	return s.runHandlers(ctx, s.onVerify, s.defaultVrfyHandler)
+}
+
+// defaultVrfyHandler is the default VRFY handler (disabled for privacy).
+func (s *Server) defaultVrfyHandler(c *Context) *Response {
+	return &Response{Code: CodeCannotVRFY, Message: "Cannot VRFY user, but will accept message and attempt delivery"}
 }
 
 // handleExpn processes the EXPN command.
 func (s *Server) handleExpn(conn *Connection, args string) *Response {
 	if args == "" {
-		resp := ResponseSyntaxError("Syntax: EXPN <list>")
-		return &resp
+		return &Response{Code: CodeSyntaxError, Message: "Syntax: EXPN <list>"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnExpand != nil {
-		addrs, err := s.config.Callbacks.OnExpand(conn.Context(), conn, args)
-		if err != nil {
-			resp := ResponseMailboxNotFound(err.Error())
-			return &resp
-		}
-		lines := make([]string, len(addrs))
-		for i, addr := range addrs {
-			lines[i] = addr.String()
-		}
-		s.writeMultilineResponse(conn, CodeOK, lines)
-		return nil
-	}
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{Command: CmdExpn, Args: args}
 
-	// When EXPN is disabled for security/privacy,
-	// the server SHOULD use 252 to indicate it cannot expand but will accept.
-	return &Response{
-		Code:    CodeCannotVRFY,
-		Message: "Cannot EXPN list, but will accept message and attempt delivery",
-	}
+	return s.runHandlers(ctx, s.onExpand, s.defaultExpnHandler)
 }
 
-// DefaultHelpURL is the default help URL returned by the HELP command.
-const DefaultHelpURL = "https://github.com/synqronlabs/raven"
+// defaultExpnHandler is the default EXPN handler.
+// If a handler set "addresses" in context, it writes them as multiline response.
+// Otherwise returns the standard "cannot EXPN" message.
+func (s *Server) defaultExpnHandler(c *Context) *Response {
+	// Check if handler set addresses
+	if addrs, ok := c.Get("addresses"); ok {
+		if addrList, ok := addrs.([]string); ok && len(addrList) > 0 {
+			s.writeMultilineResponse(c.Connection, CodeOK, addrList)
+			return nil
+		}
+	}
+	return &Response{Code: CodeCannotVRFY, Message: "Cannot EXPN list, but will accept message and attempt delivery"}
+}
 
 // handleHelp processes the HELP command.
 func (s *Server) handleHelp(conn *Connection, topic string) *Response {
 	topic = strings.TrimSpace(topic)
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnHelp != nil {
-		lines := s.config.Callbacks.OnHelp(conn.Context(), conn, topic)
-		if len(lines) > 0 {
-			// 214 for specific help information
-			s.writeMultilineResponse(conn, CodeHelpMessage, lines)
+	ctx := s.newContext(conn, nil)
+	ctx.Request = Request{Command: CmdHelp, Args: topic}
+
+	return s.runHandlers(ctx, s.onHelp, s.defaultHelpHandler)
+}
+
+// DefaultHelpURL is the default help URL returned by the HELP command.
+const DefaultHelpURL = "https://github.com/synqronlabs/raven"
+
+// defaultHelpHandler is the default HELP handler.
+func (s *Server) defaultHelpHandler(c *Context) *Response {
+	topic := c.Request.Args
+
+	// Check if handler set custom help text
+	if help, ok := c.Get("help"); ok {
+		if lines, ok := help.([]string); ok && len(lines) > 0 {
+			s.writeMultilineResponse(c.Connection, CodeHelpMessage, lines)
 			return nil
 		}
 	}
 
 	if topic == "" {
-		// 214 is also acceptable, but 211 is more appropriate for general system info
 		lines := []string{
 			"Raven ESMTP Server",
 			"Supported commands: HELO EHLO MAIL RCPT DATA RSET NOOP QUIT HELP VRFY EXPN",
 			"For more information, visit: " + DefaultHelpURL,
 		}
-		s.writeMultilineResponse(conn, CodeHelpMessage, lines)
+		s.writeMultilineResponse(c.Connection, CodeHelpMessage, lines)
 		return nil
 	}
 
-	// Topic-specific help - use 214
 	topicUpper := strings.ToUpper(topic)
 	var helpText string
 	switch topicUpper {
@@ -1004,51 +846,36 @@ func (s *Server) handleHelp(conn *Connection, topic string) *Response {
 	case "AUTH":
 		helpText = "AUTH <mechanism> [initial-response] - Authenticate"
 	default:
-		return &Response{
-			Code:    CodeHelpMessage,
-			Message: fmt.Sprintf("No help available for '%s'. Visit: %s", topic, DefaultHelpURL),
-		}
+		return &Response{Code: CodeHelpMessage, Message: fmt.Sprintf("No help available for '%s'. Visit: %s", topic, DefaultHelpURL)}
 	}
 
 	return &Response{Code: CodeHelpMessage, Message: helpText}
 }
 
+// handleQuit processes the QUIT command.
 func (s *Server) handleQuit(conn *Connection) *Response {
 	conn.setState(StateQuit)
-	resp := ResponseServiceClosing(s.config.Hostname, fmt.Sprintf("Service closing transmission channel [%s]", conn.Trace.ID))
-	return &resp
+	return &Response{
+		Code:    CodeServiceClosing,
+		Message: fmt.Sprintf("%s Service closing transmission channel [%s]", s.hostname, conn.Trace.ID),
+	}
 }
 
+// handleStartTLS processes the STARTTLS command.
 func (s *Server) handleStartTLS(conn *Connection) *Response {
 	if conn.State() < StateGreeted {
-		resp := ResponseBadSequence("Send EHLO first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send EHLO first"}
 	}
-	if s.config.TLSConfig == nil {
-		resp := ResponseCommandNotImplemented("STARTTLS")
-		return &resp
+	if s.tlsConfig == nil {
+		return &Response{Code: CodeCommandNotImplemented, Message: "STARTTLS not implemented"}
 	}
 	if conn.IsTLS() {
-		resp := ResponseBadSequence("TLS already active")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "TLS already active"}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnStartTLS != nil {
-		if err := s.config.Callbacks.OnStartTLS(conn.Context(), conn); err != nil {
-			resp := ResponseTransactionFailed(err.Error(), ESCPermFailure)
-			return &resp
-		}
-	}
+	s.writeResponse(conn, Response{Code: CodeServiceReady, Message: "Ready to start TLS"})
 
-	// Send ready response
-	s.writeResponse(conn, Response{
-		Code:    CodeServiceReady,
-		Message: "Ready to start TLS",
-	})
-
-	// Upgrade connection
-	if err := conn.UpgradeToTLS(s.config.TLSConfig); err != nil {
-		// Connection is broken at this point - client will disconnect
+	if err := conn.UpgradeToTLS(s.tlsConfig); err != nil {
 		return nil
 	}
 

@@ -83,9 +83,9 @@ const (
 	ContextKeyDMARCUseResult = "dmarc_use_result"
 )
 
-// Middleware returns a Raven middleware that performs DMARC verification.
+// Middleware returns a Raven handler that performs DMARC verification.
 //
-// The middleware should be used AFTER SPF and DKIM middleware, as it depends
+// The handler should be used AFTER SPF and DKIM handlers, as it depends
 // on their results. It runs after the DATA command and:
 //  1. Extracts the From header domain
 //  2. Retrieves SPF and DKIM results from context
@@ -99,14 +99,14 @@ const (
 //	    DNSSEC: true,
 //	})
 //
-//	server := raven.New("mx.example.com").
-//	    Use(spf.Middleware(spf.MiddlewareConfig{...})).
-//	    Use(dkim.Middleware(dkim.MiddlewareConfig{...})).
-//	    Use(dmarc.Middleware(dmarc.MiddlewareConfig{
-//	        Resolver: resolver,
-//	        Policy:   dmarc.MiddlewarePolicyEnforce,
-//	    }))
-func Middleware(config MiddlewareConfig) raven.Middleware {
+//	server := raven.New("mx.example.com")
+//	server.OnMailFrom(spf.Middleware(spf.MiddlewareConfig{...}))
+//	server.OnData(dkim.Middleware(dkim.MiddlewareConfig{...}))
+//	server.OnData(dmarc.Middleware(dmarc.MiddlewareConfig{
+//	    Resolver: resolver,
+//	    Policy:   dmarc.MiddlewarePolicyEnforce,
+//	}))
+func Middleware(config MiddlewareConfig) raven.HandlerFunc {
 	if config.Resolver == nil {
 		panic("dmarc: resolver is required")
 	}
@@ -122,38 +122,36 @@ func Middleware(config MiddlewareConfig) raven.Middleware {
 		config.ApplyRandomPercentage = true
 	}
 
-	return func(next raven.HandlerFunc) raven.HandlerFunc {
-		return func(ctx *raven.Context) error {
-			return handleDMARC(ctx, next, config)
-		}
+	return func(c *raven.Context) *raven.Response {
+		return handleDMARC(c, config)
 	}
 }
 
-func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConfig) error {
+func handleDMARC(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	// Only process if we have mail data
-	if ctx.Mail == nil || len(ctx.Mail.Content.Body) == 0 {
-		return next(ctx)
+	if c.Mail == nil || len(c.Mail.Content.Body) == 0 {
+		return c.Next()
 	}
 
 	// Skip for authenticated senders
-	if config.SkipIfAuthenticated && ctx.IsAuthenticated() {
-		return next(ctx)
+	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+		return c.Next()
 	}
 
 	// Check whitelist
-	remoteIP := getRemoteIP(ctx)
+	remoteIP := getRemoteIP(c)
 	if remoteIP != nil && isWhitelisted(remoteIP, config.WhitelistIPs, config.WhitelistNetworks) {
 		config.Logger.Debug("IP whitelisted, skipping DMARC check",
 			slog.String("ip", remoteIP.String()),
 		)
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Get From header
-	fromHeader := ctx.Mail.Content.Headers.Get("From")
+	fromHeader := c.Mail.Content.Headers.Get("From")
 	if fromHeader == "" {
 		config.Logger.Warn("no From header found, skipping DMARC check")
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Extract From domain
@@ -164,19 +162,19 @@ func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCo
 			slog.Any("error", err),
 		)
 		// Continue without DMARC check
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Get SPF results from context
 	spfStatus := spf.StatusNone
 	var spfDomain string
 
-	if statusVal, ok := ctx.Get(spf.ContextKeySPFStatus); ok {
+	if statusVal, ok := c.Get(spf.ContextKeySPFStatus); ok {
 		if s, ok := statusVal.(spf.Status); ok {
 			spfStatus = s
 		}
 	}
-	if domainVal, ok := ctx.Get(spf.ContextKeySPFDomain); ok {
+	if domainVal, ok := c.Get(spf.ContextKeySPFDomain); ok {
 		if d, ok := domainVal.(string); ok {
 			spfDomain = d
 		}
@@ -184,14 +182,14 @@ func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCo
 
 	// Get DKIM results from context
 	var dkimResults []dkim.Result
-	if resultsVal, ok := ctx.Get(dkim.ContextKeyDKIMResults); ok {
+	if resultsVal, ok := c.Get(dkim.ContextKeyDKIMResults); ok {
 		if r, ok := resultsVal.([]dkim.Result); ok {
 			dkimResults = r
 		}
 	}
 
 	// Create verification context with timeout
-	verifyCtx, cancel := context.WithTimeout(ctx.Connection.Context(), config.Timeout)
+	verifyCtx, cancel := context.WithTimeout(c.Connection.Context(), config.Timeout)
 	defer cancel()
 
 	// Build verification arguments
@@ -206,10 +204,10 @@ func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCo
 	useResult, result := Verify(verifyCtx, config.Resolver, args, config.ApplyRandomPercentage)
 
 	// Store results in context
-	ctx.Set(ContextKeyDMARCResult, result)
-	ctx.Set(ContextKeyDMARCStatus, result.Status)
-	ctx.Set(ContextKeyDMARCDomain, result.Domain)
-	ctx.Set(ContextKeyDMARCUseResult, useResult)
+	c.Set(ContextKeyDMARCResult, result)
+	c.Set(ContextKeyDMARCStatus, result.Status)
+	c.Set(ContextKeyDMARCDomain, result.Domain)
+	c.Set(ContextKeyDMARCUseResult, useResult)
 
 	// Log result
 	config.Logger.Info("DMARC verification",
@@ -224,11 +222,11 @@ func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCo
 	)
 
 	// Add Authentication-Results header
-	authResults := generateAuthResults(ctx.Connection.ServerHostname, result, fromDomain)
-	ctx.Mail.Content.Headers = append(raven.Headers{{
+	authResults := generateAuthResults(c.Connection.ServerHostname, result, fromDomain)
+	c.Mail.Content.Headers = append(raven.Headers{{
 		Name:  "Authentication-Results",
 		Value: authResults,
-	}}, ctx.Mail.Content.Headers...)
+	}}, c.Mail.Content.Headers...)
 
 	// Determine if we should reject
 	shouldReject := false
@@ -253,23 +251,14 @@ func handleDMARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCo
 		if result.Record != nil {
 			policy = string(result.Record.Policy)
 		}
-		return &RejectError{
-			Code:    550,
-			Message: fmt.Sprintf("DMARC policy violation: %s (p=%s)", result.Status, policy),
+		return &raven.Response{
+			Code:         550,
+			EnhancedCode: "5.7.1",
+			Message:      fmt.Sprintf("DMARC policy violation: %s (p=%s)", result.Status, policy),
 		}
 	}
 
-	return next(ctx)
-}
-
-// RejectError is returned when a message should be rejected.
-type RejectError struct {
-	Code    int
-	Message string
-}
-
-func (e *RejectError) Error() string {
-	return e.Message
+	return c.Next()
 }
 
 // generateAuthResults generates an Authentication-Results header value for DMARC.
@@ -327,8 +316,8 @@ func generateAuthResults(hostname string, result Result, fromDomain string) stri
 }
 
 // getRemoteIP extracts the remote IP from the context.
-func getRemoteIP(ctx *raven.Context) net.IP {
-	addr := ctx.Connection.RemoteAddr()
+func getRemoteIP(c *raven.Context) net.IP {
+	addr := c.Connection.RemoteAddr()
 	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpAddr.IP
 	}

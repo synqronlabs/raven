@@ -2,7 +2,6 @@ package spf
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net"
 	"slices"
@@ -77,9 +76,9 @@ const (
 	ContextKeySPFExplanation = "spf_explanation"
 )
 
-// Middleware returns a Raven middleware that performs SPF verification.
+// Middleware returns a Raven handler that performs SPF verification.
 //
-// The middleware runs after MAIL FROM is received and stores results in the
+// The handler runs after MAIL FROM is received and stores results in the
 // context for use by later handlers. The Received-SPF header is added to
 // incoming messages automatically.
 //
@@ -89,12 +88,12 @@ const (
 //	    DNSSEC: true,
 //	})
 //
-//	server := raven.New("mx.example.com").
-//	    Use(spf.Middleware(spf.MiddlewareConfig{
-//	        Resolver: resolver,
-//	        Policy:   spf.PolicyRejectFail,
-//	    }))
-func Middleware(config MiddlewareConfig) raven.Middleware {
+//	server := raven.New("mx.example.com")
+//	server.OnMailFrom(spf.Middleware(spf.MiddlewareConfig{
+//	    Resolver: resolver,
+//	    Policy:   spf.PolicyRejectFail,
+//	}))
+func Middleware(config MiddlewareConfig) raven.HandlerFunc {
 	if config.Resolver == nil {
 		panic("spf: resolver is required")
 	}
@@ -110,40 +109,33 @@ func Middleware(config MiddlewareConfig) raven.Middleware {
 		config.SkipIfAuthenticated = true
 	}
 
-	return func(next raven.HandlerFunc) raven.HandlerFunc {
-		return func(ctx *raven.Context) error {
-			return handleSPF(ctx, next, config)
-		}
+	return func(c *raven.Context) *raven.Response {
+		return handleSPF(c, config)
 	}
 }
 
-func handleSPF(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConfig) error {
+func handleSPF(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	// Only process if we have MAIL FROM
-	fromVal, ok := ctx.Get("from")
-	if !ok {
-		return next(ctx)
-	}
-
-	from, ok := fromVal.(raven.Path)
-	if !ok {
-		return next(ctx)
+	from := c.Request.From
+	if from == nil {
+		return c.Next()
 	}
 
 	// Skip for null sender (bounces)
 	if from.IsNull() {
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Skip for authenticated senders
-	if config.SkipIfAuthenticated && ctx.IsAuthenticated() {
-		return next(ctx)
+	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+		return c.Next()
 	}
 
 	// Get remote IP
-	remoteIP := getRemoteIP(ctx)
+	remoteIP := getRemoteIP(c)
 	if remoteIP == nil {
 		config.Logger.Warn("could not determine remote IP for SPF check")
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Check whitelist
@@ -151,20 +143,20 @@ func handleSPF(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConf
 		config.Logger.Debug("IP whitelisted, skipping SPF check",
 			slog.String("ip", remoteIP.String()),
 		)
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Get HELO domain
-	heloDomain := ctx.ClientHostname()
+	heloDomain := c.ClientHostname()
 	helloIsIP := net.ParseIP(heloDomain) != nil
 
 	// Determine local hostname
-	localHostname := ctx.Connection.ServerHostname
+	localHostname := c.Connection.ServerHostname
 
 	// Determine local IP
 	localIP := config.LocalIP
 	if localIP == nil {
-		localIP = getLocalIP(ctx)
+		localIP = getLocalIP(c)
 	}
 
 	// Build SPF args
@@ -180,17 +172,17 @@ func handleSPF(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConf
 	}
 
 	// Create context with timeout
-	verifyCtx, cancel := context.WithTimeout(ctx.Connection.Context(), config.Timeout)
+	verifyCtx, cancel := context.WithTimeout(c.Connection.Context(), config.Timeout)
 	defer cancel()
 
 	// Perform SPF verification
 	received, domain, explanation, authentic, err := Verify(verifyCtx, config.Resolver, args)
 
 	// Store results in context
-	ctx.Set(ContextKeySPFResult, received)
-	ctx.Set(ContextKeySPFStatus, received.Result)
-	ctx.Set(ContextKeySPFDomain, domain)
-	ctx.Set(ContextKeySPFExplanation, explanation)
+	c.Set(ContextKeySPFResult, received)
+	c.Set(ContextKeySPFStatus, received.Result)
+	c.Set(ContextKeySPFDomain, domain)
+	c.Set(ContextKeySPFExplanation, explanation)
 
 	// Log result
 	config.Logger.Info("SPF verification",
@@ -210,24 +202,29 @@ func handleSPF(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConf
 
 		if config.FailOpenOnError {
 			received.Result = StatusNone
-			ctx.Set(ContextKeySPFStatus, StatusNone)
+			c.Set(ContextKeySPFStatus, StatusNone)
 		}
 	}
 
 	// Apply policy
-	reject, msg := shouldReject(received.Result, explanation, config.Policy)
+	reject, code, msg := shouldReject(received.Result, explanation, config.Policy)
 	if reject {
-		return fmt.Errorf("%s", msg)
+		return &raven.Response{
+			Code:         raven.SMTPCode(code),
+			EnhancedCode: "5.7.1",
+			Message:      msg,
+		}
 	}
 
-	return next(ctx)
+	return c.Next()
 }
 
 // shouldReject determines if the message should be rejected based on policy.
-func shouldReject(status Status, explanation string, policy Policy) (bool, string) {
+// Returns whether to reject, the SMTP code, and the message.
+func shouldReject(status Status, explanation string, policy Policy) (bool, int, string) {
 	switch policy {
 	case PolicyMark:
-		return false, ""
+		return false, 0, ""
 
 	case PolicyRejectFail:
 		if status == StatusFail {
@@ -235,7 +232,7 @@ func shouldReject(status Status, explanation string, policy Policy) (bool, strin
 			if explanation != "" {
 				msg = explanation
 			}
-			return true, msg
+			return true, 550, msg
 		}
 
 	case PolicyRejectFailAndSoftfail:
@@ -244,39 +241,39 @@ func shouldReject(status Status, explanation string, policy Policy) (bool, strin
 			if explanation != "" {
 				msg = explanation
 			}
-			return true, msg
+			return true, 550, msg
 		}
 		if status == StatusSoftfail {
-			return true, "SPF softfail"
+			return true, 550, "SPF softfail"
 		}
 
 	case PolicyRejectAll:
 		switch status {
 		case StatusPass, StatusNone:
-			return false, ""
+			return false, 0, ""
 		case StatusFail:
 			msg := "SPF check failed"
 			if explanation != "" {
 				msg = explanation
 			}
-			return true, msg
+			return true, 550, msg
 		case StatusSoftfail:
-			return true, "SPF softfail"
+			return true, 550, "SPF softfail"
 		case StatusNeutral:
-			return true, "SPF neutral"
+			return true, 550, "SPF neutral"
 		case StatusTemperror:
-			return true, "SPF temporary error"
+			return true, 451, "SPF temporary error"
 		case StatusPermerror:
-			return true, "SPF permanent error"
+			return true, 550, "SPF permanent error"
 		}
 	}
 
-	return false, ""
+	return false, 0, ""
 }
 
 // getRemoteIP extracts the remote IP from the connection.
-func getRemoteIP(ctx *raven.Context) net.IP {
-	addr := ctx.Connection.RemoteAddr()
+func getRemoteIP(c *raven.Context) net.IP {
+	addr := c.Connection.RemoteAddr()
 	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpAddr.IP
 	}
@@ -290,8 +287,8 @@ func getRemoteIP(ctx *raven.Context) net.IP {
 }
 
 // getLocalIP attempts to get the local IP from the connection.
-func getLocalIP(ctx *raven.Context) net.IP {
-	addr := ctx.Connection.LocalAddr()
+func getLocalIP(c *raven.Context) net.IP {
+	addr := c.Connection.LocalAddr()
 	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpAddr.IP
 	}
@@ -320,8 +317,8 @@ func isWhitelisted(ip net.IP, ips []net.IP, networks []*net.IPNet) bool {
 
 // AddReceivedSPFHeader adds the Received-SPF header to a mail message.
 // This should be called in the OnMessage callback.
-func AddReceivedSPFHeader(ctx *raven.Context, mail *raven.Mail) {
-	resultVal, ok := ctx.Get(ContextKeySPFResult)
+func AddReceivedSPFHeader(c *raven.Context, mail *raven.Mail) {
+	resultVal, ok := c.Get(ContextKeySPFResult)
 	if !ok {
 		return
 	}
@@ -339,8 +336,8 @@ func AddReceivedSPFHeader(ctx *raven.Context, mail *raven.Mail) {
 }
 
 // GetSPFResult retrieves the SPF result from the context.
-func GetSPFResult(ctx *raven.Context) (Received, bool) {
-	val, ok := ctx.Get(ContextKeySPFResult)
+func GetSPFResult(c *raven.Context) (Received, bool) {
+	val, ok := c.Get(ContextKeySPFResult)
 	if !ok {
 		return Received{}, false
 	}
@@ -349,8 +346,8 @@ func GetSPFResult(ctx *raven.Context) (Received, bool) {
 }
 
 // GetSPFStatus retrieves the SPF status from the context.
-func GetSPFStatus(ctx *raven.Context) Status {
-	val, ok := ctx.Get(ContextKeySPFStatus)
+func GetSPFStatus(c *raven.Context) Status {
+	val, ok := c.Get(ContextKeySPFStatus)
 	if !ok {
 		return StatusNone
 	}

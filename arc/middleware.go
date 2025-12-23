@@ -89,9 +89,9 @@ const (
 	ContextKeyARCTrusted = "arc_trusted"
 )
 
-// Middleware returns a Raven middleware that performs ARC verification and optionally sealing.
+// Middleware returns a Raven handler that performs ARC verification and optionally sealing.
 //
-// The middleware should be used AFTER SPF, DKIM, and DMARC middleware, as ARC sealing
+// The handler should be used AFTER SPF, DKIM, and DMARC handlers, as ARC sealing
 // requires their results. It runs after the DATA command and:
 //  1. Verifies any existing ARC chain
 //  2. Stores the result in the context
@@ -104,19 +104,19 @@ const (
 //	    DNSSEC: true,
 //	})
 //
-//	server := raven.New("mx.example.com").
-//	    Use(spf.Middleware(...)).
-//	    Use(dkim.Middleware(...)).
-//	    Use(dmarc.Middleware(...)).
-//	    Use(arc.Middleware(arc.MiddlewareConfig{
-//	        Resolver: resolver,
-//	        SealingConfig: &arc.SealingConfig{
-//	            Domain:     "example.com",
-//	            Selector:   "arc1",
-//	            PrivateKey: privateKey,
-//	        },
-//	    }))
-func Middleware(config MiddlewareConfig) raven.Middleware {
+//	server := raven.New("mx.example.com")
+//	server.OnMailFrom(spf.Middleware(...))
+//	server.OnData(dkim.Middleware(...))
+//	server.OnData(dmarc.Middleware(...))
+//	server.OnData(arc.Middleware(arc.MiddlewareConfig{
+//	    Resolver: resolver,
+//	    SealingConfig: &arc.SealingConfig{
+//	        Domain:     "example.com",
+//	        Selector:   "arc1",
+//	        PrivateKey: privateKey,
+//	    },
+//	}))
+func Middleware(config MiddlewareConfig) raven.HandlerFunc {
 	if config.Resolver == nil {
 		panic("arc: resolver is required")
 	}
@@ -130,44 +130,37 @@ func Middleware(config MiddlewareConfig) raven.Middleware {
 		config.MinRSAKeyBits = 1024
 	}
 
-	return func(next raven.HandlerFunc) raven.HandlerFunc {
-		return func(ctx *raven.Context) error {
-			return handleARC(ctx, next, config)
-		}
+	return func(c *raven.Context) *raven.Response {
+		return handleARC(c, config)
 	}
 }
 
-func handleARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConfig) error {
-	// Call next handler first to let DATA complete
-	if err := next(ctx); err != nil {
-		return err
-	}
-
+func handleARC(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	// Only process if we have message content
-	if ctx.Mail == nil || len(ctx.Mail.Content.Body) == 0 {
-		return nil
+	if c.Mail == nil || len(c.Mail.Content.Body) == 0 {
+		return c.Next()
 	}
 
 	// Check if authenticated sender should skip
-	if config.SkipIfAuthenticated && ctx.IsAuthenticated() {
+	if config.SkipIfAuthenticated && c.IsAuthenticated() {
 		config.Logger.Debug("skipping ARC for authenticated sender",
-			slog.String("conn_id", ctx.Connection.Trace.ID),
+			slog.String("conn_id", c.Connection.Trace.ID),
 		)
-		return nil
+		return c.Next()
 	}
 
 	// Check whitelist
-	remoteIP := getRemoteIP(ctx)
+	remoteIP := getRemoteIP(c)
 	if remoteIP != nil && isWhitelisted(remoteIP, config.WhitelistIPs, config.WhitelistNetworks) {
 		config.Logger.Debug("skipping ARC for whitelisted IP",
-			slog.String("conn_id", ctx.Connection.Trace.ID),
+			slog.String("conn_id", c.Connection.Trace.ID),
 			slog.String("ip", remoteIP.String()),
 		)
-		return nil
+		return c.Next()
 	}
 
 	// Create verification context with timeout
-	verifyCtx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+	verifyCtx, cancel := context.WithTimeout(c.Connection.Context(), config.Timeout)
 	defer cancel()
 
 	// Verify existing ARC chain
@@ -176,65 +169,65 @@ func handleARC(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConf
 		MinRSAKeyBits: config.MinRSAKeyBits,
 	}
 
-	rawMessage := ctx.Mail.Content.ToRaw()
+	rawMessage := c.Mail.Content.ToRaw()
 	result, err := verifier.Verify(verifyCtx, rawMessage)
 
 	// Handle verification error
 	if err != nil {
 		config.Logger.Error("ARC verification error",
-			slog.String("conn_id", ctx.Connection.Trace.ID),
+			slog.String("conn_id", c.Connection.Trace.ID),
 			slog.Any("error", err),
 		)
 		// Continue processing - store the result with error
 	}
 
 	// Store result in context
-	ctx.Set(ContextKeyARCResult, result)
-	ctx.Set(ContextKeyARCStatus, result.Status)
+	c.Set(ContextKeyARCResult, result)
+	c.Set(ContextKeyARCStatus, result.Status)
 
 	// Determine chain validation status for potential sealing
 	chainValidation := GetARCChainStatus(result)
-	ctx.Set(ContextKeyARCChainValidation, chainValidation)
+	c.Set(ContextKeyARCChainValidation, chainValidation)
 
 	// Check if chain is from trusted sealer
 	if len(config.TrustedSealers) > 0 {
 		trusted, _ := EvaluateARCForDMARC(result, config.TrustedSealers)
-		ctx.Set(ContextKeyARCTrusted, trusted)
+		c.Set(ContextKeyARCTrusted, trusted)
 	}
 
 	// Log verification result
 	config.Logger.Info("ARC verification complete",
-		slog.String("conn_id", ctx.Connection.Trace.ID),
+		slog.String("conn_id", c.Connection.Trace.ID),
 		slog.String("status", string(result.Status)),
 		slog.Int("sets", len(result.Sets)),
 		slog.Int("failed_instance", result.FailedInstance),
 	)
 
 	// Add Authentication-Results header for ARC
-	authResults := buildARCAuthResults(ctx.Connection.ServerHostname, result)
-	ctx.Mail.AddHeader("Authentication-Results", authResults)
+	authResults := buildARCAuthResults(c.Connection.ServerHostname, result)
+	c.Mail.AddHeader("Authentication-Results", authResults)
 
 	// Seal the message if configured
 	if config.SealingConfig != nil {
-		if err := sealMessage(ctx, config); err != nil {
+		if err := sealMessage(c, config); err != nil {
 			config.Logger.Error("ARC sealing error",
-				slog.String("conn_id", ctx.Connection.Trace.ID),
+				slog.String("conn_id", c.Connection.Trace.ID),
 				slog.Any("error", err),
 			)
 			// Continue without sealing - don't fail the message
 		} else {
 			config.Logger.Info("ARC sealing complete",
-				slog.String("conn_id", ctx.Connection.Trace.ID),
+				slog.String("conn_id", c.Connection.Trace.ID),
 				slog.String("domain", config.SealingConfig.Domain),
 			)
 		}
 	}
 
-	return nil
+	return c.Next()
 }
 
 // sealMessage adds ARC headers to the message.
-func sealMessage(ctx *raven.Context, config MiddlewareConfig) error {
+func sealMessage(c *raven.Context, config MiddlewareConfig) error {
 	sc := config.SealingConfig
 
 	sealer := &Sealer{
@@ -248,16 +241,16 @@ func sealMessage(ctx *raven.Context, config MiddlewareConfig) error {
 
 	// Get chain validation status from context
 	chainValidation := ChainValidationNone
-	if cv, ok := ctx.Get(ContextKeyARCChainValidation); ok {
+	if cv, ok := c.Get(ContextKeyARCChainValidation); ok {
 		if cvs, ok := cv.(ChainValidationStatus); ok {
 			chainValidation = cvs
 		}
 	}
 
 	// Build authentication results string from previous middleware results
-	authResults := buildSealingAuthResults(ctx)
+	authResults := buildSealingAuthResults(c)
 
-	return SignMail(ctx.Mail, sealer, sc.Domain, authResults, chainValidation)
+	return SignMail(c.Mail, sealer, sc.Domain, authResults, chainValidation)
 }
 
 // buildARCAuthResults builds the Authentication-Results value for ARC verification.
@@ -293,18 +286,18 @@ func buildARCAuthResults(hostname string, result *Result) string {
 
 // buildSealingAuthResults builds the auth results string for ARC sealing.
 // This combines results from SPF, DKIM, and DMARC middleware.
-func buildSealingAuthResults(ctx *raven.Context) string {
+func buildSealingAuthResults(c *raven.Context) string {
 	var parts []string
 
 	// Get SPF result
-	if spfResult, ok := ctx.Get(spf.ContextKeySPFResult); ok {
+	if spfResult, ok := c.Get(spf.ContextKeySPFResult); ok {
 		if r, ok := spfResult.(spf.Received); ok {
 			parts = append(parts, fmt.Sprintf("spf=%s smtp.mailfrom=%s", r.Result, r.EnvelopeFrom))
 		}
 	}
 
 	// Get DKIM results
-	if dkimResults, ok := ctx.Get(dkim.ContextKeyDKIMResults); ok {
+	if dkimResults, ok := c.Get(dkim.ContextKeyDKIMResults); ok {
 		if results, ok := dkimResults.([]dkim.Result); ok {
 			for _, r := range results {
 				part := fmt.Sprintf("dkim=%s", r.Status)
@@ -317,14 +310,14 @@ func buildSealingAuthResults(ctx *raven.Context) string {
 	}
 
 	// Get DMARC result
-	if dmarcResult, ok := ctx.Get(dmarc.ContextKeyDMARCResult); ok {
+	if dmarcResult, ok := c.Get(dmarc.ContextKeyDMARCResult); ok {
 		if r, ok := dmarcResult.(dmarc.Result); ok {
 			parts = append(parts, fmt.Sprintf("dmarc=%s header.from=%s", r.Status, r.Domain))
 		}
 	}
 
 	// Get existing ARC result
-	if arcResult, ok := ctx.Get(ContextKeyARCResult); ok {
+	if arcResult, ok := c.Get(ContextKeyARCResult); ok {
 		if r, ok := arcResult.(*Result); ok {
 			parts = append(parts, fmt.Sprintf("arc=%s", r.Status))
 		}
@@ -355,8 +348,8 @@ func isWhitelisted(ip net.IP, ips []net.IP, networks []*net.IPNet) bool {
 }
 
 // getRemoteIP extracts the IP address from the context.
-func getRemoteIP(ctx *raven.Context) net.IP {
-	addrStr := ctx.RemoteAddr()
+func getRemoteIP(c *raven.Context) net.IP {
+	addrStr := c.RemoteAddr()
 	if addrStr == "" {
 		return nil
 	}
@@ -370,16 +363,16 @@ func getRemoteIP(ctx *raven.Context) net.IP {
 	return net.ParseIP(host)
 }
 
-// VerificationMiddleware returns a middleware that only verifies ARC chains without sealing.
+// VerificationMiddleware returns a handler that only verifies ARC chains without sealing.
 // This is a convenience function for receivers that don't need to forward messages.
-func VerificationMiddleware(config MiddlewareConfig) raven.Middleware {
+func VerificationMiddleware(config MiddlewareConfig) raven.HandlerFunc {
 	config.SealingConfig = nil
 	return Middleware(config)
 }
 
 // GetARCResultFromContext retrieves the ARC result from a raven context.
-func GetARCResultFromContext(ctx *raven.Context) (*Result, bool) {
-	if result, ok := ctx.Get(ContextKeyARCResult); ok {
+func GetARCResultFromContext(c *raven.Context) (*Result, bool) {
+	if result, ok := c.Get(ContextKeyARCResult); ok {
 		if r, ok := result.(*Result); ok {
 			return r, true
 		}
@@ -388,8 +381,8 @@ func GetARCResultFromContext(ctx *raven.Context) (*Result, bool) {
 }
 
 // GetARCStatusFromContext retrieves the ARC status from a raven context.
-func GetARCStatusFromContext(ctx *raven.Context) (Status, bool) {
-	if status, ok := ctx.Get(ContextKeyARCStatus); ok {
+func GetARCStatusFromContext(c *raven.Context) (Status, bool) {
+	if status, ok := c.Get(ContextKeyARCStatus); ok {
 		if s, ok := status.(Status); ok {
 			return s, true
 		}
@@ -398,8 +391,8 @@ func GetARCStatusFromContext(ctx *raven.Context) (Status, bool) {
 }
 
 // IsTrustedChain checks if the ARC chain was sealed by a trusted domain.
-func IsTrustedChain(ctx *raven.Context) bool {
-	if trusted, ok := ctx.Get(ContextKeyARCTrusted); ok {
+func IsTrustedChain(c *raven.Context) bool {
+	if trusted, ok := c.Get(ContextKeyARCTrusted); ok {
 		if t, ok := trusted.(bool); ok {
 			return t
 		}

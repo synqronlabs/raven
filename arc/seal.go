@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto"
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -22,7 +21,7 @@ type Sealer struct {
 	Selector string
 
 	// PrivateKey is the signing key.
-	// Supported types: *rsa.PrivateKey, ed25519.PrivateKey, *ecdsa.PrivateKey
+	// Supported types: *rsa.PrivateKey, ed25519.PrivateKey
 	PrivateKey crypto.Signer
 
 	// Headers is the list of headers to sign in ARC-Message-Signature.
@@ -394,8 +393,6 @@ func (s *Sealer) getAlgorithm() (Algorithm, string, error) {
 		return AlgRSASHA256, "sha256", nil
 	case ed25519.PrivateKey:
 		return AlgEd25519SHA256, "sha256", nil
-	case *ecdsa.PrivateKey:
-		return AlgECDSASHA256, "sha256", nil
 	default:
 		return "", "", fmt.Errorf("%w: unsupported key type %T", ErrAlgorithmUnknown, s.PrivateKey)
 	}
@@ -417,8 +414,6 @@ func signWithKey(key crypto.Signer, hash crypto.Hash, data []byte) ([]byte, erro
 	case ed25519.PrivateKey:
 		// Ed25519 uses PureEdDSA, not pre-hashed data
 		return k.Sign(rand.Reader, data, crypto.Hash(0))
-	case *ecdsa.PrivateKey:
-		return ecdsa.SignASN1(rand.Reader, k, data)
 	default:
 		return nil, fmt.Errorf("%w: unsupported key type %T", ErrAlgorithmUnknown, key)
 	}

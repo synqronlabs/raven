@@ -4,17 +4,15 @@
 //
 // Create an SMTP server using the fluent builder API:
 //
-//	server, err := raven.New("mail.example.com").
+//	server := raven.New("mail.example.com").
 //	    Addr(":587").
 //	    TLS(tlsConfig).
 //	    Auth([]string{"PLAIN"}, authHandler).
 //	    MaxMessageSize(25 * 1024 * 1024).
-//	    Use(raven.SecureDefaults(logger)...).
-//	    OnMessage(func(ctx *raven.Context) error {
-//	        log.Printf("Received mail from %s", ctx.Mail.Envelope.From.String())
-//	        return nil
-//	    }).
-//	    Build()
+//	    OnMessage(func(c *raven.Context) *raven.Response {
+//	        log.Printf("Received mail from %s", c.Mail.Envelope.From.String())
+//	        return c.Next()
+//	    })
 //
 //	if err := server.ListenAndServe(); err != raven.ErrServerClosed {
 //	    log.Fatal(err)
@@ -28,13 +26,12 @@
 // Built-in middleware for common functionality:
 //
 //	server := raven.New("mail.example.com").
-//	    Use(
-//	        raven.Recovery(logger),           // Panic recovery
-//	        raven.Logger(logger),             // Request logging
-//	        raven.RateLimit(rateLimiter),     // Rate limiting
-//	        raven.IPFilterMiddleware(filter), // IP filtering
-//	    ).
-//	    Build()
+//	    OnConnect(
+//	        raven.Recovery(logger),        // Panic recovery
+//	        raven.Logger(logger),          // Request logging
+//	        raven.RateLimit(rateLimiter),  // Rate limiting
+//	        raven.IPFilterHandler(filter), // IP filtering
+//	    )
 //
 // # Client
 //

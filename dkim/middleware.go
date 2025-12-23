@@ -64,9 +64,9 @@ const (
 	ContextKeyDKIMDomain = "dkim_domain"
 )
 
-// Middleware returns a Raven middleware that performs DKIM verification.
+// Middleware returns a Raven handler that performs DKIM verification.
 //
-// The middleware runs after the DATA command and verifies all DKIM signatures
+// The handler runs after the DATA command and verifies all DKIM signatures
 // in the message. Results are stored in the context and an Authentication-Results
 // header is added to the message.
 //
@@ -76,11 +76,11 @@ const (
 //	    DNSSEC: true,
 //	})
 //
-//	server := raven.New("mx.example.com").
-//	    Use(dkim.Middleware(dkim.MiddlewareConfig{
-//	        Resolver: resolver,
-//	    }))
-func Middleware(config MiddlewareConfig) raven.Middleware {
+//	server := raven.New("mx.example.com")
+//	server.OnData(dkim.Middleware(dkim.MiddlewareConfig{
+//	    Resolver: resolver,
+//	}))
+func Middleware(config MiddlewareConfig) raven.HandlerFunc {
 	if config.Resolver == nil {
 		panic("dkim: resolver is required")
 	}
@@ -94,35 +94,33 @@ func Middleware(config MiddlewareConfig) raven.Middleware {
 		config.MinRSAKeyBits = 1024
 	}
 
-	return func(next raven.HandlerFunc) raven.HandlerFunc {
-		return func(ctx *raven.Context) error {
-			return handleDKIM(ctx, next, config)
-		}
+	return func(c *raven.Context) *raven.Response {
+		return handleDKIM(c, config)
 	}
 }
 
-func handleDKIM(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareConfig) error {
+func handleDKIM(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	// Only process if we have mail data
-	if ctx.Mail == nil || len(ctx.Mail.Content.Body) == 0 {
-		return next(ctx)
+	if c.Mail == nil || len(c.Mail.Content.Body) == 0 {
+		return c.Next()
 	}
 
 	// Skip for authenticated senders
-	if config.SkipIfAuthenticated && ctx.IsAuthenticated() {
-		return next(ctx)
+	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+		return c.Next()
 	}
 
 	// Check whitelist
-	remoteIP := getRemoteIP(ctx)
+	remoteIP := getRemoteIP(c)
 	if remoteIP != nil && isWhitelisted(remoteIP, config.WhitelistIPs, config.WhitelistNetworks) {
 		config.Logger.Debug("IP whitelisted, skipping DKIM check",
 			slog.String("ip", remoteIP.String()),
 		)
-		return next(ctx)
+		return c.Next()
 	}
 
 	// Build raw message from Content
-	rawMessage := ctx.Mail.Content.ToRaw()
+	rawMessage := c.Mail.Content.ToRaw()
 
 	// Create verifier
 	verifier := &Verifier{
@@ -133,7 +131,7 @@ func handleDKIM(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCon
 	}
 
 	// Create context with timeout
-	verifyCtx, cancel := context.WithTimeout(ctx.Connection.Context(), config.Timeout)
+	verifyCtx, cancel := context.WithTimeout(c.Connection.Context(), config.Timeout)
 	defer cancel()
 
 	// Verify signatures
@@ -146,7 +144,7 @@ func handleDKIM(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCon
 	}
 
 	// Store results in context
-	ctx.Set(ContextKeyDKIMResults, results)
+	c.Set(ContextKeyDKIMResults, results)
 
 	// Determine overall status
 	overallStatus := StatusNone
@@ -165,8 +163,8 @@ func handleDKIM(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCon
 		}
 	}
 
-	ctx.Set(ContextKeyDKIMStatus, overallStatus)
-	ctx.Set(ContextKeyDKIMDomain, signingDomain)
+	c.Set(ContextKeyDKIMStatus, overallStatus)
+	c.Set(ContextKeyDKIMDomain, signingDomain)
 
 	// Log results
 	for _, r := range results {
@@ -186,38 +184,30 @@ func handleDKIM(ctx *raven.Context, next raven.HandlerFunc, config MiddlewareCon
 	}
 
 	// Add Authentication-Results header
-	authResults := generateAuthResults(ctx.Connection.ServerHostname, results)
-	ctx.Mail.Content.Headers = append(raven.Headers{{
+	authResults := generateAuthResults(c.Connection.ServerHostname, results)
+	c.Mail.Content.Headers = append(raven.Headers{{
 		Name:  "Authentication-Results",
 		Value: authResults,
-	}}, ctx.Mail.Content.Headers...)
+	}}, c.Mail.Content.Headers...)
 
 	// Check if we should reject
 	if config.RequireSignature && len(results) == 0 {
-		return &RejectError{
-			Code:    550,
-			Message: "DKIM signature required",
+		return &raven.Response{
+			Code:         550,
+			EnhancedCode: "5.7.1",
+			Message:      "DKIM signature required",
 		}
 	}
 
 	if config.RejectOnFail && overallStatus == StatusFail {
-		return &RejectError{
-			Code:    550,
-			Message: "DKIM verification failed",
+		return &raven.Response{
+			Code:         550,
+			EnhancedCode: "5.7.1",
+			Message:      "DKIM verification failed",
 		}
 	}
 
-	return next(ctx)
-}
-
-// RejectError is returned when a message should be rejected.
-type RejectError struct {
-	Code    int
-	Message string
-}
-
-func (e *RejectError) Error() string {
-	return e.Message
+	return c.Next()
 }
 
 // generateAuthResults generates an Authentication-Results header value.
@@ -266,8 +256,8 @@ func generateAuthResults(hostname string, results []Result) string {
 }
 
 // getRemoteIP extracts the remote IP from the context.
-func getRemoteIP(ctx *raven.Context) net.IP {
-	addr := ctx.Connection.RemoteAddr()
+func getRemoteIP(c *raven.Context) net.IP {
+	addr := c.Connection.RemoteAddr()
 	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpAddr.IP
 	}

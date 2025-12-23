@@ -14,17 +14,13 @@ import (
 // handleAuth processes the AUTH command.
 func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader) *Response {
 	if conn.State() < StateGreeted {
-		resp := ResponseBadSequence("Send EHLO first")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Send EHLO first"}
 	}
 	if conn.IsAuthenticated() {
-		resp := ResponseBadSequence("Already authenticated")
-		return &resp
+		return &Response{Code: CodeBadSequence, Message: "Already authenticated"}
 	}
-	if (s.config.RequireTLS) && !conn.IsTLS() {
-		// 530 must be returned when TLS is required
-		resp := ResponseAuthRequired("Must issue a STARTTLS command first")
-		return &resp
+	if s.requireTLS && !conn.IsTLS() {
+		return &Response{Code: CodeAuthRequired, EnhancedCode: string(ESCSecurityError), Message: "Must issue a STARTTLS command first"}
 	}
 
 	parts := strings.SplitN(args, " ", 2)
@@ -56,15 +52,15 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	// Run the SASL exchange
 	creds, err := s.runSASLExchange(conn, mechanism, initialResponse, reader)
 	if err != nil {
-		// 535 for authentication credentials invalid
-		resp := ResponseAuthCredentialsInvalid(fmt.Sprintf("Authentication failed: %v", err))
-		return &resp
+		return &Response{Code: CodeAuthCredentialsInvalid, EnhancedCode: string(ESCAuthCredentialsInvalid), Message: fmt.Sprintf("Authentication failed: %v", err)}
 	}
 
-	if s.config.Callbacks != nil && s.config.Callbacks.OnAuth != nil {
-		if err := s.config.Callbacks.OnAuth(conn.Context(), conn, mechanismName, creds.Identity(), creds.Password); err != nil {
-			resp := ResponseAuthCredentialsInvalid("")
-			return &resp
+	// Call custom auth handler if provided
+	if s.authHandler != nil {
+		ctx := s.newContext(conn, nil)
+		ctx.Request = Request{Command: CmdAuth, Args: args}
+		if resp := s.authHandler(ctx, mechanismName, creds.Identity(), creds.Password); resp != nil {
+			return resp
 		}
 	}
 
@@ -99,7 +95,7 @@ func (s *Server) runSASLExchange(conn *Connection, mechanism sasl.Mechanism, ini
 		s.writeResponse(conn, Response{Code: 334, Message: challenge})
 
 		// Read response from client
-		response, err := ravenio.ReadLine(reader, s.config.MaxLineLength, true)
+		response, err := ravenio.ReadLine(reader, s.maxLineLength, true)
 		if err != nil {
 			return nil, err
 		}
@@ -112,19 +108,4 @@ func (s *Server) runSASLExchange(conn *Connection, mechanism sasl.Mechanism, ini
 	}
 
 	return mechanism.Credentials(), nil
-}
-
-// getEffectiveAuthMechanisms returns enabled auth mechanisms.
-func (s *Server) getEffectiveAuthMechanisms() []string {
-	if !s.config.EnableLoginAuth {
-		// Filter out LOGIN
-		result := make([]string, 0, len(s.config.AuthMechanisms))
-		for _, m := range s.config.AuthMechanisms {
-			if strings.ToUpper(m) != "LOGIN" {
-				result = append(result, m)
-			}
-		}
-		return result
-	}
-	return s.config.AuthMechanisms
 }

@@ -16,40 +16,34 @@ go get github.com/synqronlabs/raven
 package main
 
 import (
-    "log"
-    "log/slog"
-    "os"
+	"log"
+	"log/slog"
+	"os"
 
-    "github.com/synqronlabs/raven"
+	"github.com/synqronlabs/raven"
 )
 
 func main() {
-    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-    server, err := raven.New("mail.example.com").
-        Addr(":2525").
-        Logger(logger).
-        MaxMessageSize(10 * 1024 * 1024). // 10MB
-        Use(raven.SecureDefaults(logger)...).
-        OnConnect(func(ctx *raven.Context) error {
-            logger.Info("connection", "remote", ctx.RemoteAddr())
-            return nil
-        }).
-        OnMessage(func(ctx *raven.Context) error {
-            logger.Info("message received",
-                "from", ctx.Mail.Envelope.From.String(),
-                "recipients", len(ctx.Mail.Envelope.To))
-            return nil
-        }).
-        Build()
+	server := raven.New("mail.example.com").
+		Addr(":2525").
+		Logger(logger).
+		MaxMessageSize(10 * 1024 * 1024). // 10MB
+		OnConnect(func(c *raven.Context) *raven.Response {
+			logger.Info("connection", "remote", c.RemoteAddr())
+			return c.Next()
+		}).
+		OnMessage(func(c *raven.Context) *raven.Response {
+			logger.Info("message received",
+				"from", c.Mail.Envelope.From.String(),
+				"recipients", len(c.Mail.Envelope.To))
+			return c.Next()
+		})
 
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    if err := server.ListenAndServe(); err != raven.ErrServerClosed {
-        log.Fatal(err)
-    }
+	if err := server.ListenAndServe(); err != raven.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 ```
 
@@ -86,19 +80,16 @@ Raven categorizes extensions into **intrinsic** (always enabled) and **opt-in** 
 Built-in middleware for common functionality:
 
 ```go
-server := raven.New("mail.example.com").
-    Use(
-        raven.Recovery(logger),           // Panic recovery
-        raven.Logger(logger),             // Request logging
-        raven.RateLimit(rateLimiter),     // Rate limiting
-        raven.IPFilterMiddleware(filter), // IP filtering
-    ).
-    Build()
+rateLimiter := raven.NewRateLimiter(100, time.Minute)
+filter := raven.NewIPFilter(raven.IPFilterModeDeny)
 
-// Or use preset groups
 server := raven.New("mail.example.com").
-    Use(raven.SecureDefaults(logger)...).
-    Build()
+    OnConnect(
+        raven.Recovery(logger),              // Panic recovery
+        raven.Logger(logger),                // Request logging
+        raven.RateLimit(rateLimiter),        // Rate limiting
+        raven.IPFilterHandler(filter),       // IP filtering
+    )
 ```
 
 ## Handler Chaining
@@ -111,15 +102,14 @@ server := raven.New("mail.example.com").
         validateDomain,     // Check domain
         checkRateLimit,     // Check limits  
         lookupMailbox,      // Verify mailbox
-    ).
-    Build()
+    )
 
-func validateDomain(ctx *raven.Context) error {
-    to := ctx.Keys["to"].(raven.Path)
+func validateDomain(c *raven.Context) *raven.Response {
+    to := c.Request.To
     if to.Mailbox.Domain != "example.com" {
-        return errors.New("relay not permitted")
+        return c.PermError("Relay not permitted")
     }
-    return ctx.Next() // Continue to next handler
+    return c.Next() // Continue to next handler
 }
 ```
 
@@ -327,7 +317,6 @@ The `dkim` package implements DomainKeys Identified Mail (RFC 6376) for signing 
 - RSA-SHA256 (required by RFC 6376)
 - RSA-SHA1 (deprecated, for compatibility)
 - Ed25519-SHA256 (RFC 8463)
-- ECDSA-SHA256 (P-256, P-384, P-521 curves)
 
 #### Signing Messages
 
@@ -400,25 +389,26 @@ import (
 resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
 
 server := raven.New("mx.example.com").
-    Use(dkim.Middleware(dkim.MiddlewareConfig{
+    OnData(dkim.Middleware(dkim.MiddlewareConfig{
         Resolver:         resolver,
         Logger:           logger,
         RejectOnFail:     false, // Add Authentication-Results header but don't reject
         RequireSignature: false, // Allow unsigned messages
         MinRSAKeyBits:    1024,
-    })).
-    Build()
+    }))
 
 // Access DKIM results in your handler
-server.OnMessage(func(ctx *raven.Context) error {
-    if results, ok := ctx.Keys[dkim.ContextKeyDKIMResults].([]dkim.Result); ok {
-        for _, r := range results {
-            if r.Status == dkim.StatusPass {
-                log.Printf("Valid DKIM signature from %s", r.Signature.Domain)
+server.OnMessage(func(c *raven.Context) *raven.Response {
+    if results, ok := c.Get(dkim.ContextKeyDKIMResults); ok {
+        if dkimResults, ok := results.([]dkim.Result); ok {
+            for _, r := range dkimResults {
+                if r.Status == dkim.StatusPass {
+                    log.Printf("Valid DKIM signature from %s", r.Signature.Domain)
+                }
             }
         }
     }
-    return nil
+    return c.Next()
 })
 ```
 
@@ -492,25 +482,26 @@ import (
 resolver := spf.NewResolverWithDefaults()
 
 server := raven.New("mx.example.com").
-    Use(spf.Middleware(spf.MiddlewareConfig{
+    OnMailFrom(spf.Middleware(spf.MiddlewareConfig{
         Resolver: resolver,
         Logger:   logger,
         Policy:   spf.PolicyRejectFail, // Reject on hard fail
         Timeout:  20 * time.Second,
-    })).
-    Build()
+    }))
 
 // Access SPF results in your handler
-server.OnMessage(func(ctx *raven.Context) error {
-    if status, ok := ctx.Keys[spf.ContextKeySPFStatus].(spf.Status); ok {
-        if status == spf.StatusPass {
+server.OnMessage(func(c *raven.Context) *raven.Response {
+    if statusVal, ok := c.Get(spf.ContextKeySPFStatus); ok {
+        if status, ok := statusVal.(spf.Status); ok && status == spf.StatusPass {
             log.Println("SPF verification passed")
         }
     }
-    if domain, ok := ctx.Keys[spf.ContextKeySPFDomain].(string); ok {
-        log.Printf("Checked SPF for domain: %s", domain)
+    if domainVal, ok := c.Get(spf.ContextKeySPFDomain); ok {
+        if domain, ok := domainVal.(string); ok {
+            log.Printf("Checked SPF for domain: %s", domain)
+        }
     }
-    return nil
+    return c.Next()
 })
 ```
 
@@ -584,7 +575,7 @@ if result.Status == dmarc.StatusPass {
 
 #### DMARC Middleware
 
-The DMARC middleware should be used **after** SPF and DKIM middleware:
+The DMARC middleware should be used **after** SPF and DKIM middleware. SPF runs on `OnMailFrom`, while DKIM and DMARC run on `OnMessage`:
 
 ```go
 import (
@@ -596,18 +587,18 @@ import (
 )
 
 resolver := dns.NewResolver(dns.ResolverConfig{DNSSEC: true})
+spfResolver := spf.NewResolverWithDefaults()
 
 server := raven.New("mx.example.com").
-    Use(
-        spf.Middleware(spf.MiddlewareConfig{Resolver: resolver}),   // Run first
-        dkim.Middleware(dkim.MiddlewareConfig{Resolver: resolver}), // Run second
-        dmarc.Middleware(dmarc.MiddlewareConfig{                    // Run last
+    OnMailFrom(spf.Middleware(spf.MiddlewareConfig{Resolver: spfResolver})). // SPF on MAIL FROM
+    OnData(
+        dkim.Middleware(dkim.MiddlewareConfig{Resolver: resolver}), // DKIM first
+        dmarc.Middleware(dmarc.MiddlewareConfig{                    // DMARC last
             Resolver: resolver,
             Logger:   logger,
             Policy:   dmarc.MiddlewarePolicyEnforce, // Enforce published DMARC policy
         }),
-    ).
-    Build()
+    )
 ```
 
 **DMARC Middleware Policies:**
@@ -636,13 +627,10 @@ The codebase is organized with clear file naming for easy navigation:
 ```
 raven/
 ├── raven.go           # Package documentation and overview
-├── server.go          # Server type and lifecycle methods
-├── server_config.go   # Server configuration options
-├── server_builder.go  # Fluent builder API for server setup
+├── server.go          # Server type, lifecycle, and builder methods
 ├── server_handler.go  # SMTP command handlers
 ├── server_conn.go     # Connection state and management
 ├── server_auth.go     # Authentication handling
-├── server_test.go     # Server integration tests
 ├── client.go          # SMTP client core
 ├── client_dialer.go   # Connection dialing and pooling
 ├── client_probe.go    # Server capability probing
