@@ -1,7 +1,6 @@
 package dkim
 
 import (
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/x509"
@@ -40,7 +39,7 @@ type Record struct {
 	Flags []string
 
 	// PublicKey is the parsed public key.
-	// This is *rsa.PublicKey, ed25519.PublicKey, or *ecdsa.PublicKey.
+	// This is *rsa.PublicKey or ed25519.PublicKey.
 	PublicKey any
 }
 
@@ -146,8 +145,6 @@ func marshalPublicKey(key any) ([]byte, error) {
 		return x509.MarshalPKIXPublicKey(k)
 	case ed25519.PublicKey:
 		return []byte(k), nil
-	case *ecdsa.PublicKey:
-		return x509.MarshalPKIXPublicKey(k)
 	default:
 		return nil, fmt.Errorf("unsupported public key type: %T", key)
 	}
@@ -319,18 +316,6 @@ func parsePublicKey(keyType string, data []byte) (any, error) {
 			return nil, fmt.Errorf("invalid Ed25519 public key size: %d", len(data))
 		}
 		return ed25519.PublicKey(data), nil
-
-	case "ecdsa":
-		// ECDSA key in PKIX format
-		pk, err := x509.ParsePKIXPublicKey(data)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ECDSA public key: %w", err)
-		}
-		ecdsaPK, ok := pk.(*ecdsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("expected ECDSA public key, got %T", pk)
-		}
-		return ecdsaPK, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported key type: %s", keyType)

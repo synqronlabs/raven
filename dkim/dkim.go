@@ -9,7 +9,6 @@
 //   - RSA-SHA256 (required by RFC 6376)
 //   - RSA-SHA1 (deprecated, but supported for compatibility)
 //   - Ed25519-SHA256 (RFC 8463)
-//   - ECDSA-SHA256 (P-256, P-384, P-521 curves)
 //
 // # Basic Usage
 //
@@ -34,7 +33,6 @@ package dkim
 
 import (
 	"crypto"
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -80,9 +78,6 @@ const (
 
 	// AlgEd25519SHA256 is the Ed25519-SHA256 algorithm (RFC 8463).
 	AlgEd25519SHA256 Algorithm = "ed25519-sha256"
-
-	// AlgECDSASHA256 is ECDSA with SHA256 (for P-256, P-384, P-521 curves).
-	AlgECDSASHA256 Algorithm = "ecdsa-sha256"
 )
 
 // Canonicalization represents header/body canonicalization algorithms.
@@ -186,8 +181,6 @@ func signWithKey(key crypto.Signer, hash crypto.Hash, data []byte) ([]byte, erro
 	case ed25519.PrivateKey:
 		// Ed25519 uses PureEdDSA, not pre-hashed data
 		return k.Sign(cryptoRand, data, crypto.Hash(0))
-	case *ecdsa.PrivateKey:
-		return ecdsa.SignASN1(cryptoRand, k, data)
 	default:
 		return nil, ErrSigAlgorithmUnknown
 	}
@@ -200,11 +193,6 @@ func verifyWithKey(key any, hash crypto.Hash, data, signature []byte) error {
 		return rsa.VerifyPKCS1v15(k, hash, data, signature)
 	case ed25519.PublicKey:
 		if !ed25519.Verify(k, data, signature) {
-			return ErrSigVerify
-		}
-		return nil
-	case *ecdsa.PublicKey:
-		if !ecdsa.VerifyASN1(k, data, signature) {
 			return ErrSigVerify
 		}
 		return nil

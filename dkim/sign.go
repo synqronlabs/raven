@@ -2,7 +2,6 @@ package dkim
 
 import (
 	"crypto"
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"fmt"
@@ -19,7 +18,7 @@ type Signer struct {
 	Selector string
 
 	// PrivateKey is the signing key.
-	// Supported types: *rsa.PrivateKey, ed25519.PrivateKey, *ecdsa.PrivateKey
+	// Supported types: *rsa.PrivateKey, ed25519.PrivateKey
 	PrivateKey crypto.Signer
 
 	// Headers is the list of headers to sign.
@@ -226,10 +225,6 @@ func (s *Signer) getAlgorithm() (Algorithm, string, error) {
 	case ed25519.PrivateKey:
 		// Ed25519 always uses SHA256
 		return AlgEd25519SHA256, "sha256", nil
-
-	case *ecdsa.PrivateKey:
-		// ECDSA with SHA256
-		return AlgECDSASHA256, "sha256", nil
 
 	default:
 		return "", "", fmt.Errorf("%w: %T", ErrSigAlgorithmUnknown, s.PrivateKey)

@@ -1,7 +1,6 @@
 package raven
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,46 +8,51 @@ import (
 	"time"
 )
 
-// Logger returns middleware that logs all SMTP events.
-func Logger(logger *slog.Logger) Middleware {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(ctx *Context) error {
-			start := time.Now()
-			err := next(ctx)
-			duration := time.Since(start)
+// Logger returns a handler that logs all SMTP command execution.
+func Logger(logger *slog.Logger) HandlerFunc {
+	return func(c *Context) *Response {
+		start := time.Now()
+		resp := c.Next()
+		duration := time.Since(start)
 
-			attrs := []any{
-				slog.String("conn_id", ctx.Connection.Trace.ID),
-				slog.String("remote", ctx.RemoteAddr()),
-				slog.Duration("duration", duration),
-			}
+		attrs := []any{
+			slog.String("conn_id", c.Connection.Trace.ID),
+			slog.String("remote", c.Connection.RemoteAddr().String()),
+			slog.String("command", string(c.Request.Command)),
+			slog.Duration("duration", duration),
+		}
 
-			if err != nil {
-				logger.Error("handler error", append(attrs, slog.Any("error", err))...)
+		if resp != nil {
+			attrs = append(attrs,
+				slog.Int("code", int(resp.Code)),
+				slog.String("message", resp.Message),
+			)
+			if resp.Code >= 400 {
+				logger.Warn("handler completed with error", attrs...)
 			} else {
 				logger.Debug("handler completed", attrs...)
 			}
-
-			return err
+		} else {
+			logger.Debug("handler completed (no response)", attrs...)
 		}
+
+		return resp
 	}
 }
 
-// Recovery returns middleware that recovers from panics.
-func Recovery(logger *slog.Logger) Middleware {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(ctx *Context) (err error) {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Error("panic recovered",
-						slog.String("conn_id", ctx.Connection.Trace.ID),
-						slog.Any("panic", r),
-					)
-					err = errors.New("internal server error")
-				}
-			}()
-			return next(ctx)
-		}
+// Recovery returns a handler that recovers from panics.
+func Recovery(logger *slog.Logger) HandlerFunc {
+	return func(c *Context) (resp *Response) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("panic recovered",
+					slog.String("conn_id", c.Connection.Trace.ID),
+					slog.Any("panic", r),
+				)
+				resp = c.TempError("Internal server error")
+			}
+		}()
+		return c.Next()
 	}
 }
 
@@ -119,16 +123,14 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return true
 }
 
-// RateLimit returns middleware that limits connections per IP.
-func RateLimit(limiter *RateLimiter) Middleware {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(ctx *Context) error {
-			ip := extractIP(ctx.Connection.RemoteAddr())
-			if !limiter.Allow(ip) {
-				return errors.New("too many connections, please try again later")
-			}
-			return next(ctx)
+// RateLimit returns a handler that limits connections per IP.
+func RateLimit(limiter *RateLimiter) HandlerFunc {
+	return func(c *Context) *Response {
+		ip := extractIP(c.Connection.RemoteAddr())
+		if !limiter.Allow(ip) {
+			return c.TempError("Too many connections, please try again later")
 		}
+		return c.Next()
 	}
 }
 
@@ -187,16 +189,14 @@ func (f *IPFilter) IsAllowed(ip string) bool {
 	return true
 }
 
-// IPFilterMiddleware returns middleware that filters connections by IP.
-func IPFilterMiddleware(filter *IPFilter) Middleware {
-	return func(next HandlerFunc) HandlerFunc {
-		return func(ctx *Context) error {
-			ip := extractIP(ctx.Connection.RemoteAddr())
-			if !filter.IsAllowed(ip) {
-				return errors.New("connection not allowed from your IP address")
-			}
-			return next(ctx)
+// IPFilterHandler returns a handler that filters connections by IP.
+func IPFilterHandler(filter *IPFilter) HandlerFunc {
+	return func(c *Context) *Response {
+		ip := extractIP(c.Connection.RemoteAddr())
+		if !filter.IsAllowed(ip) {
+			return c.PermError("Connection not allowed from your IP address")
 		}
+		return c.Next()
 	}
 }
 
@@ -239,43 +239,41 @@ func (v *DomainValidator) IsAllowedSender(domain string) bool {
 
 // ValidateSender returns a handler that validates sender domains.
 func ValidateSender(validator *DomainValidator) HandlerFunc {
-	return func(ctx *Context) error {
-		from, ok := ctx.Get("from")
-		if !ok {
-			return ctx.Next()
+	return func(c *Context) *Response {
+		from := c.Request.From
+		if from == nil {
+			return c.Next()
 		}
 
-		path := from.(Path)
-		if path.IsNull() {
+		if from.IsNull() {
 			// Null sender (bounce) is always allowed
-			return ctx.Next()
+			return c.Next()
 		}
 
-		if !validator.IsAllowedSender(path.Mailbox.Domain) {
-			return fmt.Errorf("sender domain %s is not allowed", path.Mailbox.Domain)
+		if !validator.IsAllowedSender(from.Mailbox.Domain) {
+			return c.PermError(fmt.Sprintf("Sender domain %s is not allowed", from.Mailbox.Domain))
 		}
 
-		return ctx.Next()
+		return c.Next()
 	}
 }
 
 // ValidateRecipient returns a handler that validates recipient domains.
 func ValidateRecipient(validator *DomainValidator) HandlerFunc {
-	return func(ctx *Context) error {
-		to, ok := ctx.Get("to")
-		if !ok {
-			return ctx.Next()
+	return func(c *Context) *Response {
+		to := c.Request.To
+		if to == nil {
+			return c.Next()
 		}
 
-		path := to.(Path)
-		if !validator.IsLocalDomain(path.Mailbox.Domain) {
+		if !validator.IsLocalDomain(to.Mailbox.Domain) {
 			// Check if client is authenticated for relay
-			if !ctx.IsAuthenticated() {
-				return fmt.Errorf("relay not permitted for %s", path.Mailbox.Domain)
+			if !c.Connection.IsAuthenticated() {
+				return c.PermError(fmt.Sprintf("Relay not permitted for %s", to.Mailbox.Domain))
 			}
 		}
 
-		return ctx.Next()
+		return c.Next()
 	}
 }
 
@@ -291,20 +289,20 @@ func extractIP(addr net.Addr) string {
 	return host
 }
 
-// SecureDefaults returns a set of middleware suitable for production use.
-// This includes logging, recovery, and rate limiting.
-func SecureDefaults(logger *slog.Logger) []Middleware {
-	return []Middleware{
+// SecureDefaults returns a set of handlers suitable for production use.
+// This includes recovery, logging, and rate limiting.
+func SecureDefaults(logger *slog.Logger) []HandlerFunc {
+	return []HandlerFunc{
 		Recovery(logger),
 		Logger(logger),
 		RateLimit(NewRateLimiter(100, time.Minute)), // 100 connections/minute per IP
 	}
 }
 
-// DevelopmentDefaults returns middleware suitable for development.
-// This includes verbose logging and recovery.
-func DevelopmentDefaults(logger *slog.Logger) []Middleware {
-	return []Middleware{
+// DevelopmentDefaults returns handlers suitable for development.
+// This includes recovery and verbose logging.
+func DevelopmentDefaults(logger *slog.Logger) []HandlerFunc {
+	return []HandlerFunc{
 		Recovery(logger),
 		Logger(logger),
 	}

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/x509"
@@ -526,11 +525,6 @@ func verifyWithKey(key any, hash crypto.Hash, data, signature []byte) error {
 		return rsa.VerifyPKCS1v15(k, hash, data, signature)
 	case ed25519.PublicKey:
 		if !ed25519.Verify(k, data, signature) {
-			return ErrSignatureFailed
-		}
-		return nil
-	case *ecdsa.PublicKey:
-		if !ecdsa.VerifyASN1(k, data, signature) {
 			return ErrSignatureFailed
 		}
 		return nil

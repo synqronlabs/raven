@@ -46,9 +46,6 @@ const (
 
 	// AlgEd25519SHA256 is the Ed25519-SHA256 algorithm (RFC 8463).
 	AlgEd25519SHA256 Algorithm = "ed25519-sha256"
-
-	// AlgECDSASHA256 is ECDSA with SHA256.
-	AlgECDSASHA256 Algorithm = "ecdsa-sha256"
 )
 
 // Canonicalization represents header/body canonicalization algorithms.

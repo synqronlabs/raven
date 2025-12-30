@@ -1,9 +1,7 @@
 package dkim
 
 import (
-	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"hash"
@@ -396,58 +394,6 @@ func TestSignAndVerifyEd25519(t *testing.T) {
 	}
 }
 
-func TestSignAndVerifyECDSA(t *testing.T) {
-	curves := []struct {
-		name  string
-		curve elliptic.Curve
-	}{
-		{"P-256", elliptic.P256()},
-		{"P-384", elliptic.P384()},
-		{"P-521", elliptic.P521()},
-	}
-
-	for _, tc := range curves {
-		t.Run(tc.name, func(t *testing.T) {
-			// Generate ECDSA key pair
-			privateKey, err := ecdsa.GenerateKey(tc.curve, rand.Reader)
-			if err != nil {
-				t.Fatalf("GenerateKey() error = %v", err)
-			}
-
-			message := []byte("From: sender@example.com\r\n" +
-				"To: recipient@example.org\r\n" +
-				"Subject: Test Message\r\n" +
-				"Date: Thu, 18 Dec 2025 12:00:00 +0000\r\n" +
-				"\r\n" +
-				"This is a test message.\r\n")
-
-			signer := &Signer{
-				Domain:                 "example.com",
-				Selector:               "ecdsa",
-				PrivateKey:             privateKey,
-				Headers:                []string{"From", "To", "Subject", "Date"},
-				HeaderCanonicalization: CanonRelaxed,
-				BodyCanonicalization:   CanonRelaxed,
-			}
-
-			sigHeader, err := signer.Sign(message)
-			if err != nil {
-				t.Fatalf("Sign() error = %v", err)
-			}
-
-			// Parse the signature
-			sig, _, err := ParseSignature(sigHeader[:len(sigHeader)-2])
-			if err != nil {
-				t.Fatalf("ParseSignature() error = %v", err)
-			}
-
-			if sig.Algorithm != "ecdsa-sha256" {
-				t.Errorf("algorithm = %s, want ecdsa-sha256", sig.Algorithm)
-			}
-		})
-	}
-}
-
 func TestCanonicalizationRelaxed(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -678,12 +624,6 @@ func TestSignMultiple(t *testing.T) {
 		t.Fatalf("GenerateKey Ed25519: %v", err)
 	}
 
-	// Generate ECDSA key pair
-	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey ECDSA: %v", err)
-	}
-
 	message := []byte("From: sender@example.com\r\n" +
 		"To: recipient@example.org\r\n" +
 		"Subject: Test Multiple Signatures\r\n" +
@@ -717,14 +657,6 @@ func TestSignMultiple(t *testing.T) {
 			HeaderCanonicalization: CanonRelaxed,
 			BodyCanonicalization:   CanonRelaxed,
 		},
-		{
-			Domain:                 "example.com",
-			Selector:               "ecdsa",
-			PrivateKey:             ecdsaKey,
-			Headers:                []string{"From", "To", "Subject"},
-			HeaderCanonicalization: CanonSimple,
-			BodyCanonicalization:   CanonSimple,
-		},
 	}
 
 	// Sign with multiple selectors
@@ -735,8 +667,8 @@ func TestSignMultiple(t *testing.T) {
 
 	// Count the number of DKIM-Signature headers
 	sigCount := strings.Count(sigHeaders, "DKIM-Signature:")
-	if sigCount != 4 {
-		t.Errorf("expected 4 DKIM-Signature headers, got %d", sigCount)
+	if sigCount != 3 {
+		t.Errorf("expected 3 DKIM-Signature headers, got %d", sigCount)
 	}
 
 	// Parse each signature header
@@ -776,15 +708,11 @@ func TestSignMultiple(t *testing.T) {
 			if sig.Algorithm != "ed25519-sha256" {
 				t.Errorf("selector %s: algorithm = %s, want ed25519-sha256", sig.Selector, sig.Algorithm)
 			}
-		case "ecdsa":
-			if sig.Algorithm != "ecdsa-sha256" {
-				t.Errorf("selector %s: algorithm = %s, want ecdsa-sha256", sig.Selector, sig.Algorithm)
-			}
 		}
 	}
 
-	if parsedCount != 4 {
-		t.Errorf("expected to parse 4 signatures, got %d", parsedCount)
+	if parsedCount != 3 {
+		t.Errorf("expected to parse 3 signatures, got %d", parsedCount)
 	}
 }
 
