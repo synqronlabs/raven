@@ -142,7 +142,7 @@ func handleARC(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	}
 
 	// Check if authenticated sender should skip
-	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+	if config.SkipIfAuthenticated && c.Connection.IsAuthenticated() {
 		config.Logger.Debug("skipping ARC for authenticated sender",
 			slog.String("conn_id", c.Connection.Trace.ID),
 		)
@@ -349,7 +349,7 @@ func isWhitelisted(ip net.IP, ips []net.IP, networks []*net.IPNet) bool {
 
 // getRemoteIP extracts the IP address from the context.
 func getRemoteIP(c *raven.Context) net.IP {
-	addrStr := c.RemoteAddr()
+	addrStr := c.Connection.RemoteAddr().String()
 	if addrStr == "" {
 		return nil
 	}

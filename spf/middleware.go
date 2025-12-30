@@ -127,7 +127,7 @@ func handleSPF(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	}
 
 	// Skip for authenticated senders
-	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+	if config.SkipIfAuthenticated && c.Connection.IsAuthenticated() {
 		return c.Next()
 	}
 
@@ -356,24 +356,4 @@ func GetSPFStatus(c *raven.Context) Status {
 		return StatusNone
 	}
 	return status
-}
-
-// getRemoteIPFromConn extracts the remote IP from a connection.
-func getRemoteIPFromConn(conn *raven.Connection) net.IP {
-	addr := conn.RemoteAddr()
-	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
-		return tcpAddr.IP
-	}
-
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		host = addr.String()
-	}
-	return net.ParseIP(host)
-}
-
-// getClientHostnameFromConn gets the HELO/EHLO hostname from a connection.
-func getClientHostnameFromConn(conn *raven.Connection) string {
-	// Access the Trace.ClientHostname directly since it's a public field
-	return conn.Trace.ClientHostname
 }

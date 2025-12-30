@@ -131,26 +131,11 @@ func (c *Context) Next() *Response {
 	return nil
 }
 
-// RemoteAddr returns the client's remote address as a string.
-func (c *Context) RemoteAddr() string {
-	return c.Connection.RemoteAddr().String()
-}
-
 // ClientHostname returns the hostname provided in HELO/EHLO.
 func (c *Context) ClientHostname() string {
 	c.Connection.mu.RLock()
 	defer c.Connection.mu.RUnlock()
 	return c.Connection.Trace.ClientHostname
-}
-
-// IsTLS returns whether the connection is using TLS.
-func (c *Context) IsTLS() bool {
-	return c.Connection.IsTLS()
-}
-
-// IsAuthenticated returns whether the client is authenticated.
-func (c *Context) IsAuthenticated() bool {
-	return c.Connection.IsAuthenticated()
 }
 
 // AuthIdentity returns the authenticated identity, or empty string if not authenticated.
@@ -161,11 +146,6 @@ func (c *Context) AuthIdentity() string {
 		return c.Connection.Auth.Identity
 	}
 	return ""
-}
-
-// ServerHostname returns the server's hostname.
-func (c *Context) ServerHostname() string {
-	return c.server.hostname
 }
 
 // OK returns a 250 OK response with a message.
@@ -247,7 +227,6 @@ type Server struct {
 	readTimeout        time.Duration
 	writeTimeout       time.Duration
 	dataTimeout        time.Duration
-	idleTimeout        time.Duration
 	maxMessageSize     int64
 	maxRecipients      int
 	maxConnections     int
@@ -302,7 +281,11 @@ func New(hostname string) *Server {
 		readTimeout:        5 * time.Minute,
 		writeTimeout:       5 * time.Minute,
 		dataTimeout:        10 * time.Minute,
-		idleTimeout:        5 * time.Minute,
+		maxMessageSize:     25 * 1024 * 1024,
+		maxRecipients:      1000,
+		maxConnections:     1000000,
+		maxCommands:        1000,
+		maxErrors:          100,
 		maxLineLength:      RecommendedLineLength,
 		maxReceivedHeaders: 100,
 		gracefulShutdown:   true,
@@ -339,7 +322,8 @@ func (s *Server) RequireTLS() *Server {
 	return s
 }
 
-// ReadTimeout sets the timeout for reading commands.
+// ReadTimeout sets the timeout for reading a single command line.
+// This is the maximum time allowed to receive a complete command (ending in CRLF).
 func (s *Server) ReadTimeout(d time.Duration) *Server {
 	s.readTimeout = d
 	return s
@@ -351,15 +335,9 @@ func (s *Server) WriteTimeout(d time.Duration) *Server {
 	return s
 }
 
-// DataTimeout sets the timeout for reading message data.
+// DataTimeout sets the timeout for reading message data (DATA/BDAT commands).
 func (s *Server) DataTimeout(d time.Duration) *Server {
 	s.dataTimeout = d
-	return s
-}
-
-// IdleTimeout sets the maximum idle time before disconnect.
-func (s *Server) IdleTimeout(d time.Duration) *Server {
-	s.idleTimeout = d
 	return s
 }
 
@@ -708,7 +686,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		MaxRecipients:  s.maxRecipients,
 		MaxCommands:    s.maxCommands,
 		MaxErrors:      s.maxErrors,
-		IdleTimeout:    s.idleTimeout,
+		ReadTimeout:    s.readTimeout,
 		DataTimeout:    s.dataTimeout,
 	}
 
@@ -779,9 +757,9 @@ func (s *Server) handleConnection(netConn net.Conn) {
 }
 
 // newContext creates a new Context for handler execution.
-func (s *Server) newContext(conn *Connection, mail *Mail) *Context {
+func (s *Server) newContext(client *Connection, mail *Mail) *Context {
 	return &Context{
-		Connection: conn,
+		Connection: client,
 		Mail:       mail,
 		server:     s,
 		index:      -1,
@@ -808,40 +786,39 @@ func (s *Server) defaultConnectHandler(c *Context) *Response {
 }
 
 // commandLoop processes commands from the client.
-func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
+func (s *Server) commandLoop(client *Connection, logger *slog.Logger) {
 	for {
 		select {
-		case <-conn.Context().Done():
+		case <-client.Context().Done():
 			return
 		default:
 		}
 
-		// Use IdleTimeout for waiting between commands
-		if err := conn.conn.SetReadDeadline(time.Now().Add(conn.Limits.IdleTimeout)); err != nil {
+		if err := client.conn.SetReadDeadline(time.Now().Add(client.Limits.ReadTimeout)); err != nil {
 			return
 		}
 
-		line, err := ravenio.ReadLine(conn.reader, s.maxLineLength, false)
+		line, err := ravenio.ReadLine(client.reader, s.maxLineLength, false)
 		if err != nil {
 			if err == io.EOF || errors.Is(err, net.ErrClosed) {
 				return
 			}
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				s.writeResponse(conn, Response{
+				s.writeResponse(client, Response{
 					Code:    CodeServiceUnavailable,
 					Message: "Timeout waiting for command",
 				})
 				return
 			}
 			if errors.Is(err, ravenio.ErrLineTooLong) {
-				s.writeResponse(conn, Response{
+				s.writeResponse(client, Response{
 					Code:    CodeSyntaxError,
 					Message: fmt.Sprintf("Line exceeds maximum length of %d bytes", s.maxLineLength),
 				})
 				continue
 			}
 			if errors.Is(err, ravenio.ErrBadLineEnding) {
-				s.writeResponse(conn, Response{
+				s.writeResponse(client, Response{
 					Code:    CodeSyntaxError,
 					Message: "Line must be terminated with CRLF (RFC 5321)",
 				})
@@ -851,71 +828,64 @@ func (s *Server) commandLoop(conn *Connection, logger *slog.Logger) {
 			return
 		}
 
-		conn.updateActivity()
+		client.updateActivity()
 
-		if conn.Limits.MaxCommands > 0 && conn.Trace.CommandCount > conn.Limits.MaxCommands {
+		if client.Limits.MaxCommands > 0 && client.Trace.CommandCount > client.Limits.MaxCommands {
 			resp := ResponseServiceUnavailable(s.hostname, "Too many commands")
-			s.writeResponse(conn, resp)
+			s.writeResponse(client, resp)
 			return
 		}
-
-		if conn.Limits.MaxErrors > 0 && conn.ErrorCount() >= conn.Limits.MaxErrors {
+		if client.Limits.MaxErrors > 0 && client.ErrorCount() >= client.Limits.MaxErrors {
 			resp := ResponseServiceUnavailable(s.hostname, "Too many errors")
-			s.writeResponse(conn, resp)
+			s.writeResponse(client, resp)
 			return
 		}
 
-		cmd, args, err := parseCommand(line)
-		if err != nil {
-			resp := ResponseSyntaxError(fmt.Sprintf("Invalid command syntax: %s", line))
-			s.writeResponse(conn, resp)
-			continue
-		}
-
+		cmd, args := parseCommand(line)
 		logger.Debug("command received", slog.String("cmd", string(cmd)), slog.String("args", args))
 
-		response := s.handleCommand(conn, cmd, args, conn.reader, logger)
+		response := s.handleCommand(client, cmd, args, client.reader, logger)
 		if response != nil {
-			s.writeResponse(conn, *response)
+			s.writeResponse(client, *response)
 		}
 
-		if conn.State() == StateQuit {
+		if client.State() == StateQuit {
 			return
 		}
 	}
 }
 
-func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
+func (s *Server) handleCommand(client *Connection, cmd Command, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
 	switch cmd {
 	case CmdHelo:
-		return s.handleHelo(conn, args)
+		return s.handleHelo(client, args)
 	case CmdEhlo:
-		return s.handleEhlo(conn, args)
+		return s.handleEhlo(client, args)
 	case CmdMail:
-		return s.handleMail(conn, args)
+		return s.handleMail(client, args)
 	case CmdRcpt:
-		return s.handleRcpt(conn, args)
+		return s.handleRcpt(client, args)
 	case CmdData:
-		return s.handleData(conn, reader, logger)
+		return s.handleData(client, reader, logger)
 	case CmdBdat:
-		return s.handleBDAT(conn, args, reader, logger)
+		return s.handleBDAT(client, args, reader, logger)
 	case CmdRset:
-		return s.handleRset(conn)
+		return s.handleRset(client)
 	case CmdVrfy:
-		return s.handleVrfy(conn, args)
+		return s.handleVrfy(client, args)
 	case CmdExpn:
-		return s.handleExpn(conn, args)
+		return s.handleExpn(client, args)
 	case CmdHelp:
-		return s.handleHelp(conn, args)
+		return s.handleHelp(client, args)
 	case CmdNoop:
 		resp := ResponseOK("OK", "")
 		return &resp
 	case CmdQuit:
-		return s.handleQuit(conn)
+		return s.handleQuit(client)
 	case CmdStartTLS:
-		return s.handleStartTLS(conn)
+		return s.handleStartTLS(client)
 	case CmdAuth:
-		return s.handleAuth(conn, args, reader)
+		return s.handleAuth(client, args, reader)
 	default:
 		resp := ResponseCommandNotRecognized(string(cmd))
 		return &resp
@@ -923,36 +893,36 @@ func (s *Server) handleCommand(conn *Connection, cmd Command, args string, reade
 }
 
 // writeResponse sends a single response to the client.
-// If the response is an error (4xx or 5xx), it is automatically recorded.
-func (s *Server) writeResponse(conn *Connection, resp Response) {
+// If the response is an error (4xx or 5xx), it is automatically recorded as an error.
+func (s *Server) writeResponse(client *Connection, resp Response) {
 	// Record error responses for session tracking
 	if resp.IsError() {
-		conn.recordError(resp.ToError())
+		client.recordError(resp.ToError())
 	}
 
-	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+	if err := client.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 		return
 	}
 
 	line := resp.String() + "\r\n"
-	_, err := conn.writer.WriteString(line)
+	_, err := client.writer.WriteString(line)
 	if err != nil {
-		conn.recordError(err)
+		client.recordError(err)
 		return
 	}
-	_ = conn.writer.Flush()
+	_ = client.writer.Flush()
 }
 
 // writeMultilineResponse sends a multiline response.
 // If the response code is an error (4xx or 5xx), it is automatically recorded.
-func (s *Server) writeMultilineResponse(conn *Connection, code SMTPCode, lines []string) {
+func (s *Server) writeMultilineResponse(client *Connection, code SMTPCode, lines []string) {
 	// Record error responses for session tracking
 	if code >= 400 {
 		msg := strings.Join(lines, "; ")
-		conn.recordError(fmt.Errorf("SMTP %d: %s", code, msg))
+		client.recordError(fmt.Errorf("SMTP %d: %s", code, msg))
 	}
 
-	if err := conn.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+	if err := client.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
 		return
 	}
 
@@ -963,13 +933,13 @@ func (s *Server) writeMultilineResponse(conn *Connection, code SMTPCode, lines [
 		} else {
 			formatted = fmt.Sprintf("%d %s\r\n", code, line)
 		}
-		_, err := conn.writer.WriteString(formatted)
+		_, err := client.writer.WriteString(formatted)
 		if err != nil {
-			conn.recordError(err)
+			client.recordError(err)
 			return
 		}
 	}
-	_ = conn.writer.Flush()
+	_ = client.writer.Flush()
 }
 
 // getEffectiveAuthMechanisms returns the list of auth mechanisms to advertise.

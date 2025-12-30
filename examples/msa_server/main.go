@@ -150,11 +150,10 @@ func (q *MessageQueue) Enqueue(msg QueuedMessage) error {
 func loadTLSConfig() (*tls.Config, error) {
 	// Example using self-signed certificates for development.
 	// In production, use certificates from Let's Encrypt or your CA.
-	//
-	// cert, err := tls.LoadX509KeyPair("/etc/ssl/certs/mail.example.com.crt", "/etc/ssl/private/mail.example.com.key")
-	// if err != nil {
-	//     return nil, fmt.Errorf("loading certificate: %w", err)
-	// }
+	cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+	if err != nil {
+		return nil, fmt.Errorf("loading certificate: %w", err)
+	}
 
 	// For this example, we'll create a placeholder config.
 	// You MUST replace this with actual certificates in production.
@@ -167,7 +166,7 @@ func loadTLSConfig() (*tls.Config, error) {
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		},
 		PreferServerCipherSuites: true,
-		// Certificates: []tls.Certificate{cert},
+		Certificates:             []tls.Certificate{cert},
 	}, nil
 }
 
@@ -186,7 +185,7 @@ func authenticateUser(c *raven.Context, mechanism, identity, password string) *r
 		logger.Warn("authentication failed: user not found",
 			slog.String("username", identity),
 			slog.String("mechanism", mechanism),
-			slog.String("remote", c.RemoteAddr()),
+			slog.String("remote", c.Connection.RemoteAddr().String()),
 		)
 		return &raven.Response{
 			Code:    535,
@@ -198,7 +197,7 @@ func authenticateUser(c *raven.Context, mechanism, identity, password string) *r
 	if !user.Enabled {
 		logger.Warn("authentication failed: user disabled",
 			slog.String("username", identity),
-			slog.String("remote", c.RemoteAddr()),
+			slog.String("remote", c.Connection.RemoteAddr().String()),
 		)
 		return &raven.Response{
 			Code:    535,
@@ -211,7 +210,7 @@ func authenticateUser(c *raven.Context, mechanism, identity, password string) *r
 	if user.PasswordHash != password {
 		logger.Warn("authentication failed: invalid password",
 			slog.String("username", identity),
-			slog.String("remote", c.RemoteAddr()),
+			slog.String("remote", c.Connection.RemoteAddr().String()),
 		)
 		return &raven.Response{
 			Code:    535,
@@ -222,11 +221,8 @@ func authenticateUser(c *raven.Context, mechanism, identity, password string) *r
 	logger.Info("user authenticated",
 		slog.String("username", identity),
 		slog.String("mechanism", mechanism),
-		slog.String("remote", c.RemoteAddr()),
+		slog.String("remote", c.Connection.RemoteAddr().String()),
 	)
-
-	// Store user info in context for later handlers
-	c.Set("user", user)
 
 	// Return nil to indicate successful authentication
 	return nil
@@ -235,31 +231,6 @@ func authenticateUser(c *raven.Context, mechanism, identity, password string) *r
 // =============================================================================
 // Custom Middleware
 // =============================================================================
-
-// requireAuth ensures clients are authenticated before sending mail.
-// This middleware rejects MAIL FROM commands from unauthenticated clients.
-func requireAuth(c *raven.Context) *raven.Response {
-	if !c.IsAuthenticated() {
-		return &raven.Response{
-			Code:    530,
-			Message: "5.7.0 Authentication required",
-		}
-	}
-	return c.Next()
-}
-
-// requireTLS ensures clients have upgraded to TLS before proceeding.
-// This is enforced automatically by Raven with RequireTLS(), but
-// this handler provides additional control and logging.
-func requireTLS(c *raven.Context) *raven.Response {
-	if !c.IsTLS() {
-		return &raven.Response{
-			Code:    530,
-			Message: "5.7.0 Must issue STARTTLS command first",
-		}
-	}
-	return c.Next()
-}
 
 // validateSenderAddress ensures the authenticated user can send from the given address.
 func validateSenderAddress(c *raven.Context) *raven.Response {
@@ -274,20 +245,12 @@ func validateSenderAddress(c *raven.Context) *raven.Response {
 		}
 	}
 
-	// Get authenticated user info
-	userVal, ok := c.Get("user")
-	if !ok {
-		// User info should have been set during authentication
-		// Fall back to checking by identity
-		identity := c.AuthIdentity()
-		user, exists := userDB[identity]
-		if !exists {
-			return c.TempError("Internal error: user not found")
-		}
-		userVal = user
+	identity := c.AuthIdentity()
+	user, exists := userDB[identity]
+	if !exists {
+		return c.TempError("Internal error: user not found")
 	}
 
-	user := userVal.(User)
 	senderAddr := strings.ToLower(from.Mailbox.String())
 
 	// Check if user is allowed to send from this address
@@ -372,7 +335,7 @@ func queueMessage(c *raven.Context) *raven.Response {
 
 	// Log to stdout for demonstration
 	jsonMsg, _ := json.MarshalIndent(queuedMsg, "", "  ")
-	fmt.Printf("\n📬 Message Queued:\n%s\n\n", string(jsonMsg))
+	fmt.Printf("\nMessage Queued:\n%s\n\n", string(jsonMsg))
 
 	return c.OKf("Message queued as %s", queuedMsg.ID)
 }
@@ -424,7 +387,6 @@ func main() {
 		ReadTimeout(5*time.Minute).   // Connection read timeout
 		WriteTimeout(5*time.Minute).  // Connection write timeout
 		DataTimeout(10*time.Minute).  // Message data timeout
-		IdleTimeout(5*time.Minute).   // Idle connection timeout
 		Extension(raven.DSN()).       // Enable Delivery Status Notifications
 		Extension(raven.Chunking()).  // Enable CHUNKING/BDAT for large messages
 		EnableLoginAuth().            // Enable deprecated LOGIN auth for legacy clients
@@ -439,18 +401,7 @@ func main() {
 			raven.RateLimit(raven.NewRateLimiter(50, time.Minute)), // 50 connections/min per IP
 		).
 		OnMailFrom(
-			requireAuth,           // Must be authenticated
-			requireTLS,            // Must be using TLS
 			validateSenderAddress, // Validate sender is allowed
-		).
-		OnRcptTo(
-			func(c *raven.Context) *raven.Response {
-				// Log recipient for debugging
-				logger.Debug("recipient added",
-					slog.String("to", c.Request.To.Mailbox.String()),
-				)
-				return c.Next()
-			},
 		).
 		OnMessage(
 			queueMessage, // Queue the message for delivery
@@ -466,12 +417,12 @@ func main() {
 		Addr(":465").
 		Logger(logger).
 		TLS(tlsConfig).
+		RequireTLS().
 		MaxMessageSize(25*1024*1024).
 		MaxRecipients(100).
 		ReadTimeout(5*time.Minute).
 		WriteTimeout(5*time.Minute).
 		DataTimeout(10*time.Minute).
-		IdleTimeout(5*time.Minute).
 		Extension(raven.DSN()).
 		Extension(raven.Chunking()).
 		EnableLoginAuth().
@@ -486,7 +437,6 @@ func main() {
 			raven.RateLimit(raven.NewRateLimiter(50, time.Minute)),
 		).
 		OnMailFrom(
-			requireAuth,
 			validateSenderAddress,
 		).
 		OnMessage(

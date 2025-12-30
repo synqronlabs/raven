@@ -17,7 +17,7 @@ func Logger(logger *slog.Logger) HandlerFunc {
 
 		attrs := []any{
 			slog.String("conn_id", c.Connection.Trace.ID),
-			slog.String("remote", c.RemoteAddr()),
+			slog.String("remote", c.Connection.RemoteAddr().String()),
 			slog.String("command", string(c.Request.Command)),
 			slog.Duration("duration", duration),
 		}
@@ -268,7 +268,7 @@ func ValidateRecipient(validator *DomainValidator) HandlerFunc {
 
 		if !validator.IsLocalDomain(to.Mailbox.Domain) {
 			// Check if client is authenticated for relay
-			if !c.IsAuthenticated() {
+			if !c.Connection.IsAuthenticated() {
 				return c.PermError(fmt.Sprintf("Relay not permitted for %s", to.Mailbox.Domain))
 			}
 		}

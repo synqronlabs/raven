@@ -100,7 +100,7 @@ type ConnectionLimits struct {
 	MaxRecipients  int
 	MaxCommands    int64
 	MaxErrors      int
-	IdleTimeout    time.Duration
+	ReadTimeout    time.Duration
 	DataTimeout    time.Duration
 }
 

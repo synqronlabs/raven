@@ -134,7 +134,7 @@ func handleDMARC(c *raven.Context, config MiddlewareConfig) *raven.Response {
 	}
 
 	// Skip for authenticated senders
-	if config.SkipIfAuthenticated && c.IsAuthenticated() {
+	if config.SkipIfAuthenticated && c.Connection.IsAuthenticated() {
 		return c.Next()
 	}
 

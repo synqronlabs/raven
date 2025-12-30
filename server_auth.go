@@ -12,14 +12,14 @@ import (
 )
 
 // handleAuth processes the AUTH command.
-func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader) *Response {
-	if conn.State() < StateGreeted {
+func (s *Server) handleAuth(client *Connection, args string, reader *bufio.Reader) *Response {
+	if client.State() < StateGreeted {
 		return &Response{Code: CodeBadSequence, Message: "Send EHLO first"}
 	}
-	if conn.IsAuthenticated() {
+	if client.IsAuthenticated() {
 		return &Response{Code: CodeBadSequence, Message: "Already authenticated"}
 	}
-	if s.requireTLS && !conn.IsTLS() {
+	if s.requireTLS && !client.IsTLS() {
 		return &Response{Code: CodeAuthRequired, EnhancedCode: string(ESCSecurityError), Message: "Must issue a STARTTLS command first"}
 	}
 
@@ -50,14 +50,14 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	}
 
 	// Run the SASL exchange
-	creds, err := s.runSASLExchange(conn, mechanism, initialResponse, reader)
+	creds, err := s.runSASLExchange(client, mechanism, initialResponse, reader)
 	if err != nil {
 		return &Response{Code: CodeAuthCredentialsInvalid, EnhancedCode: string(ESCAuthCredentialsInvalid), Message: fmt.Sprintf("Authentication failed: %v", err)}
 	}
 
 	// Call custom auth handler if provided
 	if s.authHandler != nil {
-		ctx := s.newContext(conn, nil)
+		ctx := s.newContext(client, nil)
 		ctx.Request = Request{Command: CmdAuth, Args: args}
 		if resp := s.authHandler(ctx, mechanismName, creds.Identity(), creds.Password); resp != nil {
 			return resp
@@ -65,14 +65,14 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 	}
 
 	// Set authenticated state
-	conn.mu.Lock()
-	conn.Auth = AuthInfo{
+	client.mu.Lock()
+	client.Auth = AuthInfo{
 		Authenticated:   true,
 		Mechanism:       mechanismName,
 		Identity:        creds.Identity(),
 		AuthenticatedAt: time.Now(),
 	}
-	conn.mu.Unlock()
+	client.mu.Unlock()
 
 	return &Response{
 		Code:         CodeAuthSuccess,
@@ -82,7 +82,7 @@ func (s *Server) handleAuth(conn *Connection, args string, reader *bufio.Reader)
 }
 
 // runSASLExchange runs the SASL authentication exchange with the client.
-func (s *Server) runSASLExchange(conn *Connection, mechanism sasl.Mechanism, initialResponse string, reader *bufio.Reader) (*sasl.Credentials, error) {
+func (s *Server) runSASLExchange(client *Connection, mechanism sasl.Mechanism, initialResponse string, reader *bufio.Reader) (*sasl.Credentials, error) {
 	// Start the mechanism
 	challenge, done, err := mechanism.Start(initialResponse)
 	if err != nil {
@@ -92,7 +92,12 @@ func (s *Server) runSASLExchange(conn *Connection, mechanism sasl.Mechanism, ini
 	// Continue the exchange until done
 	for !done {
 		// Send challenge to client
-		s.writeResponse(conn, Response{Code: 334, Message: challenge})
+		s.writeResponse(client, Response{Code: 334, Message: challenge})
+
+		// Set read deadline for AUTH response
+		if err := client.conn.SetReadDeadline(time.Now().Add(client.Limits.ReadTimeout)); err != nil {
+			return nil, err
+		}
 
 		// Read response from client
 		response, err := ravenio.ReadLine(reader, s.maxLineLength, true)

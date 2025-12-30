@@ -17,13 +17,18 @@ import (
 )
 
 // handleHelo processes the HELO command.
-func (s *Server) handleHelo(conn *Connection, hostname string) *Response {
+func (s *Server) handleHelo(client *Connection, hostname string) *Response {
 	if hostname == "" {
 		return &Response{Code: CodeSyntaxError, Message: "Hostname required"}
 	}
 
+	// Validate hostname per RFC 5321
+	if !utils.IsValidSMTPHostname(hostname) {
+		return &Response{Code: CodeSyntaxError, Message: "Invalid hostname"}
+	}
+
 	// Create context with request data
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{
 		Command:  CmdHelo,
 		Args:     hostname,
@@ -54,16 +59,21 @@ func (s *Server) defaultHeloHandler(c *Context) *Response {
 }
 
 // handleEhlo processes the EHLO command.
-func (s *Server) handleEhlo(conn *Connection, hostname string) *Response {
+func (s *Server) handleEhlo(client *Connection, hostname string) *Response {
 	if hostname == "" {
 		return &Response{Code: CodeSyntaxError, Message: "Hostname required"}
 	}
 
+	// Validate hostname per RFC 5321
+	if !utils.IsValidSMTPHostname(hostname) {
+		return &Response{Code: CodeSyntaxError, Message: "Invalid hostname"}
+	}
+
 	// Build extensions map
-	extensions := s.buildExtensions(conn)
+	extensions := s.buildExtensions(client)
 
 	// Create context with request data
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{
 		Command:    CmdEhlo,
 		Args:       hostname,
@@ -126,40 +136,40 @@ func (s *Server) defaultEhloHandler(c *Context) *Response {
 }
 
 // buildExtensions builds the base extensions map for EHLO.
-func (s *Server) buildExtensions(conn *Connection) map[Extension]string {
+func (s *Server) buildExtensions(client *Connection) map[Extension]string {
 	extensions := make(map[Extension]string)
 
 	// Intrinsic extensions (always enabled)
 	extensions[Ext8BitMIME] = ""
-	conn.SetExtension(Ext8BitMIME, "")
+	client.SetExtension(Ext8BitMIME, "")
 	extensions[ExtSMTPUTF8] = ""
-	conn.SetExtension(ExtSMTPUTF8, "")
+	client.SetExtension(ExtSMTPUTF8, "")
 	extensions[ExtEnhancedStatusCodes] = ""
-	conn.SetExtension(ExtEnhancedStatusCodes, "")
+	client.SetExtension(ExtEnhancedStatusCodes, "")
 	extensions[ExtPipelining] = ""
-	conn.SetExtension(ExtPipelining, "")
+	client.SetExtension(ExtPipelining, "")
 
 	// Opt-in extensions
-	if s.tlsConfig != nil && !conn.IsTLS() {
+	if s.tlsConfig != nil && !client.IsTLS() {
 		extensions[ExtSTARTTLS] = ""
-		conn.SetExtension(ExtSTARTTLS, "")
+		client.SetExtension(ExtSTARTTLS, "")
 	}
-	if conn.Limits.MaxMessageSize > 0 {
-		sizeStr := strconv.FormatInt(conn.Limits.MaxMessageSize, 10)
+	if client.Limits.MaxMessageSize > 0 {
+		sizeStr := strconv.FormatInt(client.Limits.MaxMessageSize, 10)
 		extensions[ExtSize] = sizeStr
-		conn.SetExtension(ExtSize, sizeStr)
+		client.SetExtension(ExtSize, sizeStr)
 	}
 	if s.enableDSN {
 		extensions[ExtDSN] = ""
-		conn.SetExtension(ExtDSN, "")
+		client.SetExtension(ExtDSN, "")
 	}
 
 	return extensions
 }
 
 // handleMail processes the MAIL FROM command.
-func (s *Server) handleMail(conn *Connection, args string) *Response {
-	stateInfo := conn.getStateInfo()
+func (s *Server) handleMail(client *Connection, args string) *Response {
+	stateInfo := client.getStateInfo()
 
 	if stateInfo.State < StateGreeted {
 		return &Response{Code: CodeBadSequence, Message: "Send EHLO/HELO first"}
@@ -205,13 +215,16 @@ func (s *Server) handleMail(conn *Connection, args string) *Response {
 		if err != nil {
 			return &Response{Code: CodeSyntaxError, Message: "Invalid SIZE parameter"}
 		}
-		if conn.Limits.MaxMessageSize > 0 && size > conn.Limits.MaxMessageSize {
+		if size < 0 {
+			return &Response{Code: CodeSyntaxError, Message: "Invalid SIZE parameter: must be non-negative"}
+		}
+		if client.Limits.MaxMessageSize > 0 && size > client.Limits.MaxMessageSize {
 			return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 		}
 	}
 
 	// Create context with request data
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{
 		Command: CmdMail,
 		Args:    args,
@@ -246,11 +259,9 @@ func (s *Server) defaultMailFromHandler(c *Context) *Response {
 			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "BINARYMIME not supported"}
 		}
 	}
-
 	if _, ok := params["SMTPUTF8"]; ok {
 		mail.Envelope.SMTPUTF8 = true
 	}
-
 	if _, ok := params["REQUIRETLS"]; ok {
 		if !conn.IsTLS() {
 			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCSecurityError), Message: "REQUIRETLS requires TLS connection"}
@@ -260,7 +271,6 @@ func (s *Server) defaultMailFromHandler(c *Context) *Response {
 		}
 		mail.Envelope.RequireTLS = true
 	}
-
 	if envID, ok := params["ENVID"]; ok {
 		if !s.enableDSN {
 			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
@@ -270,7 +280,6 @@ func (s *Server) defaultMailFromHandler(c *Context) *Response {
 		}
 		mail.Envelope.EnvID = envID
 	}
-
 	if ret, ok := params["RET"]; ok {
 		if !s.enableDSN {
 			return &Response{Code: CodeParameterNotImpl, EnhancedCode: string(ESCInvalidArgs), Message: "DSN not supported"}
@@ -284,7 +293,6 @@ func (s *Server) defaultMailFromHandler(c *Context) *Response {
 		}
 		mail.Envelope.DSNParams = &DSNEnvelopeParams{RET: retUpper}
 	}
-
 	if sizeStr, ok := params["SIZE"]; ok {
 		mail.Envelope.Size, _ = strconv.ParseInt(sizeStr, 10, 64)
 	}
@@ -300,17 +308,17 @@ func (s *Server) defaultMailFromHandler(c *Context) *Response {
 }
 
 // handleRcpt processes the RCPT TO command.
-func (s *Server) handleRcpt(conn *Connection, args string) *Response {
-	if conn.State() < StateMail {
+func (s *Server) handleRcpt(client *Connection, args string) *Response {
+	if client.State() < StateMail {
 		return &Response{Code: CodeBadSequence, Message: "Send MAIL first"}
 	}
 
-	mail := conn.CurrentMail()
+	mail := client.CurrentMail()
 	if mail == nil {
 		return &Response{Code: CodeBadSequence, Message: "No mail transaction"}
 	}
 
-	if conn.Limits.MaxRecipients > 0 && len(mail.Envelope.To) >= conn.Limits.MaxRecipients {
+	if client.Limits.MaxRecipients > 0 && len(mail.Envelope.To) >= client.Limits.MaxRecipients {
 		return &Response{Code: CodeInsufficientStorage, EnhancedCode: string(ESCTempTooManyRecipients), Message: "Too many recipients"}
 	}
 
@@ -336,7 +344,7 @@ func (s *Server) handleRcpt(conn *Connection, args string) *Response {
 	}
 
 	// Create context with request data
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{
 		Command: CmdRcpt,
 		Args:    args,
@@ -404,18 +412,18 @@ func (s *Server) defaultRcptToHandler(c *Context) *Response {
 }
 
 // handleData processes the DATA command.
-func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog.Logger) *Response {
-	if conn.State() < StateRcpt {
+func (s *Server) handleData(client *Connection, reader *bufio.Reader, logger *slog.Logger) *Response {
+	if client.State() < StateRcpt {
 		return &Response{Code: CodeBadSequence, Message: "Send RCPT first"}
 	}
 
-	mail := conn.CurrentMail()
+	mail := client.CurrentMail()
 	if mail == nil || len(mail.Envelope.To) == 0 {
 		return &Response{Code: CodeBadSequence, Message: "No recipients"}
 	}
 
 	// Create context for handlers
-	ctx := s.newContext(conn, mail)
+	ctx := s.newContext(client, mail)
 	ctx.Request = Request{Command: CmdData}
 
 	// Run pre-data handlers
@@ -426,24 +434,24 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 		}
 	}
 
-	conn.setState(StateData)
+	client.setState(StateData)
 
 	// Send intermediate response
-	s.writeResponse(conn, Response{Code: CodeStartMailInput, Message: "Start mail input; end with <CRLF>.<CRLF>"})
+	s.writeResponse(client, Response{Code: CodeStartMailInput, Message: "Start mail input; end with <CRLF>.<CRLF>"})
 
-	if err := conn.conn.SetReadDeadline(time.Now().Add(conn.Limits.DataTimeout)); err != nil {
+	if err := client.conn.SetReadDeadline(time.Now().Add(client.Limits.DataTimeout)); err != nil {
 		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Internal error"}
 	}
 
 	if mail.Envelope.BodyType == BodyTypeBinaryMIME {
-		conn.resetTransaction()
+		client.resetTransaction()
 		return &Response{Code: CodeBadSequence, EnhancedCode: string(ESCInvalidCommand), Message: "BINARYMIME requires BDAT command"}
 	}
 
 	enforce7Bit := mail.Envelope.BodyType == BodyType7Bit
-	data, err := s.readDataContent(reader, conn.Limits.MaxMessageSize, enforce7Bit)
+	data, err := s.readDataContent(reader, client.Limits.MaxMessageSize, enforce7Bit)
 	if err != nil {
-		conn.resetTransaction()
+		client.resetTransaction()
 		if errors.Is(err, ErrMessageTooLarge) {
 			return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 		}
@@ -475,14 +483,14 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 
 	// Loop detection
 	if err := detectLoop(mail, logger, s.maxReceivedHeaders); err != nil {
-		conn.resetTransaction()
+		client.resetTransaction()
 		return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCRoutingLoop), Message: err.Error()}
 	}
 
 	mail.ID = utils.GenerateID()
 	mail.ReceivedAt = time.Now()
 
-	receivedHeader := conn.GenerateReceivedHeader("")
+	receivedHeader := client.GenerateReceivedHeader("")
 	receivedHeader.ID = mail.ID
 	mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
 	mail.Content.Headers = append(Headers{{Name: "Received", Value: receivedHeader.String()}}, mail.Content.Headers...)
@@ -493,11 +501,11 @@ func (s *Server) handleData(conn *Connection, reader *bufio.Reader, logger *slog
 	// Run OnMessage handlers with default
 	resp := s.runHandlers(ctx, s.onMessage, s.defaultMessageHandler(logger, len(data)))
 	if resp != nil && resp.IsError() {
-		conn.resetTransaction()
+		client.resetTransaction()
 		return resp
 	}
 
-	conn.completeTransaction()
+	client.completeTransaction()
 	return resp
 }
 
@@ -600,17 +608,17 @@ func (s *Server) readDataContent(reader *bufio.Reader, maxSize int64, enforce7Bi
 }
 
 // handleBDAT processes the BDAT command (RFC 3030).
-func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
+func (s *Server) handleBDAT(client *Connection, args string, reader *bufio.Reader, logger *slog.Logger) *Response {
 	if !s.enableChunking {
 		return &Response{Code: CodeCommandNotImplemented, Message: "BDAT not implemented"}
 	}
 
-	state := conn.State()
+	state := client.State()
 	if state < StateRcpt && state != StateBDAT {
 		return &Response{Code: CodeBadSequence, Message: "Send RCPT first"}
 	}
 
-	mail := conn.CurrentMail()
+	mail := client.CurrentMail()
 	if mail == nil || len(mail.Envelope.To) == 0 {
 		return &Response{Code: CodeBadSequence, Message: "No recipients"}
 	}
@@ -638,16 +646,16 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		isLast = true
 	}
 
-	currentSize := conn.getBDATBufferSize()
-	if conn.Limits.MaxMessageSize > 0 && currentSize+chunkSize > conn.Limits.MaxMessageSize {
+	currentSize := client.getBDATBufferSize()
+	if client.Limits.MaxMessageSize > 0 && currentSize+chunkSize > client.Limits.MaxMessageSize {
 		s.discardBDATChunk(reader, chunkSize)
-		conn.resetTransaction()
+		client.resetTransaction()
 		return &Response{Code: CodeExceededStorage, EnhancedCode: string(ESCMailSystemFull), Message: "Message too large"}
 	}
 
 	// Run OnBdat handlers
 	if len(s.onBdat) > 0 {
-		ctx := s.newContext(conn, mail)
+		ctx := s.newContext(client, mail)
 		ctx.Request = Request{Command: CmdBdat, Args: args}
 		ctx.Set("size", chunkSize)
 		ctx.Set("last", isLast)
@@ -655,52 +663,52 @@ func (s *Server) handleBDAT(conn *Connection, args string, reader *bufio.Reader,
 		resp := s.runHandlers(ctx, s.onBdat, nil)
 		if resp != nil && resp.IsError() {
 			s.discardBDATChunk(reader, chunkSize)
-			conn.resetTransaction()
+			client.resetTransaction()
 			return resp
 		}
 	}
 
-	conn.setState(StateBDAT)
+	client.setState(StateBDAT)
 
-	if err := conn.conn.SetReadDeadline(time.Now().Add(conn.Limits.DataTimeout)); err != nil {
+	if err := client.conn.SetReadDeadline(time.Now().Add(client.Limits.DataTimeout)); err != nil {
 		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Internal error"}
 	}
 
 	chunkData, err := s.readBDATChunk(reader, chunkSize)
 	if err != nil {
 		logger.Error("BDAT read error", slog.Any("error", err))
-		conn.resetTransaction()
+		client.resetTransaction()
 		return &Response{Code: CodeLocalError, EnhancedCode: string(ESCTempLocalError), Message: "Error reading chunk data"}
 	}
 
-	conn.appendBDATChunk(chunkData)
+	client.appendBDATChunk(chunkData)
 
 	if isLast {
-		rawData := conn.consumeBDATBuffer()
+		rawData := client.consumeBDATBuffer()
 		mail.Content.FromRaw(rawData)
 
 		if err := detectLoop(mail, logger, s.maxReceivedHeaders); err != nil {
-			conn.resetTransaction()
+			client.resetTransaction()
 			return &Response{Code: CodeTransactionFailed, EnhancedCode: string(ESCRoutingLoop), Message: err.Error()}
 		}
 
 		mail.ID = utils.GenerateID()
 		mail.ReceivedAt = time.Now()
 
-		receivedHeader := conn.GenerateReceivedHeader("")
+		receivedHeader := client.GenerateReceivedHeader("")
 		receivedHeader.ID = mail.ID
 		mail.Trace = append([]TraceField{receivedHeader}, mail.Trace...)
 		mail.Content.Headers = append(Headers{{Name: "Received", Value: receivedHeader.String()}}, mail.Content.Headers...)
 
 		// Run OnMessage handlers
-		ctx := s.newContext(conn, mail)
+		ctx := s.newContext(client, mail)
 		resp := s.runHandlers(ctx, s.onMessage, s.defaultMessageHandler(logger, len(rawData)))
 		if resp != nil && resp.IsError() {
-			conn.resetTransaction()
+			client.resetTransaction()
 			return resp
 		}
 
-		conn.completeTransaction()
+		client.completeTransaction()
 		return resp
 	}
 
@@ -723,8 +731,8 @@ func (s *Server) discardBDATChunk(reader *bufio.Reader, size int64) {
 }
 
 // handleRset processes the RSET command.
-func (s *Server) handleRset(conn *Connection) *Response {
-	ctx := s.newContext(conn, nil)
+func (s *Server) handleRset(client *Connection) *Response {
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{Command: CmdRset}
 
 	return s.runHandlers(ctx, s.onReset, s.defaultRsetHandler)
@@ -737,12 +745,12 @@ func (s *Server) defaultRsetHandler(c *Context) *Response {
 }
 
 // handleVrfy processes the VRFY command.
-func (s *Server) handleVrfy(conn *Connection, args string) *Response {
+func (s *Server) handleVrfy(client *Connection, args string) *Response {
 	if args == "" {
 		return &Response{Code: CodeSyntaxError, Message: "Syntax: VRFY <address>"}
 	}
 
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{Command: CmdVrfy, Args: args}
 
 	return s.runHandlers(ctx, s.onVerify, s.defaultVrfyHandler)
@@ -754,12 +762,12 @@ func (s *Server) defaultVrfyHandler(c *Context) *Response {
 }
 
 // handleExpn processes the EXPN command.
-func (s *Server) handleExpn(conn *Connection, args string) *Response {
+func (s *Server) handleExpn(client *Connection, args string) *Response {
 	if args == "" {
 		return &Response{Code: CodeSyntaxError, Message: "Syntax: EXPN <list>"}
 	}
 
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{Command: CmdExpn, Args: args}
 
 	return s.runHandlers(ctx, s.onExpand, s.defaultExpnHandler)
@@ -780,10 +788,10 @@ func (s *Server) defaultExpnHandler(c *Context) *Response {
 }
 
 // handleHelp processes the HELP command.
-func (s *Server) handleHelp(conn *Connection, topic string) *Response {
+func (s *Server) handleHelp(client *Connection, topic string) *Response {
 	topic = strings.TrimSpace(topic)
 
-	ctx := s.newContext(conn, nil)
+	ctx := s.newContext(client, nil)
 	ctx.Request = Request{Command: CmdHelp, Args: topic}
 
 	return s.runHandlers(ctx, s.onHelp, s.defaultHelpHandler)
@@ -853,29 +861,33 @@ func (s *Server) defaultHelpHandler(c *Context) *Response {
 }
 
 // handleQuit processes the QUIT command.
-func (s *Server) handleQuit(conn *Connection) *Response {
-	conn.setState(StateQuit)
+func (s *Server) handleQuit(client *Connection) *Response {
+	client.setState(StateQuit)
 	return &Response{
 		Code:    CodeServiceClosing,
-		Message: fmt.Sprintf("%s Service closing transmission channel [%s]", s.hostname, conn.Trace.ID),
+		Message: fmt.Sprintf("%s Service closing transmission channel [%s]", s.hostname, client.Trace.ID),
 	}
 }
 
 // handleStartTLS processes the STARTTLS command.
-func (s *Server) handleStartTLS(conn *Connection) *Response {
-	if conn.State() < StateGreeted {
+func (s *Server) handleStartTLS(client *Connection) *Response {
+	if client.State() < StateGreeted {
 		return &Response{Code: CodeBadSequence, Message: "Send EHLO first"}
 	}
 	if s.tlsConfig == nil {
 		return &Response{Code: CodeCommandNotImplemented, Message: "STARTTLS not implemented"}
 	}
-	if conn.IsTLS() {
+	if client.IsTLS() {
 		return &Response{Code: CodeBadSequence, Message: "TLS already active"}
 	}
+	// RFC 3207: STARTTLS should not be issued during a mail transaction
+	if client.State() > StateGreeted {
+		return &Response{Code: CodeBadSequence, Message: "STARTTLS not allowed during mail transaction"}
+	}
 
-	s.writeResponse(conn, Response{Code: CodeServiceReady, Message: "Ready to start TLS"})
+	s.writeResponse(client, Response{Code: CodeServiceReady, Message: "Ready to start TLS"})
 
-	if err := conn.UpgradeToTLS(s.tlsConfig); err != nil {
+	if err := client.UpgradeToTLS(s.tlsConfig); err != nil {
 		return nil
 	}
 

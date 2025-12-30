@@ -7,69 +7,69 @@ import (
 )
 
 // parseCommand splits a command line into verb and arguments.
-func parseCommand(line string) (cmd Command, args string, err error) {
+func parseCommand(line string) (cmd Command, args string) {
 	before, after, found := strings.Cut(line, " ")
 
 	if !found {
 		// Case: "QUIT", "NOOP", "RSET" (No arguments)
-		cmd, err := canonicalizeVerb(before)
-		return cmd, "", err
+		cmd := canonicalizeVerb(before)
+		return cmd, ""
 	}
 
 	// Case: "MAIL FROM:...", "RCPT TO:..."
 	// Trim the args, but canonicalize the verb without allocation.
-	cmd, err = canonicalizeVerb(before)
-	return cmd, strings.TrimSpace(after), err
+	cmd = canonicalizeVerb(before)
+	return cmd, strings.TrimSpace(after)
 }
 
-func canonicalizeVerb(verb string) (Command, error) {
+func canonicalizeVerb(verb string) Command {
 	switch len(verb) {
 	case 4:
 		if strings.EqualFold(verb, "HELO") {
-			return CmdHelo, nil
+			return CmdHelo
 		}
 		if strings.EqualFold(verb, "EHLO") {
-			return CmdEhlo, nil
+			return CmdEhlo
 		}
 		if strings.EqualFold(verb, "MAIL") {
-			return CmdMail, nil
+			return CmdMail
 		}
 		if strings.EqualFold(verb, "RCPT") {
-			return CmdRcpt, nil
+			return CmdRcpt
 		}
 		if strings.EqualFold(verb, "DATA") {
-			return CmdData, nil
+			return CmdData
 		}
 		if strings.EqualFold(verb, "BDAT") {
-			return CmdBdat, nil
+			return CmdBdat
 		}
 		if strings.EqualFold(verb, "RSET") {
-			return CmdRset, nil
+			return CmdRset
 		}
 		if strings.EqualFold(verb, "VRFY") {
-			return CmdVrfy, nil
+			return CmdVrfy
 		}
 		if strings.EqualFold(verb, "EXPN") {
-			return CmdExpn, nil
+			return CmdExpn
 		}
 		if strings.EqualFold(verb, "HELP") {
-			return CmdHelp, nil
+			return CmdHelp
 		}
 		if strings.EqualFold(verb, "NOOP") {
-			return CmdNoop, nil
+			return CmdNoop
 		}
 		if strings.EqualFold(verb, "QUIT") {
-			return CmdQuit, nil
+			return CmdQuit
 		}
 		if strings.EqualFold(verb, "AUTH") {
-			return CmdAuth, nil
+			return CmdAuth
 		}
 	case 8:
 		if strings.EqualFold(verb, "STARTTLS") {
-			return CmdStartTLS, nil
+			return CmdStartTLS
 		}
 	}
-	return "", fmt.Errorf("unknown command: %s", verb)
+	return Command(strings.ToUpper(verb))
 }
 
 // parsePathWithParams parses an address path with optional parameters.

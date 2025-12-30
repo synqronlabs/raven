@@ -19,63 +19,6 @@ A **Mail Submission Agent (MSA)** that accepts mail from authenticated users (ma
 
 **Use case:** Your organization's outgoing mail server that users configure in their email clients.
 
-### 2. Relay Server (`relay_server/`)
-
-An **SMTP Relay** that accepts mail from trusted/whitelisted hosts and forwards it to destination MX servers.
-
-**Features demonstrated:**
-- IP-based whitelisting for trusted senders
-- MX record lookup and delivery
-- DKIM signing of outgoing messages
-- ARC sealing for message chain of custody
-- Opportunistic TLS for outbound connections
-- Delivery queue with retry logic
-
-**Use case:** Internal relay that your application servers use to send email, or a forwarding service.
-
-### 3. MTA/MX Server (`mta_server/`)
-
-A **Mail Transfer Agent (MTA)** that accepts incoming mail for specific domains.
-
-**Features demonstrated:**
-- Domain-based mail acceptance
-- Full email authentication stack:
-  - SPF verification (Sender Policy Framework)
-  - DKIM verification (DomainKeys Identified Mail)
-  - DMARC verification (Domain-based Message Authentication)
-  - ARC verification (Authenticated Received Chain)
-- Mailbox validation
-- Spam score calculation based on authentication results
-- Message delivery to mailboxes
-
-**Use case:** Your organization's incoming mail server (MX record target).
-
-## Running the Examples
-
-### Prerequisites
-
-1. Go 1.25 or later
-2. TLS certificates (for production use)
-3. DNS records configured (MX, SPF, DKIM, DMARC)
-
-### Development Mode
-
-For testing, you can run the examples on non-privileged ports:
-
-```bash
-# MSA Server (change ports in code or use environment variables)
-cd examples/msa_server
-go run main.go
-
-# Relay Server
-cd examples/relay_server
-go run main.go
-
-# MTA Server
-cd examples/mta_server
-go run main.go
-```
-
 ### Testing with swaks
 
 [swaks](http://www.jetmore.org/john/code/swaks/) is a great tool for testing SMTP servers:
@@ -89,12 +32,6 @@ swaks --to recipient@example.com \
       --auth-user alice \
       --auth-password password123 \
       --tls
-
-# Test MTA (no auth, simulating external sender)
-swaks --to alice@example.com \
-      --from sender@external.com \
-      --server localhost:25 \
-      --ehlo external.com
 ```
 
 ## Production Considerations
@@ -209,7 +146,7 @@ var messagesReceived = prometheus.NewCounterVec(
 
 ### Combined MSA + MTA
 
-For smaller deployments, combine MSA and MTA on the same server:
+For smaller deployments, you should combine MSA and MTA on the same server:
 
 ```go
 server := raven.New("mail.example.com").
