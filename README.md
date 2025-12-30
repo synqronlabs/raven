@@ -620,38 +620,6 @@ aligned := dmarc.DomainsAligned("mail.example.com", "example.com", dmarc.AlignRe
 aligned = dmarc.DomainsAligned("mail.example.com", "example.com", dmarc.AlignStrict)   // false
 ```
 
-## Project Structure
-
-The codebase is organized with clear file naming for easy navigation:
-
-```
-raven/
-├── raven.go           # Package documentation and overview
-├── server.go          # Server type, lifecycle, and builder methods
-├── server_handler.go  # SMTP command handlers
-├── server_conn.go     # Connection state and management
-├── server_auth.go     # Authentication handling
-├── client.go          # SMTP client core
-├── client_dialer.go   # Connection dialing and pooling
-├── client_probe.go    # Server capability probing
-├── client_send.go     # Mail sending logic
-├── mail.go            # Mail and envelope types
-├── mail_builder.go    # Fluent mail builder API
-├── mail_test.go       # Mail builder tests
-├── response.go        # SMTP response codes and types
-├── extensions.go      # SMTP extension definitions
-├── middleware.go      # Built-in middleware
-├── parser.go          # SMTP command parser
-├── dkim/              # DKIM signing and verification (RFC 6376)
-├── dmarc/             # DMARC policy evaluation (RFC 7489)
-├── dns/               # DNS resolution with DNSSEC support
-├── io/                # I/O utilities
-├── mime/              # MIME handling
-├── sasl/              # SASL authentication mechanisms
-├── spf/               # SPF verification (RFC 7208)
-└── utils/             # Utility functions
-```
-
 ## License
 
 See [LICENSE](LICENSE) for details.
