@@ -273,7 +273,9 @@ if err != nil {
 
 ## Email Authentication
 
-Raven includes subpackages for email authentication: DKIM, DMARC, SPF, and a flexible DNS resolver.
+Raven includes subpackages for email authentication: DKIM, DMARC, SPF, ARC, and a flexible DNS resolver.
+
+> **Middleware Order**: When using authentication middleware on the server, they must be added to `OnMessage` in this order: **SPF → DKIM → DMARC → ARC**. ARC sealing requires results from all preceding checks.
 
 ### DNS Package
 
