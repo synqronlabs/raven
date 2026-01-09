@@ -5,7 +5,7 @@ go 1.25
 require (
 	github.com/miekg/dns v1.1.69
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/tinylib/msgp v1.6.1
+	github.com/tinylib/msgp v1.6.3
 	golang.org/x/net v0.48.0
 )
 
