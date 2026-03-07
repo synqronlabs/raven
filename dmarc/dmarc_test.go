@@ -991,7 +991,7 @@ func TestExtractFromDomain(t *testing.T) {
 			domain, err := ExtractFromDomain(tt.fromHeader)
 
 			if tt.wantErr != nil {
-				if err != tt.wantErr {
+				if !errors.Is(err, tt.wantErr) {
 					t.Errorf("error: got %v, want %v", err, tt.wantErr)
 				}
 				return

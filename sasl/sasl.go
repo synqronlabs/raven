@@ -32,9 +32,20 @@ func (c *Credentials) Identity() string {
 }
 
 // Mechanism defines the interface for SASL authentication mechanisms.
+// This is used on the server side to process client authentication.
 type Mechanism interface {
 	Name() string
 	Start(initialResponse string) (challenge string, done bool, err error)
 	Next(response string) (challenge string, done bool, err error)
 	Credentials() *Credentials
+}
+
+// Server is the server-side interface for SASL authentication.
+// It handles the authentication exchange and validates credentials.
+type Server interface {
+	// Next processes a response from the client and returns a challenge.
+	// If done is true, authentication is complete.
+	// If err is nil and done is true, authentication succeeded.
+	// If err is not nil and done is true, authentication failed.
+	Next(response []byte) (challenge []byte, done bool, err error)
 }

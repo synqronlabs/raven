@@ -2,6 +2,7 @@ package sasl
 
 import (
 	"encoding/base64"
+	"fmt"
 )
 
 // Login state constants
@@ -60,7 +61,7 @@ func (l *Login) Next(response string) (challenge string, done bool, err error) {
 		decoded, err := base64.StdEncoding.DecodeString(response)
 		if err != nil {
 			l.state = loginStateDone
-			return "", true, ErrInvalidBase64
+			return "", true, fmt.Errorf("%w: decoding LOGIN username: %w", ErrInvalidBase64, err)
 		}
 		l.username = string(decoded)
 
@@ -73,7 +74,7 @@ func (l *Login) Next(response string) (challenge string, done bool, err error) {
 		decoded, err := base64.StdEncoding.DecodeString(response)
 		if err != nil {
 			l.state = loginStateDone
-			return "", true, ErrInvalidBase64
+			return "", true, fmt.Errorf("%w: decoding LOGIN password: %w", ErrInvalidBase64, err)
 		}
 
 		// LOGIN doesn't support authzid, so AuthenticationID == Identity

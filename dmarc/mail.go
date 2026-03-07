@@ -2,10 +2,12 @@ package dmarc
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
-	"github.com/synqronlabs/raven"
 	"github.com/synqronlabs/raven/dkim"
 	ravendns "github.com/synqronlabs/raven/dns"
+	ravenmail "github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/spf"
 )
 
@@ -38,7 +40,7 @@ type MailVerifyArgs struct {
 //	    SPFDomain:   spfDomain,
 //	    DKIMResults: dkimResults,
 //	})
-func VerifyMailObject(ctx context.Context, resolver ravendns.Resolver, mail *raven.Mail, args MailVerifyArgs) (Result, bool, error) {
+func VerifyMailObject(ctx context.Context, resolver ravendns.Resolver, mail *ravenmail.Mail, args MailVerifyArgs) (Result, bool, error) {
 	// Get From header
 	fromHeader := mail.Content.Headers.Get("From")
 	if fromHeader == "" {
@@ -48,7 +50,8 @@ func VerifyMailObject(ctx context.Context, resolver ravendns.Resolver, mail *rav
 	// Extract From domain
 	fromDomain, err := ExtractFromDomain(fromHeader)
 	if err != nil {
-		return Result{Status: StatusPermerror, Err: err}, false, err
+		wrappedErr := fmt.Errorf("extracting From domain from mail object: %w", err)
+		return Result{Status: StatusPermerror, Err: wrappedErr}, false, wrappedErr
 	}
 
 	verifyArgs := VerifyArgs{
@@ -64,12 +67,12 @@ func VerifyMailObject(ctx context.Context, resolver ravendns.Resolver, mail *rav
 
 // AddAuthenticationResults adds a DMARC Authentication-Results header to the mail.
 // This should be called after DMARC verification to record the result.
-func AddAuthenticationResults(mail *raven.Mail, hostname string, result Result) {
+func AddAuthenticationResults(mail *ravenmail.Mail, hostname string, result Result) {
 	fromHeader := mail.Content.Headers.Get("From")
 	fromDomain, _ := ExtractFromDomain(fromHeader)
 
 	authResults := generateAuthResults(hostname, result, fromDomain)
-	mail.Content.Headers = append(raven.Headers{{
+	mail.Content.Headers = append(ravenmail.Headers{{
 		Name:  "Authentication-Results",
 		Value: authResults,
 	}}, mail.Content.Headers...)
@@ -103,4 +106,52 @@ func CheckAlignment(fromDomain string, spfResult spf.Status, spfDomain string, d
 	}
 
 	return spfAligned, dkimAligned
+}
+
+func generateAuthResults(hostname string, result Result, fromDomain string) string {
+	var b strings.Builder
+
+	b.WriteString(hostname)
+	b.WriteString("; dmarc=")
+	b.WriteString(string(result.Status))
+
+	b.WriteString(" header.from=")
+	b.WriteString(fromDomain)
+
+	if result.Domain != "" && result.Domain != fromDomain {
+		b.WriteString(" policy.domain=")
+		b.WriteString(result.Domain)
+	}
+
+	if result.Record != nil {
+		b.WriteString(" policy.published=")
+		b.WriteString(string(result.Record.Policy))
+
+		if result.Record.SubdomainPolicy != PolicyEmpty {
+			b.WriteString(" policy.subdomain=")
+			b.WriteString(string(result.Record.SubdomainPolicy))
+		}
+	}
+
+	if result.AlignedSPFPass {
+		b.WriteString(" spf=pass")
+	}
+	if result.AlignedDKIMPass {
+		b.WriteString(" dkim=pass")
+	}
+
+	if result.Err != nil {
+		b.WriteString(" reason=\"")
+		errMsg := result.Err.Error()
+		errMsg = strings.ReplaceAll(errMsg, "\"", "'")
+		errMsg = strings.ReplaceAll(errMsg, "\r", "")
+		errMsg = strings.ReplaceAll(errMsg, "\n", " ")
+		if len(errMsg) > 100 {
+			errMsg = errMsg[:100]
+		}
+		b.WriteString(errMsg)
+		b.WriteString("\"")
+	}
+
+	return b.String()
 }

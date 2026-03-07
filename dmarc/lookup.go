@@ -60,7 +60,7 @@ func lookupRecord(ctx context.Context, resolver ravendns.Resolver, domain string
 		if ravendns.IsNotFound(err) {
 			return StatusNone, nil, "", result.Authentic, ErrNoRecord
 		}
-		return StatusTemperror, nil, "", result.Authentic, fmt.Errorf("%w: %v", ErrDNS, err)
+		return StatusTemperror, nil, "", result.Authentic, fmt.Errorf("%w: lookup TXT %s: %w", ErrDNS, name, err)
 	}
 
 	var record *Record
@@ -74,7 +74,7 @@ func lookupRecord(ctx context.Context, resolver ravendns.Resolver, domain string
 			continue
 		}
 		if parseErr != nil {
-			return StatusPermerror, nil, text, result.Authentic, fmt.Errorf("%w: %v", ErrSyntax, parseErr)
+			return StatusPermerror, nil, text, result.Authentic, fmt.Errorf("%w: parsing DMARC record %q: %w", ErrSyntax, txt, parseErr)
 		}
 		if record != nil {
 			// Multiple DMARC records - per RFC 7489 Section 6.6.3, this is an error
@@ -115,7 +115,7 @@ func lookupReportsRecord(ctx context.Context, resolver ravendns.Resolver, dmarcD
 		if ravendns.IsNotFound(err) {
 			return StatusNone, nil, nil, result.Authentic, ErrNoRecord
 		}
-		return StatusTemperror, nil, nil, result.Authentic, fmt.Errorf("%w: %v", ErrDNS, err)
+		return StatusTemperror, nil, nil, result.Authentic, fmt.Errorf("%w: lookup TXT %s: %w", ErrDNS, name, err)
 	}
 
 	var records []*Record
@@ -140,7 +140,7 @@ func lookupReportsRecord(ctx context.Context, resolver ravendns.Resolver, dmarcD
 		records = append(records, r)
 
 		if parseErr != nil {
-			return StatusPermerror, records, texts, result.Authentic, fmt.Errorf("%w: %v", ErrSyntax, parseErr)
+			return StatusPermerror, records, texts, result.Authentic, fmt.Errorf("%w: parsing DMARC external report record %q: %w", ErrSyntax, txt, parseErr)
 		}
 
 		// Multiple records are allowed for _report records, unlike for policies

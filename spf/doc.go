@@ -9,7 +9,6 @@
 //   - SPF evaluation with proper DNS lookup limits
 //   - Macro expansion support
 //   - Received-SPF header generation
-//   - Middleware integration for Raven SMTP server
 //
 // Basic Usage:
 //
@@ -39,14 +38,6 @@
 //	case spf.StatusSoftfail:
 //	    // Mark as suspicious
 //	}
-//
-// Middleware Usage:
-//
-//	server := raven.New("mx.example.com").
-//	    Use(spf.Middleware(spf.MiddlewareConfig{
-//	        Resolver: resolver,
-//	        Policy:   spf.PolicyMark, // Add header but don't reject
-//	    }))
 //
 // References:
 //   - RFC 7208: Sender Policy Framework (SPF)

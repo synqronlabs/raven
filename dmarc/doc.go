@@ -11,7 +11,6 @@
 //   - Full DMARC record parsing with all standard tags
 //   - DMARC policy evaluation with SPF and DKIM alignment
 //   - Organizational domain detection using the Public Suffix List
-//   - Middleware integration for Raven SMTP server
 //   - Authentication-Results header generation
 //
 // # Basic Usage
@@ -39,16 +38,6 @@
 //	if result.Status == dmarc.StatusPass {
 //	    // Message passed DMARC
 //	}
-//
-// # Middleware Usage
-//
-//	server := raven.New("mx.example.com").
-//	    Use(spf.Middleware(spf.MiddlewareConfig{...})).
-//	    Use(dkim.Middleware(dkim.MiddlewareConfig{...})).
-//	    Use(dmarc.Middleware(dmarc.MiddlewareConfig{
-//	        Resolver: resolver,
-//	        Policy:   dmarc.PolicyMark,
-//	    }))
 //
 // # DMARC Alignment
 //

@@ -281,10 +281,6 @@ func (p *signatureParser) remaining() string {
 	return p.s[p.offset:]
 }
 
-func (p *signatureParser) empty() bool {
-	return p.offset >= len(p.s)
-}
-
 func (p *signatureParser) peek() byte {
 	if p.offset >= len(p.s) {
 		return 0
@@ -315,24 +311,6 @@ func (p *signatureParser) skipFWS() {
 			break
 		}
 	}
-}
-
-func (p *signatureParser) takeUntil(delim byte) string {
-	start := p.offset
-	for p.offset < len(p.s) && p.s[p.offset] != delim {
-		p.offset++
-	}
-	r := p.s[start:p.offset]
-	p.track(r)
-	return r
-}
-
-func (p *signatureParser) expect(s string) bool {
-	if strings.HasPrefix(p.remaining(), s) {
-		p.take(len(s))
-		return true
-	}
-	return false
 }
 
 // ParseSignature parses a DKIM-Signature header value.

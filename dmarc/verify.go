@@ -2,6 +2,7 @@ package dmarc
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"net/mail"
 	"strings"
@@ -132,9 +133,10 @@ func VerifyMail(ctx context.Context, resolver ravendns.Resolver, fromHeader stri
 	// Parse the From header
 	fromDomain, err := ExtractFromDomain(fromHeader)
 	if err != nil {
+		wrappedErr := fmt.Errorf("extracting From domain: %w", err)
 		return false, Result{
 			Status: StatusPermerror,
-			Err:    err,
+			Err:    wrappedErr,
 		}
 	}
 
@@ -159,19 +161,14 @@ func ExtractFromDomain(fromHeader string) (string, error) {
 	// Parse the From header (may contain display name)
 	addrs, err := mail.ParseAddressList(fromHeader)
 	if err != nil {
-		return "", ErrInvalidFromHeader
+		return "", fmt.Errorf("%w: parsing From address list: %w", ErrInvalidFromHeader, err)
 	}
 
 	if len(addrs) == 0 {
 		return "", ErrNoFromHeader
 	}
-
-	if len(addrs) > 1 {
-		// DMARC can only check one domain, so multiple From addresses are ambiguous
-		// Use the first one but note: some implementations reject this case
-		// For strict compliance, uncomment the following:
-		// return "", ErrMultipleFromAddresses
-	}
+	// DMARC evaluates a single RFC5322.From domain. When multiple addresses are
+	// present, this implementation uses the first parsed address.
 
 	// Extract domain from the email address
 	addr := addrs[0].Address

@@ -203,7 +203,7 @@ func ParseAuthenticationResults(value string) (*AuthenticationResults, error) {
 	instanceStr := strings.TrimSpace(value[2:idx])
 	instance, err := strconv.Atoi(instanceStr)
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid instance number: %v", ErrSyntax, err)
+		return nil, fmt.Errorf("%w: invalid instance number: %w", ErrSyntax, err)
 	}
 	if instance < 1 || instance > MaxInstance {
 		return nil, fmt.Errorf("%w: instance %d out of range", ErrInvalidInstance, instance)
@@ -250,7 +250,7 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 	// Parse tags similar to DKIM
 	tags, err := parseTags(value)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrSyntax, err)
+		return nil, nil, fmt.Errorf("%w: parsing ARC-Message-Signature tags: %w", ErrSyntax, err)
 	}
 
 	// Required tags: i, a, b, bh, d, h, s
@@ -266,7 +266,7 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 		case "i":
 			instance, err := strconv.Atoi(val)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid i= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid i= tag: %w", ErrSyntax, err)
 			}
 			if instance < 1 || instance > MaxInstance {
 				return nil, nil, fmt.Errorf("%w: instance %d out of range", ErrInvalidInstance, instance)
@@ -290,7 +290,7 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 			signatureForVerify = []byte(val)
 			decoded, err := base64.StdEncoding.DecodeString(stripWhitespace(val))
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid b= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid b= tag: %w", ErrSyntax, err)
 			}
 			ms.Signature = decoded
 			requiredTags["b"] = true
@@ -298,7 +298,7 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 		case "bh":
 			decoded, err := base64.StdEncoding.DecodeString(stripWhitespace(val))
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid bh= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid bh= tag: %w", ErrSyntax, err)
 			}
 			ms.BodyHash = decoded
 			requiredTags["bh"] = true
@@ -327,21 +327,21 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 		case "l":
 			length, err := strconv.ParseInt(val, 10, 64)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid l= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid l= tag: %w", ErrSyntax, err)
 			}
 			ms.Length = length
 
 		case "t":
 			timestamp, err := strconv.ParseInt(val, 10, 64)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid t= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid t= tag: %w", ErrSyntax, err)
 			}
 			ms.Timestamp = timestamp
 
 		case "x":
 			expiration, err := strconv.ParseInt(val, 10, 64)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid x= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid x= tag: %w", ErrSyntax, err)
 			}
 			ms.Expiration = expiration
 		}
@@ -378,7 +378,7 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 
 	tags, err := parseTags(value)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrSyntax, err)
+		return nil, nil, fmt.Errorf("%w: parsing ARC-Seal tags: %w", ErrSyntax, err)
 	}
 
 	// Required tags: i, a, b, cv, d, s
@@ -394,7 +394,7 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 		case "i":
 			instance, err := strconv.Atoi(val)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid i= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid i= tag: %w", ErrSyntax, err)
 			}
 			if instance < 1 || instance > MaxInstance {
 				return nil, nil, fmt.Errorf("%w: instance %d out of range", ErrInvalidInstance, instance)
@@ -417,7 +417,7 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 			signatureForVerify = []byte(val)
 			decoded, err := base64.StdEncoding.DecodeString(stripWhitespace(val))
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid b= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid b= tag: %w", ErrSyntax, err)
 			}
 			seal.Signature = decoded
 			requiredTags["b"] = true
@@ -447,7 +447,7 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 		case "t":
 			timestamp, err := strconv.ParseInt(val, 10, 64)
 			if err != nil {
-				return nil, nil, fmt.Errorf("%w: invalid t= tag: %v", ErrSyntax, err)
+				return nil, nil, fmt.Errorf("%w: invalid t= tag: %w", ErrSyntax, err)
 			}
 			seal.Timestamp = timestamp
 		}

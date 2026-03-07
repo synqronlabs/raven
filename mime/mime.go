@@ -230,7 +230,7 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 
 				nestedMIME, err := ParseMultipartSection(nestedPart)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("parsing nested multipart section %q: %w", mediaType, err)
 				}
 				mimePart.Parts = append(mimePart.Parts, nestedMIME)
 			}
@@ -310,20 +310,36 @@ func Parse(headers HeaderGetter, body []byte) (*Part, error) {
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
-		return ParseMultipart(body, mediaType, params)
+		part, err := ParseMultipart(body, mediaType, params)
+		if err != nil {
+			return nil, fmt.Errorf("parsing multipart body for media type %q: %w", mediaType, err)
+		}
+		return part, nil
 	}
 
-	return ParseSinglePart(headers, body, mediaType, params)
+	part, err := ParseSinglePart(headers, body, mediaType, params)
+	if err != nil {
+		return nil, fmt.Errorf("parsing single MIME part for media type %q: %w", mediaType, err)
+	}
+	return part, nil
 }
 
 // ToJSON serializes the Mail object to JSON bytes.
 func (p *Part) ToJSON() ([]byte, error) {
-	return json.Marshal(p)
+	data, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("serializing MIME part to JSON: %w", err)
+	}
+	return data, nil
 }
 
 // ToJSONIndent serializes the Mail object to pretty-printed JSON bytes.
 func (p *Part) ToJSONIndent() ([]byte, error) {
-	return json.MarshalIndent(p, "", "  ")
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("serializing MIME part to indented JSON: %w", err)
+	}
+	return data, nil
 }
 
 // IsMultipart returns true if this part is a multipart message.
@@ -361,7 +377,7 @@ func (p *Part) ToBytes() ([]byte, error) {
 		buf.WriteString("\r\n")
 
 		if err := writePartHeaders(buf, part); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("writing headers for multipart section %q: %w", part.ContentType, err)
 		}
 
 		buf.WriteString("\r\n")
@@ -369,7 +385,7 @@ func (p *Part) ToBytes() ([]byte, error) {
 		// Write part body (recursively for nested multipart)
 		partBody, err := part.ToBytes()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("serializing nested multipart section %q: %w", part.ContentType, err)
 		}
 		buf.Write(partBody)
 		buf.WriteString("\r\n")

@@ -130,7 +130,7 @@ func (r *Record) ToTXT() (string, error) {
 		var err error
 		pk, err = marshalPublicKey(r.PublicKey)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("marshaling public key for DKIM record: %w", err)
 		}
 	}
 	parts = append(parts, "p="+base64.StdEncoding.EncodeToString(pk))
@@ -243,7 +243,7 @@ func ParseRecord(txt string) (*Record, bool, error) {
 			if cleaned != "" {
 				decoded, err := base64.StdEncoding.DecodeString(cleaned)
 				if err != nil {
-					return nil, isDKIM, fmt.Errorf("%w: invalid public key encoding: %v", ErrSyntax, err)
+					return nil, isDKIM, fmt.Errorf("%w: invalid public key encoding: %w", ErrSyntax, err)
 				}
 				record.Pubkey = decoded
 			}
@@ -287,7 +287,7 @@ func ParseRecord(txt string) (*Record, bool, error) {
 	if len(record.Pubkey) > 0 {
 		pk, err := parsePublicKey(record.Key, record.Pubkey)
 		if err != nil {
-			return nil, true, fmt.Errorf("%w: %v", ErrSyntax, err)
+			return nil, true, fmt.Errorf("%w: parsing DKIM public key: %w", ErrSyntax, err)
 		}
 		record.PublicKey = pk
 	}

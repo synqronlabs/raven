@@ -84,7 +84,7 @@ func (s *Signer) Sign(message []byte) (string, error) {
 	// Determine algorithm
 	alg, hashAlg, err := s.getAlgorithm()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("determining signing algorithm: %w", err)
 	}
 	sig.Algorithm = string(alg)
 
@@ -297,7 +297,7 @@ func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyH
 	// Determine algorithm
 	alg, hashAlg, err := s.getAlgorithm()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("determining signing algorithm: %w", err)
 	}
 	sig.Algorithm = string(alg)
 

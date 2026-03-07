@@ -225,7 +225,7 @@ var timeNow = time.Now
 func Lookup(ctx context.Context, resolver Resolver, domain string) (status Status, txt string, record *Record, authentic bool, err error) {
 	// Validate domain name
 	if err := validateDomain(domain); err != nil {
-		return StatusNone, "", nil, false, fmt.Errorf("%w: %v", ErrInvalidDomain, err)
+		return StatusNone, "", nil, false, fmt.Errorf("%w: validating domain %q: %w", ErrInvalidDomain, domain, err)
 	}
 
 	// Look up TXT records
@@ -246,7 +246,7 @@ func Lookup(ctx context.Context, resolver Resolver, domain string) (status Statu
 			continue
 		}
 		if parseErr != nil {
-			return StatusPermerror, txt, nil, result.Authentic, fmt.Errorf("%w: %v", ErrRecordSyntax, parseErr)
+			return StatusPermerror, txt, nil, result.Authentic, fmt.Errorf("%w: parsing SPF record %q: %w", ErrRecordSyntax, txt, parseErr)
 		}
 		if spfRecord != nil {
 			// Multiple SPF records is a permanent error

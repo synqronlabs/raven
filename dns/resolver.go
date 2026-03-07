@@ -2,6 +2,7 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -101,13 +102,13 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 			// Check context cancellation
 			select {
 			case <-ctx.Done():
-				return nil, false, ctx.Err()
+				return nil, false, fmt.Errorf("dns query canceled for %q: %w", ensureAbsolute(name), ctx.Err())
 			default:
 			}
 
 			resp, _, err := r.client.ExchangeContext(ctx, m, server)
 			if err != nil {
-				lastErr = fmt.Errorf("dns query failed: %w", err)
+				lastErr = fmt.Errorf("querying DNS server %s for %q (type=%d): %w", server, ensureAbsolute(name), qtype, err)
 				continue
 			}
 
@@ -121,17 +122,17 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 			case mdns.RcodeSuccess:
 				return resp, authentic, nil
 			case mdns.RcodeNameError: // NXDOMAIN
-				return nil, authentic, ErrDNSNotFound
+				return nil, authentic, fmt.Errorf("query for %q returned NXDOMAIN: %w", ensureAbsolute(name), ErrDNSNotFound)
 			case mdns.RcodeServerFailure:
 				// SERVFAIL might indicate DNSSEC validation failure
 				if r.config.DNSSEC {
-					lastErr = ErrDNSBogus
+					lastErr = fmt.Errorf("query for %q returned SERVFAIL with DNSSEC enabled: %w", ensureAbsolute(name), ErrDNSBogus)
 				} else {
-					lastErr = ErrDNSServFail
+					lastErr = fmt.Errorf("query for %q returned SERVFAIL: %w", ensureAbsolute(name), ErrDNSServFail)
 				}
 				continue
 			case mdns.RcodeRefused:
-				lastErr = ErrDNSRefused
+				lastErr = fmt.Errorf("query for %q was refused: %w", ensureAbsolute(name), ErrDNSRefused)
 				continue
 			default:
 				lastErr = fmt.Errorf("dns: unexpected rcode %d", resp.Rcode)
@@ -150,7 +151,7 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 func (r *DNSResolver) LookupTXT(ctx context.Context, name string) (Result[string], error) {
 	resp, authentic, err := r.query(ctx, name, mdns.TypeTXT)
 	if err != nil {
-		return Result[string]{Authentic: authentic}, err
+		return Result[string]{Authentic: authentic}, fmt.Errorf("resolving TXT records for %q: %w", name, err)
 	}
 
 	var records []string
@@ -163,7 +164,7 @@ func (r *DNSResolver) LookupTXT(ctx context.Context, name string) (Result[string
 	}
 
 	if len(records) == 0 {
-		return Result[string]{Authentic: authentic}, ErrDNSNotFound
+		return Result[string]{Authentic: authentic}, fmt.Errorf("%w: no TXT records for %q", ErrDNSNotFound, name)
 	}
 
 	return Result[string]{Records: records, Authentic: authentic}, nil
@@ -177,8 +178,8 @@ func (r *DNSResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 
 	// Query A records
 	resp, auth, err := r.query(ctx, domain, mdns.TypeA)
-	if err != nil && err != ErrDNSNotFound {
-		lastErr = err
+	if err != nil && !errors.Is(err, ErrDNSNotFound) {
+		lastErr = fmt.Errorf("resolving A records for %q: %w", domain, err)
 	} else {
 		authentic = authentic && auth
 		if resp != nil {
@@ -192,9 +193,9 @@ func (r *DNSResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 
 	// Query AAAA records
 	resp, auth, err = r.query(ctx, domain, mdns.TypeAAAA)
-	if err != nil && err != ErrDNSNotFound {
+	if err != nil && !errors.Is(err, ErrDNSNotFound) {
 		if lastErr == nil {
-			lastErr = err
+			lastErr = fmt.Errorf("resolving AAAA records for %q: %w", domain, err)
 		}
 	} else {
 		authentic = authentic && auth
@@ -211,7 +212,7 @@ func (r *DNSResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 		if lastErr != nil {
 			return Result[net.IP]{Authentic: authentic}, lastErr
 		}
-		return Result[net.IP]{Authentic: authentic}, ErrDNSNotFound
+		return Result[net.IP]{Authentic: authentic}, fmt.Errorf("%w: no A or AAAA records for %q", ErrDNSNotFound, domain)
 	}
 
 	return Result[net.IP]{Records: ips, Authentic: authentic}, nil
@@ -221,7 +222,7 @@ func (r *DNSResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 func (r *DNSResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX], error) {
 	resp, authentic, err := r.query(ctx, name, mdns.TypeMX)
 	if err != nil {
-		return Result[*net.MX]{Authentic: authentic}, err
+		return Result[*net.MX]{Authentic: authentic}, fmt.Errorf("resolving MX records for %q: %w", name, err)
 	}
 
 	var records []*net.MX
@@ -235,7 +236,7 @@ func (r *DNSResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX
 	}
 
 	if len(records) == 0 {
-		return Result[*net.MX]{Authentic: authentic}, ErrDNSNotFound
+		return Result[*net.MX]{Authentic: authentic}, fmt.Errorf("%w: no MX records for %q", ErrDNSNotFound, name)
 	}
 
 	return Result[*net.MX]{Records: records, Authentic: authentic}, nil
@@ -255,7 +256,7 @@ func (r *DNSResolver) LookupAddr(ctx context.Context, ip net.IP) (Result[string]
 
 	resp, authentic, err := r.query(ctx, arpa, mdns.TypePTR)
 	if err != nil {
-		return Result[string]{Authentic: authentic}, err
+		return Result[string]{Authentic: authentic}, fmt.Errorf("resolving PTR records for %q: %w", ip.String(), err)
 	}
 
 	var names []string
@@ -266,7 +267,7 @@ func (r *DNSResolver) LookupAddr(ctx context.Context, ip net.IP) (Result[string]
 	}
 
 	if len(names) == 0 {
-		return Result[string]{Authentic: authentic}, ErrDNSNotFound
+		return Result[string]{Authentic: authentic}, fmt.Errorf("%w: no PTR records for %q", ErrDNSNotFound, ip.String())
 	}
 
 	return Result[string]{Records: names, Authentic: authentic}, nil

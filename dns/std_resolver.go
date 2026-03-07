@@ -41,7 +41,7 @@ func (r *StdResolver) LookupTXT(ctx context.Context, name string) (Result[string
 
 	records, err := r.resolver.LookupTXT(ctx, name)
 	if err != nil {
-		return Result[string]{}, convertError(err)
+		return Result[string]{}, fmt.Errorf("looking up TXT records for %q: %w", name, convertError(err))
 	}
 
 	if len(records) == 0 {
@@ -58,7 +58,7 @@ func (r *StdResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 
 	ips, err := r.resolver.LookupIP(ctx, "ip", domain)
 	if err != nil {
-		return Result[net.IP]{}, convertError(err)
+		return Result[net.IP]{}, fmt.Errorf("looking up IP records for %q: %w", domain, convertError(err))
 	}
 
 	if len(ips) == 0 {
@@ -75,7 +75,7 @@ func (r *StdResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX
 
 	records, err := r.resolver.LookupMX(ctx, name)
 	if err != nil {
-		return Result[*net.MX]{}, convertError(err)
+		return Result[*net.MX]{}, fmt.Errorf("looking up MX records for %q: %w", name, convertError(err))
 	}
 
 	if len(records) == 0 {
@@ -93,7 +93,7 @@ func (r *StdResolver) LookupAddr(ctx context.Context, ip net.IP) (Result[string]
 
 	names, err := r.resolver.LookupAddr(ctx, ip.String())
 	if err != nil {
-		return Result[string]{}, convertError(err)
+		return Result[string]{}, fmt.Errorf("looking up PTR records for %q: %w", ip.String(), convertError(err))
 	}
 
 	if len(names) == 0 {
@@ -119,13 +119,13 @@ func convertError(err error) error {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		if dnsErr.IsNotFound {
-			return ErrDNSNotFound
+			return errors.Join(ErrDNSNotFound, err)
 		}
 		if dnsErr.IsTimeout {
-			return ErrDNSTimeout
+			return errors.Join(ErrDNSTimeout, err)
 		}
 		if dnsErr.IsTemporary {
-			return ErrDNSServFail
+			return errors.Join(ErrDNSServFail, err)
 		}
 	}
 

@@ -2,6 +2,7 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"slices"
 )
@@ -57,7 +58,7 @@ func (r MockResolver) result(ctx context.Context, mr mockReq) (Result[string], e
 	result := Result[string]{Authentic: r.AllAuthentic}
 
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return result, fmt.Errorf("mock DNS request %s canceled: %w", mr.String(), err)
 	}
 
 	// Check for configured failures

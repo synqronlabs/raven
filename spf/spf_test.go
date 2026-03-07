@@ -876,8 +876,9 @@ func TestVerifyScenarios(t *testing.T) {
 			LocalHostname:  "localhost",
 		}
 		received, _, _, _, err := Verify(context.Background(), resolver, args)
-		if (err != nil) != expectErr && received.Result != expectedStatus {
-			// Allow either error or status match
+		if (err != nil) != expectErr && received.Result == expectedStatus {
+			// Allow status match even when error expectation differs.
+			return
 		}
 		if received.Result != expectedStatus {
 			t.Errorf("domain=%s ip=%s: got %v, want %v (err=%v)",

@@ -3,9 +3,10 @@ package arc
 import (
 	"context"
 	"crypto"
+	"fmt"
 
-	"github.com/synqronlabs/raven"
 	ravendns "github.com/synqronlabs/raven/dns"
+	ravenmail "github.com/synqronlabs/raven/mail"
 )
 
 // SignMail adds ARC headers to a mail message (sealing it).
@@ -20,19 +21,19 @@ import (
 //
 // The function will prepend the three ARC headers to the message:
 // ARC-Seal, ARC-Message-Signature, and ARC-Authentication-Results.
-func SignMail(mail *raven.Mail, sealer *Sealer, authServID, authResults string, chainValidation ChainValidationStatus) error {
+func SignMail(mail *ravenmail.Mail, sealer *Sealer, authServID, authResults string, chainValidation ChainValidationStatus) error {
 	// Build raw message
 	rawMessage := mail.Content.ToRaw()
 
 	// Seal the message
 	result, err := sealer.Seal(rawMessage, authServID, authResults, chainValidation)
 	if err != nil {
-		return err
+		return fmt.Errorf("sealing mail with ARC headers: %w", err)
 	}
 
 	// Add the ARC headers at the top (in correct order)
 	// Order: ARC-Seal, ARC-Message-Signature, ARC-Authentication-Results
-	newHeaders := raven.Headers{
+	newHeaders := ravenmail.Headers{
 		{
 			Name:  "ARC-Seal",
 			Value: extractValue(result.Seal),
@@ -53,7 +54,7 @@ func SignMail(mail *raven.Mail, sealer *Sealer, authServID, authResults string, 
 }
 
 // QuickSeal is a simplified sealing function for common use cases.
-func QuickSeal(mail *raven.Mail, domain, selector string, privateKey crypto.Signer, authServID, authResults string, chainValidation ChainValidationStatus) error {
+func QuickSeal(mail *ravenmail.Mail, domain, selector string, privateKey crypto.Signer, authServID, authResults string, chainValidation ChainValidationStatus) error {
 	sealer := &Sealer{
 		Domain:                 domain,
 		Selector:               selector,
@@ -62,15 +63,22 @@ func QuickSeal(mail *raven.Mail, domain, selector string, privateKey crypto.Sign
 		HeaderCanonicalization: CanonRelaxed,
 		BodyCanonicalization:   CanonRelaxed,
 	}
-	return SignMail(mail, sealer, authServID, authResults, chainValidation)
+	if err := SignMail(mail, sealer, authServID, authResults, chainValidation); err != nil {
+		return fmt.Errorf("quick ARC sealing: %w", err)
+	}
+	return nil
 }
 
 // VerifyMailContext verifies ARC chain in a mail message.
 // Returns the verification result.
-func VerifyMailContext(ctx context.Context, mail *raven.Mail, resolver ravendns.Resolver) (*Result, error) {
+func VerifyMailContext(ctx context.Context, mail *ravenmail.Mail, resolver ravendns.Resolver) (*Result, error) {
 	rawMessage := mail.Content.ToRaw()
 	verifier := &Verifier{Resolver: resolver}
-	return verifier.Verify(ctx, rawMessage)
+	result, err := verifier.Verify(ctx, rawMessage)
+	if err != nil {
+		return nil, fmt.Errorf("verifying ARC chain for mail: %w", err)
+	}
+	return result, nil
 }
 
 // extractValue extracts the header value (after "HeaderName: ").

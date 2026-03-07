@@ -115,7 +115,7 @@ func TestNewResolverDefaults(t *testing.T) {
 func TestNewStdResolver(t *testing.T) {
 	r := NewStdResolver()
 	if r == nil {
-		t.Error("expected non-nil resolver")
+		t.Fatal("expected non-nil resolver")
 	}
 	if r.resolver == nil {
 		t.Error("expected non-nil internal resolver")

@@ -62,7 +62,7 @@ func (v *Verifier) VerifyReader(ctx context.Context, message io.ReaderAt) (*Resu
 		}
 		return &Result{
 			Status: StatusFail,
-			Err:    err,
+			Err:    fmt.Errorf("extracting ARC sets: %w", err),
 		}, nil
 	}
 
@@ -223,19 +223,21 @@ func (v *Verifier) verifyChain(
 
 		// Verify ARC-Message-Signature
 		if err := v.verifyMessageSignature(ctx, set.MessageSignature, headers, message, bodyOffset); err != nil {
+			wrappedErr := fmt.Errorf("verifying ARC-Message-Signature for instance %d: %w", i+1, err)
 			result.Status = StatusFail
 			result.FailedInstance = i + 1
-			result.FailedReason = fmt.Sprintf("ARC-Message-Signature verification failed: %v", err)
-			result.Err = err
+			result.FailedReason = wrappedErr.Error()
+			result.Err = wrappedErr
 			return result, nil
 		}
 
 		// Verify ARC-Seal
 		if err := v.verifySeal(ctx, sets[:i+1], headers); err != nil {
+			wrappedErr := fmt.Errorf("verifying ARC-Seal for instance %d: %w", i+1, err)
 			result.Status = StatusFail
 			result.FailedInstance = i + 1
-			result.FailedReason = fmt.Sprintf("ARC-Seal verification failed: %v", err)
-			result.Err = err
+			result.FailedReason = wrappedErr.Error()
+			result.Err = wrappedErr
 			return result, nil
 		}
 
@@ -286,7 +288,7 @@ func (v *Verifier) verifyMessageSignature(
 	// Lookup the DKIM key
 	record, err := v.lookupKey(ctx, ms.Selector, ms.Domain)
 	if err != nil {
-		return err
+		return fmt.Errorf("looking up DKIM key for ARC-Message-Signature instance %d: %w", ms.Instance, err)
 	}
 
 	// Verify body hash
@@ -323,7 +325,7 @@ func (v *Verifier) verifyMessageSignature(
 
 	// Verify signature
 	if err := verifyWithKey(record.PublicKey, hashFunc, dataHash, ms.Signature); err != nil {
-		return fmt.Errorf("%w: %v", ErrSignatureFailed, err)
+		return fmt.Errorf("%w: ARC-Message-Signature cryptographic verification: %w", ErrSignatureFailed, err)
 	}
 
 	return nil
@@ -353,7 +355,7 @@ func (v *Verifier) verifySeal(
 	// Lookup the DKIM key
 	record, err := v.lookupKey(ctx, seal.Selector, seal.Domain)
 	if err != nil {
-		return err
+		return fmt.Errorf("looking up DKIM key for ARC-Seal instance %d: %w", seal.Instance, err)
 	}
 
 	// Build seal hash input per RFC 8617 Section 5.1.2
@@ -368,7 +370,7 @@ func (v *Verifier) verifySeal(
 
 	// Verify signature
 	if err := verifyWithKey(record.PublicKey, hashFunc, dataHash, seal.Signature); err != nil {
-		return fmt.Errorf("%w: %v", ErrSealFailed, err)
+		return fmt.Errorf("%w: ARC-Seal cryptographic verification: %w", ErrSealFailed, err)
 	}
 
 	return nil
@@ -389,17 +391,20 @@ func (v *Verifier) lookupKey(ctx context.Context, selector, domain string) (*DKI
 		if ravendns.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", ErrNoRecord, queryName)
 		}
-		return nil, fmt.Errorf("%w: %v", ErrDNS, err)
+		return nil, fmt.Errorf("%w: lookup TXT %s: %w", ErrDNS, queryName, err)
 	}
 
 	if len(result.Records) == 0 {
 		return nil, fmt.Errorf("%w: %s", ErrNoRecord, queryName)
 	}
 
+	var parseErrs []error
+
 	// Find a valid DKIM record
-	for _, txt := range result.Records {
+	for i, txt := range result.Records {
 		record, err := parseDKIMRecord(txt)
 		if err != nil {
+			parseErrs = append(parseErrs, fmt.Errorf("parsing DKIM TXT record %d: %w", i, err))
 			continue // Try next record
 		}
 
@@ -422,6 +427,10 @@ func (v *Verifier) lookupKey(ctx context.Context, selector, domain string) (*DKI
 		}
 
 		return record, nil
+	}
+
+	if len(parseErrs) > 0 {
+		return nil, fmt.Errorf("%w: no valid record in %s: %w", ErrNoRecord, queryName, errors.Join(parseErrs...))
 	}
 
 	return nil, fmt.Errorf("%w: no valid record in %s", ErrNoRecord, queryName)
@@ -449,7 +458,7 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 
 	tags, err := parseTags(txt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing DKIM record tags: %w", err)
 	}
 
 	// Version (optional, defaults to DKIM1)
@@ -482,7 +491,7 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 	// Decode public key
 	pubkeyData, err := base64.StdEncoding.DecodeString(stripWhitespace(p))
 	if err != nil {
-		return nil, fmt.Errorf("invalid p= tag: %v", err)
+		return nil, fmt.Errorf("invalid p= tag: %w", err)
 	}
 	record.Pubkey = pubkeyData
 
@@ -494,7 +503,7 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 			// Try parsing as PKCS#1 RSA public key
 			rsaPub, err := x509.ParsePKCS1PublicKey(pubkeyData)
 			if err != nil {
-				return nil, fmt.Errorf("invalid RSA public key: %v", err)
+				return nil, fmt.Errorf("invalid RSA public key: %w", err)
 			}
 			record.PublicKey = rsaPub
 		} else {
@@ -564,7 +573,7 @@ func parseHeaders(r *bufio.Reader) ([]headerData, int, error) {
 		// Read the header line
 		line, err := readHeaderLine(r)
 		if err != nil && err != io.EOF {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("reading header line: %w", err)
 		}
 
 		// Empty line signals end of headers

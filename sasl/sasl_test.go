@@ -2,6 +2,7 @@ package sasl
 
 import (
 	"encoding/base64"
+	"errors"
 	"testing"
 )
 
@@ -66,7 +67,7 @@ func TestPlain_StartWithoutInitialResponse(t *testing.T) {
 	data := "admin\x00user@example.com\x00secret123"
 	encoded := base64.StdEncoding.EncodeToString([]byte(data))
 
-	challenge, done, err = p.Next(encoded)
+	_, done, err = p.Next(encoded)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestPlain_InvalidBase64(t *testing.T) {
 	p := NewPlain()
 	_, done, err := p.Start("not-valid-base64!!!")
 
-	if err != ErrInvalidBase64 {
+	if !errors.Is(err, ErrInvalidBase64) {
 		t.Errorf("expected ErrInvalidBase64, got %v", err)
 	}
 	if !done {
@@ -244,7 +245,7 @@ func TestLogin_InvalidBase64Username(t *testing.T) {
 	_, _, _ = l.Start("")
 
 	_, done, err := l.Next("not-valid-base64!!!")
-	if err != ErrInvalidBase64 {
+	if !errors.Is(err, ErrInvalidBase64) {
 		t.Errorf("expected ErrInvalidBase64, got %v", err)
 	}
 	if !done {
@@ -260,7 +261,7 @@ func TestLogin_InvalidBase64Password(t *testing.T) {
 	_, _, _ = l.Next(username)
 
 	_, done, err := l.Next("not-valid-base64!!!")
-	if err != ErrInvalidBase64 {
+	if !errors.Is(err, ErrInvalidBase64) {
 		t.Errorf("expected ErrInvalidBase64, got %v", err)
 	}
 	if !done {

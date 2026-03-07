@@ -3,6 +3,7 @@ package arc
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"hash"
 	"io"
 	"strings"
@@ -35,7 +36,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, err
 			break
 		}
 		if err != nil && err != io.EOF {
-			return nil, err
+			return nil, fmt.Errorf("reading body line for simple canonicalization: %w", err)
 		}
 
 		hasCRLF := bytes.HasSuffix(line, crlf)
@@ -101,7 +102,7 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 			break
 		}
 		if err != nil && err != io.EOF {
-			return nil, err
+			return nil, fmt.Errorf("reading body line for relaxed canonicalization: %w", err)
 		}
 
 		bodyNonEmpty = true
@@ -258,7 +259,7 @@ func computeAMSDataHash(h hash.Hash, headerCanon Canonicalization, headers []hea
 		if headerCanon == CanonRelaxed {
 			canonHeader, err = canonicalizeHeaderRelaxed(hdr.raw)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("canonicalizing signed header %q: %w", lname, err)
 			}
 		} else {
 			// Simple: use raw header without trailing CRLF
@@ -277,7 +278,7 @@ func computeAMSDataHash(h hash.Hash, headerCanon Canonicalization, headers []hea
 	if headerCanon == CanonRelaxed {
 		canonAMS, err = canonicalizeHeaderRelaxed(amsForHash)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Message-Signature for hash input: %w", err)
 		}
 	} else {
 		canonAMS = strings.TrimRight(string(amsForHash), "\r\n")
@@ -328,11 +329,11 @@ func computeSealDataHash(h hash.Hash, sets []*Set, headers []headerData) ([]byte
 	for i := 1; i <= n; i++ {
 		hdr, ok := aarHeaders[i]
 		if !ok {
-			return nil, ErrInvalidChain
+			return nil, fmt.Errorf("%w: missing ARC-Authentication-Results for instance %d", ErrInvalidChain, i)
 		}
 		canonHeader, err := canonicalizeHeaderRelaxed(hdr.raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Authentication-Results for instance %d: %w", i, err)
 		}
 		h.Write([]byte(canonHeader))
 		h.Write([]byte("\r\n"))
@@ -342,11 +343,11 @@ func computeSealDataHash(h hash.Hash, sets []*Set, headers []headerData) ([]byte
 	for i := 1; i <= n; i++ {
 		hdr, ok := amsHeaders[i]
 		if !ok {
-			return nil, ErrInvalidChain
+			return nil, fmt.Errorf("%w: missing ARC-Message-Signature for instance %d", ErrInvalidChain, i)
 		}
 		canonHeader, err := canonicalizeHeaderRelaxed(hdr.raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Message-Signature for instance %d: %w", i, err)
 		}
 		h.Write([]byte(canonHeader))
 		h.Write([]byte("\r\n"))
@@ -356,7 +357,7 @@ func computeSealDataHash(h hash.Hash, sets []*Set, headers []headerData) ([]byte
 	for i := 1; i <= n; i++ {
 		hdr, ok := asHeaders[i]
 		if !ok {
-			return nil, ErrInvalidChain
+			return nil, fmt.Errorf("%w: missing ARC-Seal for instance %d", ErrInvalidChain, i)
 		}
 
 		var rawHeader []byte
@@ -369,7 +370,7 @@ func computeSealDataHash(h hash.Hash, sets []*Set, headers []headerData) ([]byte
 
 		canonHeader, err := canonicalizeHeaderRelaxed(rawHeader)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Seal for instance %d: %w", i, err)
 		}
 
 		if i == n {

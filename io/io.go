@@ -3,6 +3,7 @@ package io
 import (
 	"bufio"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -24,7 +25,7 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 
 	// If it's not ErrBufferFull, it's a read error (EOF, etc).
 	if err != bufio.ErrBufferFull {
-		return "", err
+		return "", fmt.Errorf("reading SMTP line: %w", err)
 	}
 
 	// SLOW PATH: The line is larger than the bufio buffer.
@@ -59,7 +60,7 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 		}
 
 		if err != bufio.ErrBufferFull {
-			return "", err
+			return "", fmt.Errorf("reading continued SMTP line: %w", err)
 		}
 	}
 

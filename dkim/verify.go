@@ -48,7 +48,7 @@ func (v *Verifier) VerifyReader(ctx context.Context, message io.ReaderAt) ([]Res
 	br := bufio.NewReader(&atReader{r: message, offset: 0})
 	headers, bodyOffset, err := parseHeaders(br)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrHeaderMalformed, err)
+		return nil, fmt.Errorf("%w: parsing message headers: %w", ErrHeaderMalformed, err)
 	}
 
 	var results []Result
@@ -86,7 +86,7 @@ func (v *Verifier) VerifyReader(ctx context.Context, message io.ReaderAt) ([]Res
 				results = append(results, Result{
 					Status:    StatusPolicy,
 					Signature: sig,
-					Err:       fmt.Errorf("%w: %v", ErrPolicy, err),
+					Err:       fmt.Errorf("%w: policy rejected signature: %w", ErrPolicy, err),
 				})
 				continue
 			}
@@ -185,10 +185,11 @@ func (v *Verifier) verifySignature(
 	// Lookup the DKIM record
 	record, txt, authentic, err := v.lookup(ctx, sig.Selector, sig.Domain)
 	if err != nil {
+		wrappedErr := fmt.Errorf("looking up DKIM record for selector %q domain %q: %w", sig.Selector, sig.Domain, err)
 		if IsTemporaryError(err) {
-			return StatusTemperror, nil, authentic, err
+			return StatusTemperror, nil, authentic, wrappedErr
 		}
-		return StatusPermerror, nil, authentic, err
+		return StatusPermerror, nil, authentic, wrappedErr
 	}
 
 	// Verify against the record
@@ -196,6 +197,9 @@ func (v *Verifier) verifySignature(
 		record, sig, hashFunc, headerCanon, bodyCanon,
 		headers, verifySig, message, bodyOffset,
 	)
+	if err != nil {
+		err = fmt.Errorf("verifying signature against DKIM record: %w", err)
+	}
 
 	// Handle test mode
 	if !v.IgnoreTestMode && record.IsTesting() && status == StatusFail {
@@ -276,7 +280,7 @@ func (v *Verifier) verifyWithRecord(
 
 	// Verify signature
 	if err := verifyWithKey(record.PublicKey, hashFunc, dataHash, sig.Signature); err != nil {
-		return StatusFail, fmt.Errorf("%w: %v", ErrSigVerify, err)
+		return StatusFail, fmt.Errorf("%w: cryptographic signature verification: %w", ErrSigVerify, err)
 	}
 
 	// Calculate body hash
@@ -305,7 +309,7 @@ func (v *Verifier) lookup(ctx context.Context, selector, domain string) (*Record
 		if ravendns.IsNotFound(err) {
 			return nil, "", result.Authentic, fmt.Errorf("%w: %s", ErrNoRecord, name)
 		}
-		return nil, "", result.Authentic, fmt.Errorf("%w: %v", ErrDNS, err)
+		return nil, "", result.Authentic, fmt.Errorf("%w: lookup TXT %s: %w", ErrDNS, name, err)
 	}
 
 	// Find a valid DKIM record
@@ -316,7 +320,7 @@ func (v *Verifier) lookup(ctx context.Context, selector, domain string) (*Record
 		record, isDKIM, err := ParseRecord(txt)
 		if err != nil && isDKIM {
 			// This looks like a DKIM record but is invalid
-			return nil, txt, result.Authentic, fmt.Errorf("%w: %v", ErrSyntax, err)
+			return nil, txt, result.Authentic, fmt.Errorf("%w: parsing DKIM record from TXT %q: %w", ErrSyntax, txt, err)
 		}
 		if err != nil || !isDKIM {
 			continue

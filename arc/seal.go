@@ -119,7 +119,7 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 	// Get algorithm
 	alg, hashAlg, err := s.getAlgorithm()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("determining signing algorithm: %w", err)
 	}
 
 	hashFunc, ok := getHash(hashAlg)
@@ -334,7 +334,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 		}
 		canonHeader, err := canonicalizeHeaderRelaxed(hdr.raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Authentication-Results for instance %d: %w", i, err)
 		}
 		hasher.Write([]byte(canonHeader))
 		hasher.Write([]byte("\r\n"))
@@ -348,7 +348,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 		}
 		canonHeader, err := canonicalizeHeaderRelaxed(hdr.raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Message-Signature for instance %d: %w", i, err)
 		}
 		hasher.Write([]byte(canonHeader))
 		hasher.Write([]byte("\r\n"))
@@ -371,7 +371,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 
 		canonHeader, err := canonicalizeHeaderRelaxed(rawHeader)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing ARC-Seal for instance %d: %w", i, err)
 		}
 
 		if i == instance {

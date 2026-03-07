@@ -3,6 +3,7 @@ package sasl
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 )
 
 // Plain implements the PLAIN SASL mechanism (RFC 4616).
@@ -47,7 +48,7 @@ func (p *Plain) processResponse(response string) (challenge string, done bool, e
 	decoded, err := base64.StdEncoding.DecodeString(response)
 	if err != nil {
 		p.done = true
-		return "", true, ErrInvalidBase64
+		return "", true, fmt.Errorf("%w: decoding PLAIN response: %w", ErrInvalidBase64, err)
 	}
 
 	// Parse: authzid NUL authcid NUL passwd

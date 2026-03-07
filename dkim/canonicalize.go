@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto"
+	"fmt"
 	"hash"
 	"io"
 	"strings"
@@ -85,7 +86,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader) ([]byte, error) {
 			break
 		}
 		if err != nil && err != io.EOF {
-			return nil, err
+			return nil, fmt.Errorf("reading body line for simple canonicalization: %w", err)
 		}
 
 		hasCRLF := bytes.HasSuffix(line, crlf)
@@ -134,7 +135,7 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
 			break
 		}
 		if err != nil && err != io.EOF {
-			return nil, err
+			return nil, fmt.Errorf("reading body line for relaxed canonicalization: %w", err)
 		}
 
 		bodyNonEmpty = true
@@ -226,7 +227,7 @@ func computeDataHash(h hash.Hash, canonicalization Canonicalization, headers []h
 			// Relaxed: canonicalize header
 			canonical, err := canonicalizeHeaderRelaxed(string(hdr.raw))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("canonicalizing signed header %q: %w", lkey, err)
 			}
 			h.Write([]byte(canonical))
 			h.Write([]byte("\r\n"))
@@ -239,7 +240,7 @@ func computeDataHash(h hash.Hash, canonicalization Canonicalization, headers []h
 	} else {
 		canonical, err := canonicalizeHeaderRelaxed(string(sigHeader))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("canonicalizing DKIM-Signature header for hash input: %w", err)
 		}
 		h.Write([]byte(canonical))
 	}
@@ -272,7 +273,7 @@ func parseHeaders(br *bufio.Reader) ([]headerData, int, error) {
 	for {
 		line, err := readLine(br)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("reading message header line: %w", err)
 		}
 		offset += len(line)
 
@@ -339,7 +340,7 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading header bytes: %w", err)
 		}
 		buf = append(buf, line...)
 		if bytes.HasSuffix(buf, []byte("\r\n")) {
