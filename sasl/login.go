@@ -16,9 +16,9 @@ const (
 // Base64-encoded challenge strings for LOGIN mechanism
 const (
 	// LoginChallengeUsername is "Username:" encoded in base64
-	LoginChallengeUsername = "VXNlcm5hbWU6"
+	LoginChallengeUsername = "VXNlcm5hbWU6" // skipcq: SCT-A000
 	// LoginChallengePassword is "Password:" encoded in base64
-	LoginChallengePassword = "UGFzc3dvcmQ6"
+	LoginChallengePassword = "UGFzc3dvcmQ6" // skipcq: SCT-A000
 )
 
 // Login implements the LOGIN SASL mechanism.
