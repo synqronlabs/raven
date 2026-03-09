@@ -308,7 +308,7 @@ func (c *Conn) handleCommand(line string) error {
 }
 
 // parseCommand splits an SMTP command into verb and arguments.
-func parseCommand(line string) (verb string, args string) {
+func parseCommand(line string) (verb, args string) {
 	before, after, ok := strings.Cut(line, " ")
 	if !ok {
 		return line, ""
@@ -1190,7 +1190,7 @@ func (c *Conn) writeError(err error) {
 // This does minimal parsing - just extracts what's between < and >.
 // It also strips source routes per RFC 5321 §3.3 (e.g., "@relay1,@relay2:user@domain" → "user@domain").
 // Full address validation is done separately by parseAddress.
-func extractPathAndParams(s string) (path string, params string, err error) {
+func extractPathAndParams(s string) (path, params string, err error) {
 	s = strings.TrimSpace(s)
 
 	if s == "" {

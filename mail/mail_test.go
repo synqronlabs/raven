@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"bytes"
 	"testing"
 	"time"
 )
@@ -585,7 +586,7 @@ func TestFoldHeader_SingleFold(t *testing.T) {
 
 	// Continuation lines should start with whitespace
 	for i := 1; i < len(lines); i++ {
-		if len(lines[i]) > 0 && lines[i][0] != ' ' && lines[i][0] != '\t' {
+		if lines[i] != "" && lines[i][0] != ' ' && lines[i][0] != '\t' {
 			t.Errorf("Continuation line %d should start with whitespace", i)
 		}
 	}
@@ -666,7 +667,7 @@ func TestFoldHeader_MultipleFolds(t *testing.T) {
 		if len(line) > RecommendedLineLength {
 			t.Errorf("Line %d exceeds recommended length: %d chars", i, len(line))
 		}
-		if i > 0 && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+		if i > 0 && line != "" && line[0] != ' ' && line[0] != '\t' {
 			t.Errorf("Continuation line %d must start with whitespace", i)
 		}
 	}
@@ -804,7 +805,7 @@ func TestMailMessagePack(t *testing.T) {
 			decoded.Content.Headers.Get("Subject"))
 	}
 
-	if string(decoded.Content.Body) != string(mail.Content.Body) {
+	if !bytes.Equal(decoded.Content.Body, mail.Content.Body) {
 		t.Errorf("Expected body %q, got %q",
 			string(mail.Content.Body),
 			string(decoded.Content.Body))

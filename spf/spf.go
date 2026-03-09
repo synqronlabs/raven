@@ -270,7 +270,7 @@ func Lookup(ctx context.Context, resolver Resolver, domain string) (status Statu
 //
 // Returns the verification result, the domain that was checked, an explanation
 // (for StatusFail), and whether DNS responses were DNSSEC-authenticated.
-func Verify(ctx context.Context, resolver Resolver, args Args) (received Received, domain string, explanation string, authentic bool, err error) {
+func Verify(ctx context.Context, resolver Resolver, args Args) (received Received, domain, explanation string, authentic bool, err error) {
 	isHelo, ok := prepareArgs(&args)
 	if !ok {
 		// No domain to check
@@ -319,7 +319,7 @@ func Verify(ctx context.Context, resolver Resolver, args Args) (received Receive
 
 // Evaluate evaluates an IP and names from args against a pre-parsed SPF record.
 // This is useful when the record has been looked up and cached separately.
-func Evaluate(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism string, explanation string, authentic bool, err error) {
+func Evaluate(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism, explanation string, authentic bool, err error) {
 	_, ok := prepareArgs(&args)
 	if !ok {
 		return StatusNone, "default", "", false, fmt.Errorf("no domain name to validate")
@@ -329,7 +329,7 @@ func Evaluate(ctx context.Context, resolver Resolver, record *Record, args Args)
 
 // prepareArgs sets up the internal fields for SPF verification.
 // Returns isHelo (whether HELO domain is being checked) and ok (whether there's a domain to check).
-func prepareArgs(args *Args) (isHelo bool, ok bool) {
+func prepareArgs(args *Args) (isHelo, ok bool) {
 	// Reset internal state
 	args.explanation = nil
 	args.dnsRequests = nil
@@ -356,7 +356,7 @@ func prepareArgs(args *Args) (isHelo bool, ok bool) {
 }
 
 // checkHost performs the SPF check_host algorithm.
-func checkHost(ctx context.Context, resolver Resolver, args Args) (status Status, mechanism string, explanation string, authentic bool, err error) {
+func checkHost(ctx context.Context, resolver Resolver, args Args) (status Status, mechanism, explanation string, authentic bool, err error) {
 	status, _, record, authentic, err := Lookup(ctx, resolver, args.domain)
 	if err != nil {
 		return status, "", "", authentic, err
@@ -369,7 +369,7 @@ func checkHost(ctx context.Context, resolver Resolver, args Args) (status Status
 }
 
 // evaluateRecord evaluates a parsed SPF record against prepared args.
-func evaluateRecord(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism string, explanation string, authentic bool, err error) {
+func evaluateRecord(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism, explanation string, authentic bool, err error) {
 	// Initialize counters if not already done
 	if args.dnsRequests == nil {
 		args.dnsRequests = new(int)
