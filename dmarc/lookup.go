@@ -8,6 +8,24 @@ import (
 	ravendns "github.com/synqronlabs/raven/dns"
 )
 
+// LookupResult contains the outcome of a DMARC policy lookup.
+type LookupResult struct {
+	Status    Status
+	Domain    string
+	Record    *Record
+	TXT       string
+	Authentic bool
+}
+
+// ExternalReportsLookupResult contains the outcome of an external reports lookup.
+type ExternalReportsLookupResult struct {
+	Accepts   bool
+	Status    Status
+	Records   []*Record
+	TXTs      []string
+	Authentic bool
+}
+
 // Lookup looks up the DMARC TXT record for the given domain.
 //
 // It first queries "_dmarc.<domain>". If no record is found, it falls back to
@@ -15,37 +33,33 @@ import (
 // queries "_dmarc.<orgdomain>".
 //
 // Returns:
-//   - status: The lookup status
-//   - domain: The domain where the record was found
-//   - record: The parsed DMARC record (nil if not found or invalid)
-//   - txt: The raw TXT record text
-//   - authentic: Whether the DNS response was DNSSEC-validated
-//   - err: Any error that occurred
-func Lookup(ctx context.Context, resolver ravendns.Resolver, domain string) (status Status, dmarcDomain string, record *Record, txt string, authentic bool, err error) {
+//   - result: The lookup result.
+//   - err: Any lookup or parse error.
+func Lookup(ctx context.Context, resolver ravendns.Resolver, domain string) (result LookupResult, err error) {
 	// First, try the exact domain
-	dmarcDomain = domain
-	status, record, txt, authentic, err = lookupRecord(ctx, resolver, dmarcDomain)
-	if status != StatusNone {
-		return status, dmarcDomain, record, txt, authentic, err
+	result.Domain = domain
+	result.Status, result.Record, result.TXT, result.Authentic, err = lookupRecord(ctx, resolver, result.Domain)
+	if result.Status != StatusNone {
+		return result, err
 	}
-	if record != nil {
-		return status, dmarcDomain, record, txt, authentic, err
+	if result.Record != nil {
+		return result, err
 	}
 
 	// If no record at the exact domain, try the organizational domain
 	orgDomain := OrganizationalDomain(domain)
 	if orgDomain == domain {
 		// Already at the organizational domain, no fallback
-		return StatusNone, domain, nil, txt, authentic, err
+		return result, err
 	}
 
-	dmarcDomain = orgDomain
+	result.Domain = orgDomain
 	var orgAuthentic bool
-	status, record, txt, orgAuthentic, err = lookupRecord(ctx, resolver, dmarcDomain)
+	result.Status, result.Record, result.TXT, orgAuthentic, err = lookupRecord(ctx, resolver, result.Domain)
 	// Combine authentic status - only authentic if both lookups were authentic
-	authentic = authentic && orgAuthentic
+	result.Authentic = result.Authentic && orgAuthentic
 
-	return status, dmarcDomain, record, txt, authentic, err
+	return result, err
 }
 
 // lookupRecord performs the actual DNS lookup for a DMARC record.
@@ -65,10 +79,10 @@ func lookupRecord(ctx context.Context, resolver ravendns.Resolver, domain string
 
 	var record *Record
 	var text string
-	var rerr error = ErrNoRecord
+	var rerr = ErrNoRecord
 
 	for _, txt := range result.Records {
-		r, isDMARC, parseErr := ParseRecord(txt)
+		r, isDMARC, parseErr := ParseRecord(txt, ParseModeStrict)
 		if !isDMARC {
 			// Not a DMARC record, skip
 			continue
@@ -96,10 +110,15 @@ func lookupRecord(ctx context.Context, resolver ravendns.Resolver, domain string
 //	<dmarc-domain>._report._dmarc.<external-domain>
 //
 // Returns true if the external domain accepts reports for the DMARC domain.
-func LookupExternalReportsAccepted(ctx context.Context, resolver ravendns.Resolver, dmarcDomain, extDestDomain string) (accepts bool, status Status, records []*Record, txts []string, authentic bool, err error) {
-	status, records, txts, authentic, err = lookupReportsRecord(ctx, resolver, dmarcDomain, extDestDomain)
-	accepts = err == nil
-	return accepts, status, records, txts, authentic, err
+func LookupExternalReportsAccepted(ctx context.Context, resolver ravendns.Resolver, dmarcDomain, extDestDomain string) (ExternalReportsLookupResult, error) {
+	status, records, txts, authentic, err := lookupReportsRecord(ctx, resolver, dmarcDomain, extDestDomain)
+	return ExternalReportsLookupResult{
+		Accepts:   err == nil,
+		Status:    status,
+		Records:   records,
+		TXTs:      txts,
+		Authentic: authentic,
+	}, err
 }
 
 // lookupReportsRecord performs the DNS lookup for external report authorization.
@@ -120,10 +139,10 @@ func lookupReportsRecord(ctx context.Context, resolver ravendns.Resolver, dmarcD
 
 	var records []*Record
 	var texts []string
-	var rerr error = ErrNoRecord
+	var rerr = ErrNoRecord
 
 	for _, txt := range result.Records {
-		r, isDMARC, parseErr := ParseRecordNoRequired(txt)
+		r, isDMARC, parseErr := ParseRecord(txt, ParseModeRelaxed)
 
 		// Accept "v=DMARC1" even though it's not technically valid
 		// (RFC examples use this form)

@@ -48,30 +48,31 @@ type VerifyArgs struct {
 //   - result: The DMARC verification result.
 func Verify(ctx context.Context, resolver ravendns.Resolver, args VerifyArgs, applyRandomPercentage bool) (useResult bool, result Result) {
 	// Look up DMARC record
-	status, recordDomain, record, _, authentic, err := Lookup(ctx, resolver, args.FromDomain)
-	if record == nil {
+	lookup, err := Lookup(ctx, resolver, args.FromDomain)
+	if lookup.Record == nil {
 		return false, Result{
 			Reject:          false,
-			Status:          status,
-			Domain:          recordDomain,
+			Status:          lookup.Status,
+			Domain:          lookup.Domain,
 			Record:          nil,
-			RecordAuthentic: authentic,
+			RecordAuthentic: lookup.Authentic,
 			Err:             err,
 		}
 	}
 
-	result.Domain = recordDomain
-	result.Record = record
-	result.RecordAuthentic = authentic
+	result.Domain = lookup.Domain
+	result.Record = lookup.Record
+	result.RecordAuthentic = lookup.Authentic
 
 	// Determine if we should use this result based on pct field
-	useResult = !applyRandomPercentage || record.Percentage == 100 || rand.IntN(100) < record.Percentage
+	// skipcq: GSC-G404
+	useResult = !applyRandomPercentage || lookup.Record.Percentage == 100 || rand.IntN(100) < lookup.Record.Percentage
 
 	// Determine if the From domain is a subdomain of the DMARC record domain
-	isSubdomain := recordDomain != args.FromDomain
+	isSubdomain := lookup.Domain != args.FromDomain
 
 	// Determine the effective policy
-	effectivePolicy := record.EffectivePolicy(isSubdomain)
+	effectivePolicy := lookup.Record.EffectivePolicy(isSubdomain)
 	result.Reject = effectivePolicy != PolicyNone
 
 	// Start with fail status, will be updated if alignment succeeds
@@ -85,7 +86,7 @@ func Verify(ctx context.Context, resolver ravendns.Resolver, args VerifyArgs, ap
 
 	// Check SPF alignment
 	if args.SPFResult == spf.StatusPass && args.SPFDomain != "" {
-		if DomainsAligned(args.FromDomain, args.SPFDomain, record.ASPF) {
+		if DomainsAligned(args.FromDomain, args.SPFDomain, lookup.Record.ASPF) {
 			result.AlignedSPFPass = true
 		}
 	}
@@ -103,7 +104,7 @@ func Verify(ctx context.Context, resolver ravendns.Resolver, args VerifyArgs, ap
 			sigDomain := dkimResult.Signature.Domain
 
 			// Check alignment
-			if DomainsAligned(args.FromDomain, sigDomain, record.ADKIM) {
+			if DomainsAligned(args.FromDomain, sigDomain, lookup.Record.ADKIM) {
 				// Additional check: DKIM domain must not be above the organizational domain
 				// This prevents TLD-level signatures from causing a pass
 				sigOrgDomain := OrganizationalDomain(sigDomain)

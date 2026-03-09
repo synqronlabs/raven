@@ -91,7 +91,10 @@ var DefaultRecord = Record{
 }
 
 // String returns the DMARC record formatted for DNS TXT.
-func (r Record) String() string {
+func (r *Record) String() string {
+	if r == nil {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("v=")
 	b.WriteString(r.Version)

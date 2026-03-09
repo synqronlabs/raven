@@ -14,6 +14,16 @@ func (e parseErr) Error() string {
 	return string(e)
 }
 
+// ParseMode controls strictness for DMARC record parsing.
+type ParseMode uint8
+
+const (
+	// ParseModeStrict validates required policy fields for normal DMARC policy records.
+	ParseModeStrict ParseMode = iota
+	// ParseModeRelaxed skips required policy checks for _report._dmarc authorization records.
+	ParseModeRelaxed
+)
+
 // ParseRecord parses a DMARC TXT record string.
 //
 // Fields and values that are case-insensitive in DMARC are returned in lower
@@ -21,18 +31,17 @@ func (e parseErr) Error() string {
 //
 // Returns the parsed record, whether the string looks like a DMARC record
 // (starts with "v=DMARC1"), and any parsing error.
-func ParseRecord(s string) (record *Record, isDMARC bool, err error) {
-	return parseRecord(s, true)
-}
+func ParseRecord(s string, mode ParseMode) (record *Record, isDMARC bool, rerr error) {
+	checkRequired := true
+	switch mode {
+	case ParseModeStrict:
+		checkRequired = true
+	case ParseModeRelaxed:
+		checkRequired = false
+	default:
+		return nil, false, fmt.Errorf("invalid parse mode: %d", mode)
+	}
 
-// ParseRecordNoRequired is like ParseRecord but doesn't check for required
-// fields. This is useful for parsing _report._dmarc records used for opting
-// into receiving reports for other domains.
-func ParseRecordNoRequired(s string) (record *Record, isDMARC bool, err error) {
-	return parseRecord(s, false)
-}
-
-func parseRecord(s string, checkRequired bool) (record *Record, isDMARC bool, rerr error) {
 	defer func() {
 		x := recover()
 		if x == nil {

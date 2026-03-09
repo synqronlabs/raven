@@ -24,15 +24,15 @@ import "github.com/synqronlabs/raven/dmarc"
 ## Example
 
 ```go
-status, domain, record, _, authentic, err := dmarc.Lookup(ctx, resolver, "example.com")
+lookup, err := dmarc.Lookup(ctx, resolver, "example.com")
 if err != nil {
     panic(err)
 }
 
-_ = status
-_ = domain
-_ = record
-_ = authentic
+_ = lookup.Status
+_ = lookup.Domain
+_ = lookup.Record
+_ = lookup.Authentic
 
 useResult, result := dmarc.Verify(ctx, resolver, dmarc.VerifyArgs{
     FromDomain:  fromDomain,

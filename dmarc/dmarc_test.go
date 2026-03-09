@@ -16,7 +16,7 @@ import (
 func TestParseBad(t *testing.T) {
 	bad := func(s string) {
 		t.Helper()
-		_, _, err := ParseRecord(s)
+		_, _, err := ParseRecord(s, ParseModeStrict)
 		if err == nil {
 			t.Fatalf("got parse success for %q, expected error", s)
 		}
@@ -101,7 +101,7 @@ func TestParseValid(t *testing.T) {
 	valid := func(s string, exp Record) {
 		t.Helper()
 
-		r, _, err := ParseRecord(s)
+		r, _, err := ParseRecord(s, ParseModeStrict)
 		if err != nil {
 			t.Fatalf("unexpected error for %q: %s", s, err)
 		}
@@ -353,7 +353,7 @@ func TestParseRecord(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			record, isDMARC, err := ParseRecord(tt.input)
+			record, isDMARC, err := ParseRecord(tt.input, ParseModeStrict)
 
 			if isDMARC != tt.isDMARC {
 				t.Errorf("isDMARC: got %v, want %v", isDMARC, tt.isDMARC)
@@ -573,14 +573,14 @@ func TestLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, domain, record, _, _, err := Lookup(context.Background(), resolver, tt.domain)
+			result, err := Lookup(context.Background(), resolver, tt.domain)
 
-			if status != tt.wantStatus {
-				t.Errorf("status: got %v, want %v", status, tt.wantStatus)
+			if result.Status != tt.wantStatus {
+				t.Errorf("status: got %v, want %v", result.Status, tt.wantStatus)
 			}
 
-			if domain != tt.wantDomain {
-				t.Errorf("domain: got %q, want %q", domain, tt.wantDomain)
+			if result.Domain != tt.wantDomain {
+				t.Errorf("domain: got %q, want %q", result.Domain, tt.wantDomain)
 			}
 
 			if tt.wantErr != nil {
@@ -591,9 +591,9 @@ func TestLookup(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 
-			if tt.wantPolicy != "" && record != nil {
-				if record.Policy != tt.wantPolicy {
-					t.Errorf("policy: got %v, want %v", record.Policy, tt.wantPolicy)
+			if tt.wantPolicy != "" && result.Record != nil {
+				if result.Record.Policy != tt.wantPolicy {
+					t.Errorf("policy: got %v, want %v", result.Record.Policy, tt.wantPolicy)
 				}
 			}
 		})
@@ -1095,21 +1095,22 @@ func TestLookupExternalReportsAccepted(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			accepts, status, _, _, _, err := LookupExternalReportsAccepted(
-				context.Background(), resolver, tt.dmarcDomain, tt.extDomain)
+			result, err := LookupExternalReportsAccepted(context.Background(), resolver, tt.dmarcDomain, tt.extDomain)
 
-			if accepts != tt.wantAccepts {
-				t.Errorf("accepts: got %v, want %v", accepts, tt.wantAccepts)
+			if result.Accepts != tt.wantAccepts {
+				t.Errorf("accepts: got %v, want %v", result.Accepts, tt.wantAccepts)
 			}
 
-			if status != tt.wantStatus {
-				t.Errorf("status: got %v, want %v", status, tt.wantStatus)
+			if result.Status != tt.wantStatus {
+				t.Errorf("status: got %v, want %v", result.Status, tt.wantStatus)
 			}
 
 			if tt.wantErr != nil {
 				if err == nil || !errors.Is(err, tt.wantErr) {
 					t.Errorf("error: got %v, want %v", err, tt.wantErr)
 				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
 			}
 		})
 	}

@@ -21,10 +21,16 @@
 //	    DNSSEC: true,
 //	})
 //
-//	status, domain, record, err := dmarc.Lookup(ctx, resolver, "example.com")
+//	lookup, err := dmarc.Lookup(ctx, resolver, "example.com")
 //	if err != nil {
 //	    // Handle error
 //	}
+//	status := lookup.Status
+//	domain := lookup.Domain
+//	record := lookup.Record
+//	_ = status
+//	_ = domain
+//	_ = record
 //
 // Verifying DMARC alignment:
 //
