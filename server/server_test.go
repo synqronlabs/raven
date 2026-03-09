@@ -91,7 +91,7 @@ func (s *testSession) Reset() {
 	s.data = nil
 }
 
-func (s *testSession) Logout() error {
+func (*testSession) Logout() error {
 	return nil
 }
 
@@ -1302,7 +1302,7 @@ type vrfySession struct {
 	testSession
 }
 
-func (s *vrfySession) Verify(address string) (string, error) {
+func (*vrfySession) Verify(address string) (string, error) {
 	return "<" + address + ">", nil
 }
 
@@ -1348,7 +1348,7 @@ type expnSession struct {
 	testSession
 }
 
-func (s *expnSession) Expand(_ string) ([]string, error) {
+func (*expnSession) Expand(_ string) ([]string, error) {
 	return []string{"<alice@example.com>", "<bob@example.com>"}, nil
 }
 

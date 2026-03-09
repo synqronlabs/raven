@@ -37,7 +37,7 @@ func NewLogin() *Login {
 }
 
 // Name returns "LOGIN".
-func (l *Login) Name() string {
+func (*Login) Name() string {
 	return "LOGIN"
 }
 
