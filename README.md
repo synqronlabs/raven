@@ -118,12 +118,6 @@ _ = useDMARC
 _ = dmarcResult
 ```
 
-## Development
-
-```bash
-go test ./...
-```
-
 ## License
 
 MIT License. See `LICENSE`.
