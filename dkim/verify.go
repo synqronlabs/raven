@@ -110,7 +110,7 @@ func (v *Verifier) VerifyReader(ctx context.Context, message io.ReaderAt) ([]Res
 }
 
 // checkSignatureParams validates signature parameters.
-func (v *Verifier) checkSignatureParams(sig *Signature) (crypto.Hash, Canonicalization, Canonicalization, error) {
+func (*Verifier) checkSignatureParams(sig *Signature) (crypto.Hash, Canonicalization, Canonicalization, error) {
 	// From header must be signed
 	hasFrom := false
 	for _, h := range sig.SignedHeaders {

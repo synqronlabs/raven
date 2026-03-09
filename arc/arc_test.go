@@ -470,15 +470,15 @@ func (m *mockResolver) LookupTXT(_ context.Context, domain string) (ravendns.Res
 	return ravendns.Result[string]{Records: records}, nil
 }
 
-func (m *mockResolver) LookupIP(_ context.Context, _ string) (ravendns.Result[net.IP], error) {
+func (*mockResolver) LookupIP(_ context.Context, _ string) (ravendns.Result[net.IP], error) {
 	return ravendns.Result[net.IP]{}, nil
 }
 
-func (m *mockResolver) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
+func (*mockResolver) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
 	return ravendns.Result[*net.MX]{}, nil
 }
 
-func (m *mockResolver) LookupAddr(_ context.Context, _ net.IP) (ravendns.Result[string], error) {
+func (*mockResolver) LookupAddr(_ context.Context, _ net.IP) (ravendns.Result[string], error) {
 	return ravendns.Result[string]{}, nil
 }
 

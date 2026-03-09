@@ -827,7 +827,7 @@ func newBase64Encoding() *base64Encoding {
 
 type base64Encoding struct{}
 
-func (e *base64Encoding) EncodeToString(src []byte) string {
+func (*base64Encoding) EncodeToString(src []byte) string {
 	const encodeStd = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 	if len(src) == 0 {

@@ -19,7 +19,7 @@ func NewPlain() *Plain {
 }
 
 // Name returns "PLAIN".
-func (p *Plain) Name() string {
+func (*Plain) Name() string {
 	return "PLAIN"
 }
 
