@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -64,7 +65,7 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 	}
 
 	client := NewClient(config)
-	address := fmt.Sprintf("%s:%d", d.Host, d.Port)
+	address := net.JoinHostPort(d.Host, fmt.Sprintf("%d", d.Port))
 
 	// Connect
 	var err error

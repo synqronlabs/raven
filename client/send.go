@@ -416,7 +416,8 @@ func (c *Client) sendWithDATA(data []byte) (*ClientResponse, error) {
 	}
 
 	if !resp.IsSuccess() {
-		return resp, resp.Error()
+		errResp := resp.Error()
+		return resp, errResp
 	}
 
 	return resp, nil

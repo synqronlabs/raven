@@ -252,7 +252,10 @@ func (c *Client) DialTLSContext(ctx context.Context, address string) error {
 	// Prepare TLS config
 	tlsConfig := c.config.TLSConfig
 	if tlsConfig == nil {
-		tlsConfig = &tls.Config{}
+		tlsConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: false,
+		}
 	}
 	if tlsConfig.ServerName == "" {
 		tlsConfig = tlsConfig.Clone()
@@ -388,7 +391,10 @@ func (c *Client) StartTLS() error {
 	// Upgrade to TLS
 	tlsConfig := c.config.TLSConfig
 	if tlsConfig == nil {
-		tlsConfig = &tls.Config{}
+		tlsConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: false,
+		}
 	}
 	if tlsConfig.ServerName == "" {
 		tlsConfig = tlsConfig.Clone()
@@ -627,7 +633,7 @@ func (c *Client) Quit() error {
 
 	if err := c.writeCommand("QUIT"); err != nil {
 		// Still close the connection
-		c.close()
+		c.closeLocked()
 		return fmt.Errorf("sending QUIT command: %w", err)
 	}
 
@@ -637,7 +643,7 @@ func (c *Client) Quit() error {
 		_ = err
 	}
 
-	if err := c.close(); err != nil {
+	if err := c.closeLocked(); err != nil {
 		return fmt.Errorf("closing SMTP connection after QUIT: %w", err)
 	}
 	return nil
@@ -648,10 +654,12 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.close()
+	return c.closeLocked()
 }
 
-func (c *Client) close() error {
+// closeLocked closes and clears connection state.
+// Caller must hold c.mu.
+func (c *Client) closeLocked() error {
 	if c.conn == nil {
 		return nil
 	}
