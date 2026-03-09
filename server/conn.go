@@ -1195,7 +1195,7 @@ func (c *Conn) writeError(err error) {
 func extractPathAndParams(s string) (path string, params string, err error) {
 	s = strings.TrimSpace(s)
 
-	if len(s) == 0 {
+	if s == "" {
 		return "", "", errors.New("empty path")
 	}
 

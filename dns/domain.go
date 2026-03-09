@@ -71,7 +71,7 @@ func IsValidDomain(domain string) bool {
 	}
 
 	for _, label := range strings.Split(ascii, ".") {
-		if len(label) == 0 || len(label) > 63 {
+		if label == "" || len(label) > 63 {
 			return false
 		}
 	}
