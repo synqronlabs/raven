@@ -53,7 +53,10 @@ type MailboxAddress struct {
 }
 
 // String returns the address in the standard "local-part@domain" format.
-func (m MailboxAddress) String() string {
+func (m *MailboxAddress) String() string {
+	if m == nil {
+		return ""
+	}
 	if m.LocalPart == "" && m.Domain == "" {
 		return ""
 	}
@@ -67,12 +70,15 @@ type Path struct {
 }
 
 // IsNull returns true if this is a null reverse-path (used for bounce messages).
-func (p Path) IsNull() bool {
+func (p *Path) IsNull() bool {
+	if p == nil {
+		return true
+	}
 	return p.Mailbox.LocalPart == "" && p.Mailbox.Domain == ""
 }
 
 // String returns the path in angle bracket format.
-func (p Path) String() string {
+func (p *Path) String() string {
 	if p.IsNull() {
 		return "<>"
 	}
@@ -123,8 +129,11 @@ type Header struct {
 type Headers []Header
 
 // Get returns the first header value with the given name (case-insensitive).
-func (h Headers) Get(name string) string {
-	for _, hdr := range h {
+func (h *Headers) Get(name string) string {
+	if h == nil {
+		return ""
+	}
+	for _, hdr := range *h {
 		if strings.EqualFold(hdr.Name, name) {
 			return hdr.Value
 		}
@@ -133,9 +142,12 @@ func (h Headers) Get(name string) string {
 }
 
 // GetAll returns all header values with the given name (case-insensitive).
-func (h Headers) GetAll(name string) []string {
+func (h *Headers) GetAll(name string) []string {
 	var values []string
-	for _, hdr := range h {
+	if h == nil {
+		return values
+	}
+	for _, hdr := range *h {
 		if strings.EqualFold(hdr.Name, name) {
 			values = append(values, hdr.Value)
 		}
@@ -144,9 +156,12 @@ func (h Headers) GetAll(name string) []string {
 }
 
 // Count returns the number of headers with the given name (case-insensitive).
-func (h Headers) Count(name string) int {
+func (h *Headers) Count(name string) int {
+	if h == nil {
+		return 0
+	}
 	count := 0
-	for _, hdr := range h {
+	for _, hdr := range *h {
 		if strings.EqualFold(hdr.Name, name) {
 			count++
 		}
@@ -171,7 +186,7 @@ var singleOccurrenceHeaders = map[string]bool{
 
 // Validate validates headers according to RFC 5322 requirements.
 // It checks for required headers, single-occurrence constraints, and line length limits.
-func (h Headers) Validate() error {
+func (h *Headers) Validate() error {
 	if h.Count("Date") == 0 {
 		return ErrMissingDateHeader
 	}
@@ -197,7 +212,7 @@ func (h Headers) Validate() error {
 	// Validate header line lengths
 	// Each header field line must not exceed 998 characters (excluding CRLF)
 	// Also reject bare LF (must use CRLF)
-	for _, hdr := range h {
+	for _, hdr := range *h {
 		// Check for bare LF in header value (LF not preceded by CR)
 		for i := 0; i < len(hdr.Value); i++ {
 			if hdr.Value[i] == '\n' && (i == 0 || hdr.Value[i-1] != '\r') {
@@ -274,7 +289,10 @@ type TraceField struct {
 //
 // Return-Path preserves the MAIL FROM address and
 // is added when making final delivery.
-func (t TraceField) String() string {
+func (t *TraceField) String() string {
+	if t == nil {
+		return ""
+	}
 	if t.Raw != "" {
 		return t.Raw
 	}
@@ -564,7 +582,7 @@ func (c *Content) Validate() error {
 // For multipart messages, it recursively parses all parts and their boundaries.
 // Returns the parsed Part structure or an error if the MIME structure is invalid.
 func (c *Content) ToMIME() (*ravenmime.Part, error) {
-	return ravenmime.Parse(c.Headers, c.Body)
+	return ravenmime.Parse(&c.Headers, c.Body)
 }
 
 // FromMIME populates the Content's Body from a MIME Part.
