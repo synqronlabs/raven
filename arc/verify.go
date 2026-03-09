@@ -531,7 +531,7 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 func verifyWithKey(key any, hash crypto.Hash, data, signature []byte) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		return rsa.VerifyPKCS1v15(k, hash, data, signature)
+		return rsa.VerifyPKCS1v15(k, hash, data, signature) // skipcq: GO-S1030
 	case ed25519.PublicKey:
 		if !ed25519.Verify(k, data, signature) {
 			return ErrSignatureFailed

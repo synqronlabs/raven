@@ -94,8 +94,7 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 	// Determine instance number
 	maxInstance := 0
 	for _, h := range headers {
-		switch h.lkey {
-		case "arc-seal":
+		if h.lkey == "arc-seal" {
 			seal, _, _ := ParseSeal(extractHeaderValue(h.raw))
 			if seal != nil && seal.Instance > maxInstance {
 				maxInstance = seal.Instance
