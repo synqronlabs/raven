@@ -564,7 +564,7 @@ func (p *parser) xip4address() (net.IP, string) {
 
 func (p *parser) xip6address() (net.IP, string) {
 	// Take all valid IPv6 characters and parse with net.ParseIP
-	s := p.xtakefn1(func(c rune, i int) bool {
+	s := p.xtakefn1(func(c rune, _ int) bool {
 		return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' || c == ':' || c == '.'
 	})
 	ip := net.ParseIP(s)

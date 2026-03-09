@@ -51,7 +51,7 @@ type testTransaction struct {
 	data       []byte
 }
 
-func (s *testSession) Mail(from string, opts *server.MailOptions) error {
+func (s *testSession) Mail(from string, _ *server.MailOptions) error {
 	if s.rejectMail != nil {
 		if err := s.rejectMail(from); err != nil {
 			return err
@@ -61,7 +61,7 @@ func (s *testSession) Mail(from string, opts *server.MailOptions) error {
 	return nil
 }
 
-func (s *testSession) Rcpt(to string, opts *server.RcptOptions) error {
+func (s *testSession) Rcpt(to string, _ *server.RcptOptions) error {
 	if s.rejectRcpt != nil {
 		if err := s.rejectRcpt(to); err != nil {
 			return err
@@ -382,7 +382,7 @@ func TestServer_BasicMailTransaction(t *testing.T) {
 	sessions := make([]*testSession, 0)
 	var mu sync.Mutex
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			s := &testSession{}
 			mu.Lock()
 			sessions = append(sessions, s)
@@ -445,7 +445,7 @@ func TestServer_MultipleRecipients(t *testing.T) {
 	sessions := make([]*testSession, 0)
 	var mu sync.Mutex
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			s := &testSession{}
 			mu.Lock()
 			sessions = append(sessions, s)
@@ -707,7 +707,7 @@ func TestServer_MultipleTransactions(t *testing.T) {
 	sessions := make([]*testSession, 0)
 	var mu sync.Mutex
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			s := &testSession{}
 			mu.Lock()
 			sessions = append(sessions, s)
@@ -1021,7 +1021,7 @@ func TestServer_DotStuffing(t *testing.T) {
 	sessions := make([]*testSession, 0)
 	var mu sync.Mutex
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			s := &testSession{}
 			mu.Lock()
 			sessions = append(sessions, s)
@@ -1086,7 +1086,7 @@ func TestServer_DotStuffing(t *testing.T) {
 
 func TestServer_SessionRejectsMailFrom(t *testing.T) {
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return &testSession{
 				rejectMail: func(from string) error {
 					if strings.Contains(from, "spam") {
@@ -1119,7 +1119,7 @@ func TestServer_SessionRejectsMailFrom(t *testing.T) {
 
 func TestServer_SessionRejectsRcptTo(t *testing.T) {
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return &testSession{
 				rejectRcpt: func(to string) error {
 					if !strings.HasSuffix(to, "@example.com") {
@@ -1308,7 +1308,7 @@ func (s *vrfySession) Verify(address string) (string, error) {
 
 func TestServer_VRFY_WithSession(t *testing.T) {
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return &vrfySession{}, nil
 		},
 	}
@@ -1348,13 +1348,13 @@ type expnSession struct {
 	testSession
 }
 
-func (s *expnSession) Expand(list string) ([]string, error) {
+func (s *expnSession) Expand(_ string) ([]string, error) {
 	return []string{"<alice@example.com>", "<bob@example.com>"}, nil
 }
 
 func TestServer_EXPN_WithSession(t *testing.T) {
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return &expnSession{}, nil
 		},
 	}
@@ -1379,7 +1379,7 @@ func TestServer_EXPN_WithSession(t *testing.T) {
 func TestServer_MailFrom_SourceRoute(t *testing.T) {
 	sess := &testSession{t: t}
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
 		},
 	}
@@ -1406,7 +1406,7 @@ func TestServer_MailFrom_SourceRoute(t *testing.T) {
 func TestServer_ReceivedHeader(t *testing.T) {
 	sess := &testSession{t: t}
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
 		},
 	}
@@ -1513,7 +1513,7 @@ type chunkingSession struct {
 	chunks [][]byte
 }
 
-func (s *chunkingSession) Chunk(data []byte, last bool) error {
+func (s *chunkingSession) Chunk(data []byte, _ bool) error {
 	s.chunks = append(s.chunks, append([]byte(nil), data...))
 	return nil
 }
@@ -1521,7 +1521,7 @@ func (s *chunkingSession) Chunk(data []byte, last bool) error {
 func TestServer_BDAT_ReceivedHeader(t *testing.T) {
 	sess := &chunkingSession{}
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
 		},
 	}
@@ -1566,7 +1566,7 @@ func TestServer_BDAT_ReceivedHeader(t *testing.T) {
 func TestServer_BDAT_LoopDetection(t *testing.T) {
 	sess := &chunkingSession{}
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
 		},
 	}
@@ -1598,7 +1598,7 @@ func TestServer_BDAT_LoopDetection(t *testing.T) {
 func TestServer_BDAT_LoopDetection_BelowThreshold(t *testing.T) {
 	sess := &chunkingSession{}
 	backend := &testBackend{
-		sessionFactory: func(c *server.Conn) (server.Session, error) {
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
 		},
 	}

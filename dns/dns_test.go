@@ -88,7 +88,7 @@ func TestResultGeneric(t *testing.T) {
 }
 
 // TestResolverInterface verifies that our types implement Resolver
-func TestResolverInterface(t *testing.T) {
+func TestResolverInterface(_ *testing.T) {
 	var _ Resolver = (*DNSResolver)(nil)
 	var _ Resolver = (*StdResolver)(nil)
 }

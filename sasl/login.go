@@ -42,7 +42,7 @@ func (l *Login) Name() string {
 }
 
 // Start begins the LOGIN authentication exchange.
-func (l *Login) Start(initialResponse string) (challenge string, done bool, err error) {
+func (l *Login) Start(_ string) (challenge string, done bool, err error) {
 	l.state = loginStateUsername
 	return LoginChallengeUsername, false, nil
 }

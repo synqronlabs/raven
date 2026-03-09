@@ -20,7 +20,7 @@ type MockResolver struct {
 	Errors      map[string]error
 }
 
-func (m *MockResolver) LookupTXT(ctx context.Context, name string) ([]string, Result, error) {
+func (m *MockResolver) LookupTXT(_ context.Context, name string) ([]string, Result, error) {
 	if err, ok := m.Errors[name]; ok {
 		return nil, Result{Authentic: m.Authentic}, err
 	}
@@ -31,7 +31,7 @@ func (m *MockResolver) LookupTXT(ctx context.Context, name string) ([]string, Re
 	return records, Result{Authentic: m.Authentic}, nil
 }
 
-func (m *MockResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, Result, error) {
+func (m *MockResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, Result, error) {
 	if err, ok := m.Errors[host]; ok {
 		return nil, Result{Authentic: m.Authentic}, err
 	}
@@ -54,7 +54,7 @@ func (m *MockResolver) LookupIP(ctx context.Context, network, host string) ([]ne
 	return ips, Result{Authentic: m.Authentic}, nil
 }
 
-func (m *MockResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, Result, error) {
+func (m *MockResolver) LookupMX(_ context.Context, name string) ([]*net.MX, Result, error) {
 	if err, ok := m.Errors[name]; ok {
 		return nil, Result{Authentic: m.Authentic}, err
 	}
@@ -65,7 +65,7 @@ func (m *MockResolver) LookupMX(ctx context.Context, name string) ([]*net.MX, Re
 	return records, Result{Authentic: m.Authentic}, nil
 }
 
-func (m *MockResolver) LookupAddr(ctx context.Context, addr string) ([]string, Result, error) {
+func (m *MockResolver) LookupAddr(_ context.Context, addr string) ([]string, Result, error) {
 	if err, ok := m.Errors[addr]; ok {
 		return nil, Result{Authentic: m.Authentic}, err
 	}
