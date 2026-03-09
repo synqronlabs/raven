@@ -1136,7 +1136,7 @@ func (c *Conn) handleEXPN(args string) error {
 }
 
 // handleHELP handles the HELP command.
-func (c *Conn) handleHELP(args string) error {
+func (c *Conn) handleHELP(_ string) error {
 	c.writeResponse(214, "See RFC 5321")
 	return nil
 }

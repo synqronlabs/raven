@@ -97,7 +97,7 @@ func (r MockResolver) LookupTXT(ctx context.Context, name string) (Result[string
 }
 
 // LookupIP returns A and AAAA records for the given domain.
-func (r MockResolver) LookupIP(ctx context.Context, domain string) (Result[net.IP], error) {
+func (r MockResolver) LookupIP(_ context.Context, domain string) (Result[net.IP], error) {
 	fqdn := ensureFQDN(domain)
 
 	authentic := r.AllAuthentic
@@ -146,7 +146,7 @@ func (r MockResolver) LookupIP(ctx context.Context, domain string) (Result[net.I
 }
 
 // LookupMX returns MX records for the given domain.
-func (r MockResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX], error) {
+func (r MockResolver) LookupMX(_ context.Context, name string) (Result[*net.MX], error) {
 	fqdn := ensureFQDN(name)
 	mr := mockReq{"mx", fqdn}
 
@@ -170,7 +170,7 @@ func (r MockResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX
 }
 
 // LookupAddr performs a reverse DNS lookup.
-func (r MockResolver) LookupAddr(ctx context.Context, ip net.IP) (Result[string], error) {
+func (r MockResolver) LookupAddr(_ context.Context, ip net.IP) (Result[string], error) {
 	ipStr := ip.String()
 	mr := mockReq{"ptr", ipStr}
 

@@ -462,7 +462,7 @@ type mockResolver struct {
 	txtRecords map[string][]string
 }
 
-func (m *mockResolver) LookupTXT(ctx context.Context, domain string) (ravendns.Result[string], error) {
+func (m *mockResolver) LookupTXT(_ context.Context, domain string) (ravendns.Result[string], error) {
 	records, ok := m.txtRecords[domain]
 	if !ok {
 		return ravendns.Result[string]{}, ravendns.ErrDNSNotFound
@@ -470,15 +470,15 @@ func (m *mockResolver) LookupTXT(ctx context.Context, domain string) (ravendns.R
 	return ravendns.Result[string]{Records: records}, nil
 }
 
-func (m *mockResolver) LookupIP(ctx context.Context, domain string) (ravendns.Result[net.IP], error) {
+func (m *mockResolver) LookupIP(_ context.Context, _ string) (ravendns.Result[net.IP], error) {
 	return ravendns.Result[net.IP]{}, nil
 }
 
-func (m *mockResolver) LookupMX(ctx context.Context, domain string) (ravendns.Result[*net.MX], error) {
+func (m *mockResolver) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
 	return ravendns.Result[*net.MX]{}, nil
 }
 
-func (m *mockResolver) LookupAddr(ctx context.Context, ip net.IP) (ravendns.Result[string], error) {
+func (m *mockResolver) LookupAddr(_ context.Context, _ net.IP) (ravendns.Result[string], error) {
 	return ravendns.Result[string]{}, nil
 }
 
