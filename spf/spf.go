@@ -324,7 +324,7 @@ func Evaluate(ctx context.Context, resolver Resolver, record *Record, args Args)
 	if !ok {
 		return StatusNone, "default", "", false, fmt.Errorf("no domain name to validate")
 	}
-	return evaluate(ctx, resolver, record, args)
+	return evaluateRecord(ctx, resolver, record, args)
 }
 
 // prepareArgs sets up the internal fields for SPF verification.
@@ -363,13 +363,13 @@ func checkHost(ctx context.Context, resolver Resolver, args Args) (status Status
 	}
 
 	evalAuthentic := false
-	status, mechanism, explanation, evalAuthentic, err = evaluate(ctx, resolver, record, args)
+	status, mechanism, explanation, evalAuthentic, err = evaluateRecord(ctx, resolver, record, args)
 	authentic = authentic && evalAuthentic
 	return
 }
 
-// evaluate evaluates the SPF record against the args.
-func evaluate(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism string, explanation string, authentic bool, err error) {
+// evaluateRecord evaluates a parsed SPF record against prepared args.
+func evaluateRecord(ctx context.Context, resolver Resolver, record *Record, args Args) (status Status, mechanism string, explanation string, authentic bool, err error) {
 	// Initialize counters if not already done
 	if args.dnsRequests == nil {
 		args.dnsRequests = new(int)
