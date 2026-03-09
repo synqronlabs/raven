@@ -354,7 +354,7 @@ func IsTemporaryError(err error) bool {
 	// ErrDNS wraps DNS errors which may be temporary
 	if errors.Is(err, ErrDNS) {
 		// Unwrap to check if the underlying error is temporary
-		var unwrapped error = err
+		var unwrapped = err
 		for unwrapped != nil {
 			if ravendns.IsTemporary(unwrapped) {
 				return true
