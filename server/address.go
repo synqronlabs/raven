@@ -55,7 +55,7 @@ func (a *ParsedAddress) String() string {
 func parsePath(s string, allowUTF8 bool) (*ParsedAddress, string, error) {
 	s = strings.TrimSpace(s)
 
-	if len(s) == 0 {
+	if s == "" {
 		return nil, "", ErrAddressEmpty
 	}
 
@@ -402,7 +402,7 @@ func isValidIPv4(s string) bool {
 	}
 
 	for _, part := range parts {
-		if len(part) == 0 || len(part) > 3 {
+		if part == "" || len(part) > 3 {
 			return false
 		}
 		// No leading zeros except for "0" itself

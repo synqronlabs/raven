@@ -47,7 +47,7 @@ func (mr mockReq) String() string {
 
 // ensureFQDN ensures the name ends with a dot.
 func ensureFQDN(name string) string {
-	if len(name) == 0 || name[len(name)-1] != '.' {
+	if name == "" || name[len(name)-1] != '.' {
 		return name + "."
 	}
 	return name
