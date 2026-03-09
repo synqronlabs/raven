@@ -88,7 +88,7 @@ func extractValue(header string) string {
 		if header[i] == ':' {
 			// Return everything after ": "
 			value := header[i+1:]
-			if len(value) > 0 && value[0] == ' ' {
+			if value != "" && value[0] == ' ' {
 				value = value[1:]
 			}
 			return value

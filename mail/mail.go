@@ -628,7 +628,7 @@ func (c *Content) FromRaw(data []byte) {
 		if idx := strings.Index(strings.ToLower(contentType), "charset="); idx != -1 {
 			charset := contentType[idx+8:]
 			// Handle quoted charset values
-			if len(charset) > 0 && charset[0] == '"' {
+			if charset != "" && charset[0] == '"' {
 				if endQuote := strings.Index(charset[1:], "\""); endQuote != -1 {
 					c.Charset = charset[1 : endQuote+1]
 				}

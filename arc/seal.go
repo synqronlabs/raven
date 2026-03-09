@@ -257,14 +257,16 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 	sealHeaders := make([]headerData, 0)
 
 	// Add the new ARC headers
-	sealHeaders = append(sealHeaders, headerData{
-		raw:  []byte(aarHeader + "\r\n"),
-		lkey: "arc-authentication-results",
-	})
-	sealHeaders = append(sealHeaders, headerData{
-		raw:  []byte(amsHeader + "\r\n"),
-		lkey: "arc-message-signature",
-	})
+	sealHeaders = append(sealHeaders,
+		headerData{
+			raw:  []byte(aarHeader + "\r\n"),
+			lkey: "arc-authentication-results",
+		},
+		headerData{
+			raw:  []byte(amsHeader + "\r\n"),
+			lkey: "arc-message-signature",
+		},
+	)
 	// Add existing ARC headers
 	for _, h := range headers {
 		if h.lkey == "arc-authentication-results" ||

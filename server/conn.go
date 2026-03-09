@@ -356,9 +356,7 @@ func (c *Conn) buildExtensions() []string {
 	exts := []string{cfg.Domain}
 
 	// Always advertise these
-	exts = append(exts, "PIPELINING")
-	exts = append(exts, "8BITMIME")
-	exts = append(exts, "ENHANCEDSTATUSCODES")
+	exts = append(exts, "PIPELINING", "8BITMIME", "ENHANCEDSTATUSCODES")
 
 	// SIZE
 	if cfg.MaxMessageBytes > 0 {
@@ -738,7 +736,7 @@ func (d *dataReader) Read(p []byte) (int, error) {
 	}
 
 	// Handle dot-stuffing
-	if len(line) > 0 && line[0] == '.' {
+	if line != "" && line[0] == '.' {
 		line = line[1:]
 	}
 
@@ -1219,7 +1217,7 @@ func extractPathAndParams(s string) (path string, params string, err error) {
 	params = strings.TrimSpace(s[idx+1:])
 
 	// Strip source route (RFC 5321 §3.3): "@relay1,@relay2:user@domain" → "user@domain"
-	if len(path) > 0 && path[0] == '@' {
+	if path != "" && path[0] == '@' {
 		if colonIdx := strings.LastIndex(path, ":"); colonIdx != -1 {
 			path = path[colonIdx+1:]
 		}

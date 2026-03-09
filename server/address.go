@@ -445,11 +445,9 @@ func isValidIPv6(s string) bool {
 		if colons > 7 {
 			return false
 		}
-	} else {
+	} else if colons != 7 {
 		// Without ::, must have exactly 7 colons
-		if colons != 7 {
-			return false
-		}
+		return false
 	}
 
 	// Handle :: at start or end
