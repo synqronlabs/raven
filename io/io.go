@@ -13,14 +13,14 @@ var (
 )
 
 // ReadLine reads a single SMTP line with strict validation.
-func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
+func ReadLine(reader *bufio.Reader, maxThreshold int, enforce bool) (string, error) {
 	// FAST PATH: Try to read the full line in one go (zero-copy view).
 	line, err := reader.ReadSlice('\n')
 	if err == nil {
 		if !isASCII(line) && enforce {
 			return "", Err8BitIn7BitMode
 		}
-		return validateAndConvert(line, max)
+		return validateAndConvert(line, maxThreshold)
 	}
 
 	// If it's not ErrBufferFull, it's a read error (EOF, etc).
@@ -43,7 +43,7 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 		// Read the next chunk
 		line, err = reader.ReadSlice('\n')
 
-		if len(buf)+len(line) > max {
+		if len(buf)+len(line) > maxThreshold {
 			// Drain the rest of the line so the next read starts fresh
 			drainLine(reader)
 			return "", ErrLineTooLong
@@ -64,12 +64,12 @@ func ReadLine(reader *bufio.Reader, max int, enforce bool) (string, error) {
 		}
 	}
 
-	return validateAndConvert(buf, max)
+	return validateAndConvert(buf, maxThreshold)
 }
 
 // validateAndConvert checks length and CRLF.
-func validateAndConvert(b []byte, max int) (string, error) {
-	if len(b) > max {
+func validateAndConvert(b []byte, maxThreshold int) (string, error) {
+	if len(b) > maxThreshold {
 		// No need to drain here; if we have the whole line in 'b',
 		// we have already read it from the wire.
 		return "", ErrLineTooLong
