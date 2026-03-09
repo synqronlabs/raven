@@ -11,7 +11,7 @@ type fastEntropy struct{}
 
 func (fastEntropy) Read(p []byte) (int, error) {
 	for i := range p {
-		p[i] = byte(rand.Uint32())
+		p[i] = byte(rand.Uint32()) // skipcq: GSC-G404
 	}
 	return len(p), nil
 }
