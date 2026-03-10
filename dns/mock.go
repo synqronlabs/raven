@@ -97,10 +97,13 @@ func (r MockResolver) LookupTXT(ctx context.Context, name string) (Result[string
 }
 
 // LookupIP returns A and AAAA records for the given domain.
-func (r MockResolver) LookupIP(_ context.Context, domain string) (Result[net.IP], error) {
+func (r MockResolver) LookupIP(ctx context.Context, domain string) (Result[net.IP], error) {
 	fqdn := ensureFQDN(domain)
 
 	authentic := r.AllAuthentic
+	if err := ctx.Err(); err != nil {
+		return Result[net.IP]{Authentic: authentic}, fmt.Errorf("mock DNS request ip %s canceled: %w", fqdn, err)
+	}
 
 	// Check for A record failures
 	mrA := mockReq{"a", fqdn}
@@ -146,11 +149,14 @@ func (r MockResolver) LookupIP(_ context.Context, domain string) (Result[net.IP]
 }
 
 // LookupMX returns MX records for the given domain.
-func (r MockResolver) LookupMX(_ context.Context, name string) (Result[*net.MX], error) {
+func (r MockResolver) LookupMX(ctx context.Context, name string) (Result[*net.MX], error) {
 	fqdn := ensureFQDN(name)
 	mr := mockReq{"mx", fqdn}
 
 	authentic := r.AllAuthentic
+	if err := ctx.Err(); err != nil {
+		return Result[*net.MX]{Authentic: authentic}, fmt.Errorf("mock DNS request %s canceled: %w", mr.String(), err)
+	}
 	if slices.Contains(r.Fail, mr.String()) {
 		return Result[*net.MX]{Authentic: authentic}, ErrDNSServFail
 	}
@@ -170,11 +176,18 @@ func (r MockResolver) LookupMX(_ context.Context, name string) (Result[*net.MX],
 }
 
 // LookupAddr performs a reverse DNS lookup.
-func (r MockResolver) LookupAddr(_ context.Context, ip net.IP) (Result[string], error) {
+func (r MockResolver) LookupAddr(ctx context.Context, ip net.IP) (Result[string], error) {
+	if ip == nil {
+		return Result[string]{}, fmt.Errorf("dns: nil IP address")
+	}
+
 	ipStr := ip.String()
 	mr := mockReq{"ptr", ipStr}
 
 	authentic := r.AllAuthentic
+	if err := ctx.Err(); err != nil {
+		return Result[string]{Authentic: authentic}, fmt.Errorf("mock DNS request %s canceled: %w", mr.String(), err)
+	}
 	if slices.Contains(r.Fail, mr.String()) {
 		return Result[string]{Authentic: authentic}, ErrDNSServFail
 	}
