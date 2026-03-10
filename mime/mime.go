@@ -196,6 +196,12 @@ func ParseMultipartSection(part *multipart.Part) (*Part, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid Content-Type in part: %w", err)
 		}
+		// mime.ParseMediaType is permissive and accepts tokens without a
+		// slash (e.g. "!!!invalid!!!").  Enforce the RFC 2045 requirement
+		// that a media type must be "type/subtype".
+		if !strings.Contains(mediaType, "/") {
+			return nil, fmt.Errorf("invalid Content-Type in part: %q is not a valid media type", contentType)
+		}
 		mimePart.ContentType = mediaType
 
 		if charset, ok := params["charset"]; ok {
