@@ -549,7 +549,7 @@ func (b *MailBuilder) applyAttachments() error {
 			}
 			encoded = encoded[lineSize:]
 		}
-		if len(encoded) > 0 {
+		if encoded != "" {
 			if _, err := fmt.Fprintf(aw, "%s\r\n", encoded); err != nil {
 				return fmt.Errorf("writing attachment %q tail: %w", att.Filename, err)
 			}
