@@ -457,9 +457,6 @@ func (b *MailBuilder) Build() (*Mail, error) {
 	// Set received time
 	b.mail.ReceivedAt = time.Now()
 
-	// Generate ID
-	b.mail.ID = ravencrypto.GenerateID()
-
 	return b.mail, nil
 }
 

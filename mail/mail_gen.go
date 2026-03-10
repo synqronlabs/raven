@@ -1578,12 +1578,6 @@ func (z *Mail) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ReceivedAt")
 				return
 			}
-		case "ID":
-			z.ID, err = dc.ReadString()
-			if err != nil {
-				err = msgp.WrapError(err, "ID")
-				return
-			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -1597,9 +1591,9 @@ func (z *Mail) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *Mail) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 5
+	// map header, size 4
 	// write "Envelope"
-	err = en.Append(0x85, 0xa8, 0x45, 0x6e, 0x76, 0x65, 0x6c, 0x6f, 0x70, 0x65)
+	err = en.Append(0x84, 0xa8, 0x45, 0x6e, 0x76, 0x65, 0x6c, 0x6f, 0x70, 0x65)
 	if err != nil {
 		return
 	}
@@ -1645,25 +1639,15 @@ func (z *Mail) EncodeMsg(en *msgp.Writer) (err error) {
 		err = msgp.WrapError(err, "ReceivedAt")
 		return
 	}
-	// write "ID"
-	err = en.Append(0xa2, 0x49, 0x44)
-	if err != nil {
-		return
-	}
-	err = en.WriteString(z.ID)
-	if err != nil {
-		err = msgp.WrapError(err, "ID")
-		return
-	}
 	return
 }
 
 // MarshalMsg implements msgp.Marshaler
 func (z *Mail) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 5
+	// map header, size 4
 	// string "Envelope"
-	o = append(o, 0x85, 0xa8, 0x45, 0x6e, 0x76, 0x65, 0x6c, 0x6f, 0x70, 0x65)
+	o = append(o, 0x84, 0xa8, 0x45, 0x6e, 0x76, 0x65, 0x6c, 0x6f, 0x70, 0x65)
 	o, err = z.Envelope.MarshalMsg(o)
 	if err != nil {
 		err = msgp.WrapError(err, "Envelope")
@@ -1689,9 +1673,6 @@ func (z *Mail) MarshalMsg(b []byte) (o []byte, err error) {
 	// string "ReceivedAt"
 	o = append(o, 0xaa, 0x52, 0x65, 0x63, 0x65, 0x69, 0x76, 0x65, 0x64, 0x41, 0x74)
 	o = msgp.AppendTime(o, z.ReceivedAt)
-	// string "ID"
-	o = append(o, 0xa2, 0x49, 0x44)
-	o = msgp.AppendString(o, z.ID)
 	return
 }
 
@@ -1750,12 +1731,6 @@ func (z *Mail) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "ReceivedAt")
 				return
 			}
-		case "ID":
-			z.ID, bts, err = msgp.ReadStringBytes(bts)
-			if err != nil {
-				err = msgp.WrapError(err, "ID")
-				return
-			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -1774,7 +1749,7 @@ func (z *Mail) Msgsize() (s int) {
 	for za0001 := range z.Trace {
 		s += z.Trace[za0001].Msgsize()
 	}
-	s += 11 + msgp.TimeSize + 3 + msgp.StringPrefixSize + len(z.ID)
+	s += 11 + msgp.TimeSize
 	return
 }
 

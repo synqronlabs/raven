@@ -376,9 +376,6 @@ type Mail struct {
 
 	// ReceivedAt is when this server received the message.
 	ReceivedAt time.Time `json:"received_at"`
-
-	// ID is a unique identifier assigned to this message by the server.
-	ID string `json:"id"`
 }
 
 // RequiresSMTPUTF8 determines if this mail requires the SMTPUTF8 extension.
