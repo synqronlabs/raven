@@ -180,16 +180,6 @@ func (b *MailBuilder) Date(t time.Time) *MailBuilder {
 	return b
 }
 
-// Priority sets the X-Priority header.
-// Values: 1 (highest), 2 (high), 3 (normal), 4 (low), 5 (lowest).
-func (b *MailBuilder) Priority(level int) *MailBuilder {
-	if level < 1 || level > 5 {
-		level = 3 // Default to normal
-	}
-	b.mail.AddHeader("X-Priority", fmt.Sprintf("%d", level))
-	return b
-}
-
 // TextBody sets a plain text body for the message.
 // Line endings are normalized to CRLF.
 func (b *MailBuilder) TextBody(body string) *MailBuilder {

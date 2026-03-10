@@ -163,7 +163,6 @@ func TestMailBuilder_Headers(t *testing.T) {
 		Header("X-Custom", "value").
 		InReplyTo("abc123@example.com").
 		References("ref1@example.com", "ref2@example.com").
-		Priority(1).
 		Build()
 
 	if err != nil {
@@ -180,10 +179,6 @@ func TestMailBuilder_Headers(t *testing.T) {
 
 	if mail.Content.Headers.Get("In-Reply-To") != "<abc123@example.com>" {
 		t.Errorf("Expected In-Reply-To header")
-	}
-
-	if mail.Content.Headers.Get("X-Priority") != "1" {
-		t.Errorf("Expected X-Priority header to be '1'")
 	}
 }
 
