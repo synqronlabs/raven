@@ -1334,7 +1334,7 @@ func TestParseRawContent_ContinuationWithNoCurrentHeader(t *testing.T) {
 	}
 }
 
-func TestParseRawContent_ShortData(t *testing.T) {
+func TestParseRawContent_ShortData(_ *testing.T) {
 	// Less than 4 bytes: can never contain CRLF CRLF
 	for _, d := range [][]byte{{}, {'\r'}, {'\r', '\n'}, {'\r', '\n', '\r'}} {
 		h, body := parseRawContent(d)

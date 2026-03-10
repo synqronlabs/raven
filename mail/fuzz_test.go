@@ -29,7 +29,7 @@ func FuzzParseRawContent(f *testing.F) {
 	// Binary body
 	f.Add(append([]byte("From: a@b.com\r\n\r\n"), 0x00, 0x01, 0xFF, 0xFE))
 
-	f.Fuzz(func(t *testing.T, data []byte) {
+	f.Fuzz(func(_ *testing.T, data []byte) {
 		// Must not panic.
 		headers, body := parseRawContent(data)
 		_ = headers
@@ -71,7 +71,7 @@ func FuzzHeaders_Validate(f *testing.F) {
 	f.Add("", "", "", "")
 	f.Add("Subject", strings.Repeat("x", 1500), "Date", "Thu, 01 Jan 2026 00:00:00 +0000")
 
-	f.Fuzz(func(t *testing.T, n1, v1, n2, v2 string) {
+	f.Fuzz(func(_ *testing.T, n1, v1, n2, v2 string) {
 		h := Headers{{Name: n1, Value: v1}, {Name: n2, Value: v2}}
 		_ = h.Validate()
 	})
@@ -84,7 +84,7 @@ func FuzzContent_Validate(f *testing.F) {
 	f.Add([]byte(strings.Repeat("a", 1100) + "\r\n"))
 	f.Add([]byte{})
 
-	f.Fuzz(func(t *testing.T, body []byte) {
+	f.Fuzz(func(_ *testing.T, body []byte) {
 		c := Content{
 			Headers: Headers{
 				{Name: "Date", Value: "Thu, 01 Jan 2026 00:00:00 +0000"},
