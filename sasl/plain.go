@@ -62,7 +62,7 @@ func (p *Plain) processResponse(response string) (challenge string, done bool, e
 	authcid := string(parts[1])
 	passwd := string(parts[2])
 
-	if authcid == "" {
+	if authcid == "" || passwd == "" {
 		p.done = true
 		return "", true, ErrInvalidFormat
 	}

@@ -147,6 +147,21 @@ func TestPlain_InvalidFormat_EmptyAuthcid(t *testing.T) {
 	}
 }
 
+func TestPlain_InvalidFormat_EmptyPassword(t *testing.T) {
+	data := "authzid\x00user@example.com\x00"
+	encoded := base64.StdEncoding.EncodeToString([]byte(data))
+
+	p := NewPlain()
+	_, done, err := p.Start(encoded)
+
+	if err != ErrInvalidFormat {
+		t.Errorf("expected ErrInvalidFormat, got %v", err)
+	}
+	if !done {
+		t.Error("expected done to be true")
+	}
+}
+
 func TestLogin_Name(t *testing.T) {
 	l := NewLogin()
 	if l.Name() != "LOGIN" {
@@ -263,6 +278,18 @@ func TestLogin_InvalidBase64Password(t *testing.T) {
 	_, done, err := l.Next("not-valid-base64!!!")
 	if !errors.Is(err, ErrInvalidBase64) {
 		t.Errorf("expected ErrInvalidBase64, got %v", err)
+	}
+	if !done {
+		t.Error("expected done to be true")
+	}
+}
+
+func TestLogin_InvalidState(t *testing.T) {
+	l := NewLogin()
+
+	_, done, err := l.Next(base64.StdEncoding.EncodeToString([]byte("user@example.com")))
+	if err != ErrInvalidFormat {
+		t.Errorf("expected ErrInvalidFormat, got %v", err)
 	}
 	if !done {
 		t.Error("expected done to be true")
