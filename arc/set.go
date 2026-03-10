@@ -275,11 +275,7 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 			requiredTags["i"] = true
 
 		case "v":
-			version, err := strconv.Atoi(val)
-			if err != nil || version != 1 {
-				return nil, nil, fmt.Errorf("%w: v= must be 1", ErrInvalidVersion)
-			}
-			ms.Version = version
+			// RFC 8617 does not define v= for ARC-Message-Signature; ignore if present.
 
 		case "a":
 			ms.Algorithm = strings.ToLower(val)
@@ -361,7 +357,11 @@ func ParseMessageSignature(value string) (*MessageSignature, []byte, error) {
 
 	// Default canonicalization
 	if ms.Canonicalization == "" {
-		ms.Canonicalization = "relaxed/relaxed"
+		ms.Canonicalization = "simple/simple"
+	}
+
+	if len(ms.SignedHeaders) == 0 {
+		return nil, nil, fmt.Errorf("%w: h= tag must not be empty", ErrSyntax)
 	}
 
 	return ms, signatureForVerify, nil
@@ -403,11 +403,7 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 			requiredTags["i"] = true
 
 		case "v":
-			version, err := strconv.Atoi(val)
-			if err != nil || version != 1 {
-				return nil, nil, fmt.Errorf("%w: v= must be 1", ErrInvalidVersion)
-			}
-			seal.Version = version
+			// ARC-Seal does not define v=; ignore if present.
 
 		case "a":
 			seal.Algorithm = strings.ToLower(val)
@@ -450,6 +446,9 @@ func ParseSeal(value string) (*Seal, []byte, error) {
 				return nil, nil, fmt.Errorf("%w: invalid t= tag: %w", ErrSyntax, err)
 			}
 			seal.Timestamp = timestamp
+
+		case "h":
+			return nil, nil, fmt.Errorf("%w: h= tag is not allowed in ARC-Seal", ErrSyntax)
 		}
 	}
 

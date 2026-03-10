@@ -217,33 +217,36 @@ func (v *Verifier) verifyChain(
 		}
 	}
 
-	// Verify each ARC set from oldest to newest
-	for i := 0; i < len(sets); i++ {
-		set := sets[i]
+	// Validate the most recent ARC-Message-Signature. Older AMS failures only
+	// affect oldest-pass and do not invalidate the chain.
+	mostRecent := len(sets) - 1
+	if err := v.verifyMessageSignature(ctx, sets[mostRecent].MessageSignature, headers, message, bodyOffset); err != nil {
+		wrappedErr := fmt.Errorf("verifying ARC-Message-Signature for instance %d: %w", mostRecent+1, err)
+		result.Status = StatusFail
+		result.FailedInstance = mostRecent + 1
+		result.FailedReason = wrappedErr.Error()
+		result.Err = wrappedErr
+		return result, nil
+	}
 
-		// Verify ARC-Message-Signature
-		if err := v.verifyMessageSignature(ctx, set.MessageSignature, headers, message, bodyOffset); err != nil {
-			wrappedErr := fmt.Errorf("verifying ARC-Message-Signature for instance %d: %w", i+1, err)
+	// RFC 8617 oldest-pass is 0 when all AMS values validate.
+	result.OldestPass = 0
+	for i := len(sets) - 2; i >= 0; i-- {
+		if err := v.verifyMessageSignature(ctx, sets[i].MessageSignature, headers, message, bodyOffset); err != nil {
+			result.OldestPass = i + 2
+			break
+		}
+	}
+
+	// Verify ARC-Seal values from newest to oldest.
+	for i := len(sets); i >= 1; i-- {
+		if err := v.verifySeal(ctx, sets[:i], headers); err != nil {
+			wrappedErr := fmt.Errorf("verifying ARC-Seal for instance %d: %w", i, err)
 			result.Status = StatusFail
-			result.FailedInstance = i + 1
+			result.FailedInstance = i
 			result.FailedReason = wrappedErr.Error()
 			result.Err = wrappedErr
 			return result, nil
-		}
-
-		// Verify ARC-Seal
-		if err := v.verifySeal(ctx, sets[:i+1], headers); err != nil {
-			wrappedErr := fmt.Errorf("verifying ARC-Seal for instance %d: %w", i+1, err)
-			result.Status = StatusFail
-			result.FailedInstance = i + 1
-			result.FailedReason = wrappedErr.Error()
-			result.Err = wrappedErr
-			return result, nil
-		}
-
-		// Track oldest passing set
-		if result.OldestPass == 0 {
-			result.OldestPass = i + 1
 		}
 	}
 
@@ -259,10 +262,17 @@ func (v *Verifier) verifyMessageSignature(
 	bodyOffset int,
 ) error {
 	// Validate algorithm
+	signAlg := ms.AlgorithmSign()
+	if !isSupportedSignAlgorithm(signAlg) {
+		return fmt.Errorf("%w: %s", ErrAlgorithmUnknown, ms.Algorithm)
+	}
 	hashAlg := ms.AlgorithmHash()
 	hashFunc, ok := getHash(hashAlg)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrHashUnknown, hashAlg)
+	}
+	if !isSupportedCanonicalization(ms.Canonicalization) {
+		return fmt.Errorf("%w: %s", ErrCanonicalizationUnknown, ms.Canonicalization)
 	}
 
 	// Check expiration
@@ -289,6 +299,12 @@ func (v *Verifier) verifyMessageSignature(
 	record, err := v.lookupKey(ctx, ms.Selector, ms.Domain)
 	if err != nil {
 		return fmt.Errorf("looking up DKIM key for ARC-Message-Signature instance %d: %w", ms.Instance, err)
+	}
+	if !recordAllowsHash(record, hashAlg) {
+		return fmt.Errorf("%w: key record does not allow %s", ErrHashUnknown, hashAlg)
+	}
+	if !keyMatchesAlgorithm(record.Key, signAlg) {
+		return fmt.Errorf("%w: key type %q incompatible with %s", ErrAlgorithmUnknown, record.Key, ms.Algorithm)
 	}
 
 	// Verify body hash
@@ -346,6 +362,10 @@ func (v *Verifier) verifySeal(
 	seal := currentSet.Seal
 
 	// Validate algorithm
+	signAlg := seal.AlgorithmSign()
+	if !isSupportedSignAlgorithm(signAlg) {
+		return fmt.Errorf("%w: %s", ErrAlgorithmUnknown, seal.Algorithm)
+	}
 	hashAlg := seal.AlgorithmHash()
 	hashFunc, ok := getHash(hashAlg)
 	if !ok {
@@ -356,6 +376,12 @@ func (v *Verifier) verifySeal(
 	record, err := v.lookupKey(ctx, seal.Selector, seal.Domain)
 	if err != nil {
 		return fmt.Errorf("looking up DKIM key for ARC-Seal instance %d: %w", seal.Instance, err)
+	}
+	if !recordAllowsHash(record, hashAlg) {
+		return fmt.Errorf("%w: key record does not allow %s", ErrHashUnknown, hashAlg)
+	}
+	if !keyMatchesAlgorithm(record.Key, signAlg) {
+		return fmt.Errorf("%w: key type %q incompatible with %s", ErrAlgorithmUnknown, record.Key, seal.Algorithm)
 	}
 
 	// Build seal hash input per RFC 8617 Section 5.1.2
@@ -448,6 +474,7 @@ func (v *Verifier) now() time.Time {
 type DKIMRecord struct {
 	Version   string
 	Key       string
+	Hashes    []string
 	Pubkey    []byte
 	PublicKey any
 }
@@ -474,6 +501,15 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 		record.Key = strings.ToLower(k)
 	} else {
 		record.Key = "rsa"
+	}
+
+	if h, ok := tags["h"]; ok {
+		for _, alg := range strings.Split(h, ":") {
+			alg = strings.ToLower(strings.TrimSpace(alg))
+			if alg != "" {
+				record.Hashes = append(record.Hashes, alg)
+			}
+		}
 	}
 
 	// Public key (required)
@@ -540,6 +576,57 @@ func verifyWithKey(key any, hash crypto.Hash, data, signature []byte) error {
 	default:
 		return fmt.Errorf("%w: %T", ErrAlgorithmUnknown, key)
 	}
+}
+
+func isSupportedSignAlgorithm(name string) bool {
+	switch name {
+	case "rsa", "ed25519":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedCanonicalization(value string) bool {
+	if value == "" {
+		return true
+	}
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(value)), "/", 2)
+	if !isSupportedCanonicalizationPart(parts[0]) {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	return isSupportedCanonicalizationPart(parts[1])
+}
+
+func isSupportedCanonicalizationPart(value string) bool {
+	switch value {
+	case "simple", "relaxed":
+		return true
+	default:
+		return false
+	}
+}
+
+func recordAllowsHash(record *DKIMRecord, hashAlg string) bool {
+	if len(record.Hashes) == 0 {
+		return true
+	}
+	for _, allowed := range record.Hashes {
+		if allowed == hashAlg {
+			return true
+		}
+	}
+	return false
+}
+
+func keyMatchesAlgorithm(keyType, signAlg string) bool {
+	if keyType == "" {
+		keyType = "rsa"
+	}
+	return keyType == signAlg
 }
 
 // isTLD checks if a domain is a top-level domain.

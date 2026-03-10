@@ -57,9 +57,6 @@ var DefaultSignedHeaders = []string{
 	"Content-Disposition",
 	"Reply-To",
 	"Received",
-	"ARC-Authentication-Results",
-	"ARC-Message-Signature",
-	"ARC-Seal",
 	"DKIM-Signature",
 }
 
@@ -93,13 +90,18 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 
 	// Determine instance number
 	maxInstance := 0
+	var mostRecentSeal *Seal
 	for _, h := range headers {
 		if h.lkey == "arc-seal" {
 			seal, _, _ := ParseSeal(extractHeaderValue(h.raw))
 			if seal != nil && seal.Instance > maxInstance {
 				maxInstance = seal.Instance
+				mostRecentSeal = seal
 			}
 		}
+	}
+	if mostRecentSeal != nil && mostRecentSeal.ChainValidation == ChainValidationFail {
+		return nil, fmt.Errorf("%w: most recent ARC-Seal has cv=fail", ErrInvalidChain)
 	}
 
 	instance := maxInstance + 1
@@ -172,6 +174,9 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 	var finalSignedHeaders []string
 	for _, h := range signedHeaders {
 		lh := strings.ToLower(h)
+		if !isAMSSignableHeader(lh) {
+			continue
+		}
 		if presentHeaders[lh] > 0 {
 			finalSignedHeaders = append(finalSignedHeaders, h)
 		}
@@ -238,21 +243,6 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 		Timestamp:       s.now().Unix(),
 	}
 
-	// Compute seal signature
-	// The seal covers all ARC headers from i=1 to i=n
-	// Create the full set for seal computation
-	allSets := make([]*Set, instance)
-	for i := 0; i < instance-1; i++ {
-		// Extract existing sets from headers
-		allSets[i] = &Set{Instance: i + 1}
-	}
-	allSets[instance-1] = &Set{
-		Instance:              instance,
-		AuthenticationResults: aar,
-		MessageSignature:      ms,
-		Seal:                  seal,
-	}
-
 	// Build headers list for seal computation
 	sealHeaders := make([]headerData, 0)
 
@@ -267,17 +257,19 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 			lkey: "arc-message-signature",
 		},
 	)
-	// Add existing ARC headers
-	for _, h := range headers {
-		if h.lkey == "arc-authentication-results" ||
-			h.lkey == "arc-message-signature" ||
-			h.lkey == "arc-seal" {
-			sealHeaders = append(sealHeaders, h)
+	if chainValidation != ChainValidationFail {
+		// Add existing ARC headers when extending a valid chain.
+		for _, h := range headers {
+			if h.lkey == "arc-authentication-results" ||
+				h.lkey == "arc-message-signature" ||
+				h.lkey == "arc-seal" {
+				sealHeaders = append(sealHeaders, h)
+			}
 		}
 	}
 
 	// Compute seal data hash
-	sealDataHash, err := computeSealDataHashForSigning(hashFunc, instance, sealHeaders, seal)
+	sealDataHash, err := computeSealDataHashForSigning(hashFunc, instance, sealHeaders, seal, chainValidation == ChainValidationFail)
 	if err != nil {
 		return nil, fmt.Errorf("computing seal data hash: %w", err)
 	}
@@ -299,7 +291,7 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 }
 
 // computeSealDataHashForSigning computes the seal data hash for signing.
-func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers []headerData, newSeal *Seal) ([]byte, error) {
+func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers []headerData, newSeal *Seal, newestOnly bool) ([]byte, error) {
 	hasher := hashFunc.New()
 
 	// Organize headers by instance
@@ -327,8 +319,17 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 		}
 	}
 
+	instances := make([]int, 0, instance)
+	if newestOnly {
+		instances = append(instances, instance)
+	} else {
+		for i := 1; i <= instance; i++ {
+			instances = append(instances, i)
+		}
+	}
+
 	// Hash ARC-Authentication-Results (i=1 to i=n)
-	for i := 1; i <= instance; i++ {
+	for _, i := range instances {
 		hdr, ok := aarHeaders[i]
 		if !ok {
 			return nil, fmt.Errorf("%w: missing AAR for instance %d", ErrInvalidChain, i)
@@ -342,7 +343,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 	}
 
 	// Hash ARC-Message-Signature (i=1 to i=n)
-	for i := 1; i <= instance; i++ {
+	for _, i := range instances {
 		hdr, ok := amsHeaders[i]
 		if !ok {
 			return nil, fmt.Errorf("%w: missing AMS for instance %d", ErrInvalidChain, i)
@@ -356,7 +357,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 	}
 
 	// Hash ARC-Seal (i=1 to i=n, with empty b= for i=n)
-	for i := 1; i <= instance; i++ {
+	for index, i := range instances {
 		var rawHeader []byte
 
 		if i == instance {
@@ -375,7 +376,7 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 			return nil, fmt.Errorf("canonicalizing ARC-Seal for instance %d: %w", i, err)
 		}
 
-		if i == instance {
+		if index == len(instances)-1 {
 			// Last header without trailing CRLF
 			hasher.Write([]byte(canonHeader))
 		} else {
@@ -385,6 +386,15 @@ func computeSealDataHashForSigning(hashFunc crypto.Hash, instance int, headers [
 	}
 
 	return hasher.Sum(nil), nil
+}
+
+func isAMSSignableHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authentication-results", "arc-authentication-results", "arc-message-signature", "arc-seal":
+		return false
+	default:
+		return true
+	}
 }
 
 // getAlgorithm determines the signing algorithm based on the private key type.

@@ -30,7 +30,7 @@
 //	    Selector:   "arc1",
 //	    PrivateKey: privateKey,
 //	}
-//	headers, err := sealer.Seal(message, authResults, arc.ChainValidationPass)
+//	headers, err := sealer.Seal(message, "mx.example.com", authResults, arc.ChainValidationNone)
 //
 // # Chain Validation States
 //

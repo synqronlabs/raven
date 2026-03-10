@@ -44,7 +44,7 @@ sealResult, err := sealer.Seal(
     rawMessage,
     "mx.example.com",
     "dkim=pass header.d=example.com",
-    arc.ChainValidationPass,
+    arc.ChainValidationNone,
 )
 if err != nil {
     panic(err)

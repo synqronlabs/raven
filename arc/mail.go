@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"fmt"
+	"strings"
 
 	ravendns "github.com/synqronlabs/raven/dns"
 	ravenmail "github.com/synqronlabs/raven/mail"
@@ -86,11 +87,13 @@ func extractValue(header string) string {
 	// Find the first colon
 	for i := 0; i < len(header); i++ {
 		if header[i] == ':' {
-			// Return everything after ": "
-			value := header[i+1:]
-			if value != "" && value[0] == ' ' {
-				value = value[1:]
-			}
+			value := strings.TrimLeft(header[i+1:], " \t")
+			value = strings.TrimRight(value, "\r\n")
+			// Structured mail headers should store unfolded values; ToRaw will fold again.
+			value = strings.ReplaceAll(value, "\r\n\t", " ")
+			value = strings.ReplaceAll(value, "\r\n ", " ")
+			value = strings.ReplaceAll(value, "\n\t", " ")
+			value = strings.ReplaceAll(value, "\n ", " ")
 			return value
 		}
 	}

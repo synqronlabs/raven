@@ -86,7 +86,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, err
 //   - Ignore all whitespace at end of lines
 //   - Compress whitespace in lines to single space
 //   - Ignore all empty lines at end of body
-//   - Empty body stays empty (but we add CRLF per RFC)
+//   - Empty body canonicalizes to the empty string
 func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, error) {
 	br := bufio.NewReader(body)
 	var crlf = []byte("\r\n")
@@ -94,7 +94,8 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 
 	// Buffer empty lines to ignore trailing empty lines
 	emptyLines := 0
-	bodyNonEmpty := false
+	sawCanonicalContent := false
+	endsWithCRLF := false
 
 	for {
 		line, err := br.ReadBytes('\n')
@@ -104,8 +105,6 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("reading body line for relaxed canonicalization: %w", err)
 		}
-
-		bodyNonEmpty = true
 
 		hasCRLF := bytes.HasSuffix(line, crlf)
 		if hasCRLF {
@@ -133,22 +132,26 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 			}
 			h.Write(crlf)
 			written += 2
+			endsWithCRLF = true
 		}
 		emptyLines = 0
 
 		// Write the line content
+		sawCanonicalContent = true
 		toWrite := line
 		if lengthLimit >= 0 && written+int64(len(toWrite)) > lengthLimit {
 			toWrite = toWrite[:lengthLimit-written]
 		}
 		h.Write(toWrite)
 		written += int64(len(toWrite))
+		endsWithCRLF = false
 
 		// Write CRLF
 		if hasCRLF {
 			if lengthLimit < 0 || written+2 <= lengthLimit {
 				h.Write(crlf)
 				written += 2
+				endsWithCRLF = true
 			}
 		}
 
@@ -157,8 +160,9 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 		}
 	}
 
-	// Per RFC 6376, empty body with relaxed canonicalization should hash CRLF
-	if !bodyNonEmpty || written == 0 {
+	// Per RFC 6376 Section 3.4.4, an empty relaxed body hashes the empty string.
+	// A non-empty canonicalized body must end with CRLF.
+	if sawCanonicalContent && !endsWithCRLF && (lengthLimit < 0 || written+2 <= lengthLimit) {
 		h.Write(crlf)
 	}
 
