@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -1973,7 +1974,7 @@ func TestDotStuff_NoDots(t *testing.T) {
 	input := []byte("Hello World\r\n")
 	result := dotStuff(input)
 	// Should return original slice when no dots at line start
-	if string(result) != string(input) {
+	if !bytes.Equal(result, input) {
 		t.Errorf("expected unchanged output, got %q", result)
 	}
 }
@@ -2407,7 +2408,7 @@ func FuzzDotStuff(f *testing.F) {
 		// Invariant: every byte from input should be in result (with possible extra dots)
 		// Check that un-dot-stuffing recovers the original
 		undone := undotStuff(result)
-		if string(undone) != string(data) {
+		if !bytes.Equal(undone, data) {
 			t.Errorf("roundtrip failed:\n  input:    %q\n  stuffed:  %q\n  unstuffed: %q", data, result, undone)
 		}
 	})
