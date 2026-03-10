@@ -162,6 +162,42 @@ func TestPlain_InvalidFormat_EmptyPassword(t *testing.T) {
 	}
 }
 
+func TestPlain_InvalidFormat_InvalidUTF8(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "authzid",
+			data: append([]byte{0xff, 0x00}, []byte("user@example.com\x00secret123")...),
+		},
+		{
+			name: "authcid",
+			data: append([]byte("authzid\x00"), append([]byte{0xff, 0x00}, []byte("secret123")...)...),
+		},
+		{
+			name: "password",
+			data: append([]byte("authzid\x00user@example.com\x00"), 0xff),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := base64.StdEncoding.EncodeToString(tt.data)
+
+			p := NewPlain()
+			_, done, err := p.Start(encoded)
+
+			if err != ErrInvalidFormat {
+				t.Errorf("expected ErrInvalidFormat, got %v", err)
+			}
+			if !done {
+				t.Error("expected done to be true")
+			}
+		})
+	}
+}
+
 func TestLogin_Name(t *testing.T) {
 	l := NewLogin()
 	if l.Name() != "LOGIN" {

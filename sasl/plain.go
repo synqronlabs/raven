@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"unicode/utf8"
 )
 
 // Plain implements the PLAIN SASL mechanism (RFC 4616).
@@ -54,6 +55,10 @@ func (p *Plain) processResponse(response string) (challenge string, done bool, e
 	// Parse: authzid NUL authcid NUL passwd
 	parts := bytes.Split(decoded, []byte{0})
 	if len(parts) != 3 {
+		p.done = true
+		return "", true, ErrInvalidFormat
+	}
+	if !utf8.Valid(parts[0]) || !utf8.Valid(parts[1]) || !utf8.Valid(parts[2]) {
 		p.done = true
 		return "", true, ErrInvalidFormat
 	}
