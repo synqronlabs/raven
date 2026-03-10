@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
@@ -819,4 +820,1110 @@ func TestMailMessagePack(t *testing.T) {
 
 	t.Logf("MessagePack size: %d bytes, JSON size: %d bytes, ratio: %.2f%%",
 		len(data), len(jsonData), float64(len(data))/float64(len(jsonData))*100)
+}
+
+// ===== MailboxAddress / Path / Envelope helpers =====
+
+func TestMailboxAddress_String(t *testing.T) {
+	tests := []struct {
+		addr MailboxAddress
+		want string
+	}{
+		{MailboxAddress{LocalPart: "user", Domain: "example.com"}, "user@example.com"},
+		{MailboxAddress{}, ""},
+		{MailboxAddress{LocalPart: "", Domain: ""}, ""},
+	}
+	for _, tt := range tests {
+		got := tt.addr.String()
+		if got != tt.want {
+			t.Errorf("String() = %q, want %q", got, tt.want)
+		}
+	}
+	// Nil receiver
+	var nilAddr *MailboxAddress
+	if nilAddr.String() != "" {
+		t.Error("nil MailboxAddress.String() should return empty string")
+	}
+}
+
+func TestPath_IsNull(t *testing.T) {
+	if !(*Path)(nil).IsNull() {
+		t.Error("nil *Path should be null")
+	}
+	if !(&Path{}).IsNull() {
+		t.Error("empty Path should be null")
+	}
+	p := &Path{Mailbox: MailboxAddress{LocalPart: "u", Domain: "d.com"}}
+	if p.IsNull() {
+		t.Error("non-empty Path should not be null")
+	}
+}
+
+func TestPath_String(t *testing.T) {
+	null := &Path{}
+	if null.String() != "<>" {
+		t.Errorf("null path String() = %q, want \"<>\"", null.String())
+	}
+	p := &Path{Mailbox: MailboxAddress{LocalPart: "u", Domain: "d.com"}}
+	if p.String() != "<u@d.com>" {
+		t.Errorf("path String() = %q, want \"<u@d.com>\"", p.String())
+	}
+}
+
+func TestHeaders_GetAll(t *testing.T) {
+	h := Headers{
+		{Name: "X-Tag", Value: "a"},
+		{Name: "X-Tag", Value: "b"},
+		{Name: "Other", Value: "c"},
+	}
+	got := h.GetAll("x-tag")
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("GetAll = %v, want [a b]", got)
+	}
+	if len(h.GetAll("missing")) != 0 {
+		t.Error("GetAll of missing header should return empty slice")
+	}
+	// Nil receiver
+	var nilH *Headers
+	if len(nilH.GetAll("X-Tag")) != 0 {
+		t.Error("nil Headers.GetAll should return empty slice")
+	}
+}
+
+func TestHeaders_Get_NilReceiver(t *testing.T) {
+	var nilH *Headers
+	if nilH.Get("Date") != "" {
+		t.Error("nil Headers.Get should return empty string")
+	}
+}
+
+func TestHeaders_Count_NilReceiver(t *testing.T) {
+	var nilH *Headers
+	if nilH.Count("Date") != 0 {
+		t.Error("nil Headers.Count should return 0")
+	}
+}
+
+// ===== TraceField.String =====
+
+func TestTraceField_String_Nil(t *testing.T) {
+	var tf *TraceField
+	if tf.String() != "" {
+		t.Error("nil TraceField.String() should return empty string")
+	}
+}
+
+func TestTraceField_String_Raw(t *testing.T) {
+	tf := &TraceField{Raw: "some raw value"}
+	if tf.String() != "some raw value" {
+		t.Errorf("expected raw value, got %q", tf.String())
+	}
+}
+
+func TestTraceField_String_ReturnPath(t *testing.T) {
+	tf := &TraceField{Type: "Return-Path", For: ""}
+	if tf.String() != "<>" {
+		t.Errorf("empty return path = %q, want \"<>\"", tf.String())
+	}
+	tf2 := &TraceField{Type: "Return-Path", For: "bounce@example.com"}
+	if tf2.String() != "<bounce@example.com>" {
+		t.Errorf("return path = %q, want \"<bounce@example.com>\"", tf2.String())
+	}
+}
+
+func TestTraceField_String_Received(t *testing.T) {
+	ts := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	tf := &TraceField{
+		Type:       "Received",
+		FromDomain: "mail.sender.com",
+		FromIP:     "192.0.2.1",
+		ByDomain:   "mail.receiver.com",
+		Via:        "TCP",
+		With:       "ESMTPS",
+		ID:         "abc123",
+		For:        "user@receiver.com",
+		Timestamp:  ts,
+	}
+	s := tf.String()
+	for _, want := range []string{
+		"from mail.sender.com",
+		"by mail.receiver.com",
+		"via TCP",
+		"with ESMTPS",
+		"id abc123",
+		"for <user@receiver.com>",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("TraceField.String() missing %q in %q", want, s)
+		}
+	}
+}
+
+func TestTraceField_String_Received_Minimal(t *testing.T) {
+	// Only FromDomain set (no IP, no BY, etc.)
+	tf := &TraceField{
+		Type:       "Received",
+		FromDomain: "mail.sender.com",
+		Timestamp:  time.Now(),
+	}
+	s := tf.String()
+	if !strings.Contains(s, "from mail.sender.com") {
+		t.Errorf("expected 'from mail.sender.com' in %q", s)
+	}
+}
+
+func TestNewReturnPathTrace(t *testing.T) {
+	p := Path{Mailbox: MailboxAddress{LocalPart: "bounce", Domain: "example.com"}}
+	tf := NewReturnPathTrace(p)
+	if tf.Type != "Return-Path" {
+		t.Errorf("type = %q, want Return-Path", tf.Type)
+	}
+	if tf.For != "bounce@example.com" {
+		t.Errorf("for = %q, want bounce@example.com", tf.For)
+	}
+}
+
+// ===== Mail helpers =====
+
+func TestMail_RequiresSMTPUTF8(t *testing.T) {
+	m := NewMail()
+	if m.RequiresSMTPUTF8() {
+		t.Error("empty mail should not require SMTPUTF8")
+	}
+
+	// Explicit flag
+	m.Envelope.SMTPUTF8 = true
+	if !m.RequiresSMTPUTF8() {
+		t.Error("explicit SMTPUTF8 flag should require SMTPUTF8")
+	}
+	m.Envelope.SMTPUTF8 = false
+
+	// Non-ASCII in From local-part
+	m.Envelope.From = Path{Mailbox: MailboxAddress{LocalPart: "ünïcodé", Domain: "example.com"}}
+	if !m.RequiresSMTPUTF8() {
+		t.Error("non-ASCII From local-part should require SMTPUTF8")
+	}
+	m.Envelope.From = Path{}
+
+	// Non-ASCII in To domain
+	m.Envelope.To = []Recipient{{Address: Path{Mailbox: MailboxAddress{LocalPart: "u", Domain: "münchen.de"}}}}
+	if !m.RequiresSMTPUTF8() {
+		t.Error("non-ASCII To domain should require SMTPUTF8")
+	}
+	m.Envelope.To = nil
+
+	// Non-ASCII in header value
+	m.Content.Headers = Headers{{Name: "Subject", Value: "こんにちは"}}
+	if !m.RequiresSMTPUTF8() {
+		t.Error("non-ASCII header value should require SMTPUTF8")
+	}
+}
+
+func TestMail_Requires8BitMIME(t *testing.T) {
+	m := NewMail()
+	if m.Requires8BitMIME() {
+		t.Error("empty mail should not require 8BITMIME")
+	}
+
+	m.Envelope.BodyType = BodyType8BitMIME
+	if !m.Requires8BitMIME() {
+		t.Error("BodyType8BitMIME should require 8BITMIME")
+	}
+	m.Envelope.BodyType = ""
+
+	// Body with 8-bit data
+	m.Content.Body = []byte{0x80, 0x90}
+	if !m.Requires8BitMIME() {
+		t.Error("body with bytes >127 should require 8BITMIME")
+	}
+}
+
+func TestMail_SetNullSender(t *testing.T) {
+	m := NewMail()
+	m.SetFrom(MailboxAddress{LocalPart: "u", Domain: "d.com"})
+	m.SetNullSender()
+	if !m.Envelope.From.IsNull() {
+		t.Error("SetNullSender should result in null sender")
+	}
+}
+
+func TestMail_AddReturnPath(t *testing.T) {
+	m := NewMail()
+	m.SetFrom(MailboxAddress{LocalPart: "sender", Domain: "example.com"})
+	m.Content.Headers = Headers{
+		{Name: "From", Value: "sender@example.com"},
+	}
+	m.AddReturnPath()
+
+	if len(m.Trace) == 0 || m.Trace[0].Type != "Return-Path" {
+		t.Error("AddReturnPath should prepend a Return-Path trace field")
+	}
+	if m.Content.Headers[0].Name != "Return-Path" {
+		t.Error("AddReturnPath should prepend Return-Path header")
+	}
+	if !strings.Contains(m.Content.Headers[0].Value, "sender@example.com") {
+		t.Errorf("Return-Path header value = %q, want to contain sender address", m.Content.Headers[0].Value)
+	}
+}
+
+func TestMail_AddReturnPath_NullSender(t *testing.T) {
+	m := NewMail()
+	m.SetNullSender()
+	m.AddReturnPath()
+	if m.Content.Headers[0].Value != "<>" {
+		t.Errorf("null sender Return-Path = %q, want \"<>\"", m.Content.Headers[0].Value)
+	}
+}
+
+func TestMail_ToJSONIndent(t *testing.T) {
+	m := NewMail()
+	m.SetFrom(MailboxAddress{LocalPart: "u", Domain: "d.com"})
+	data, err := m.ToJSONIndent()
+	if err != nil {
+		t.Fatalf("ToJSONIndent: %v", err)
+	}
+	if !strings.Contains(string(data), "\n") {
+		t.Error("ToJSONIndent should produce multi-line output")
+	}
+}
+
+func TestMail_FromJSON(t *testing.T) {
+	m := NewMail()
+	m.SetFrom(MailboxAddress{LocalPart: "u", Domain: "d.com"})
+	j, err := m.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON: %v", err)
+	}
+	decoded, err := FromJSON(j)
+	if err != nil {
+		t.Fatalf("FromJSON: %v", err)
+	}
+	if decoded.Envelope.From.Mailbox.String() != "u@d.com" {
+		t.Errorf("decoded From = %q", decoded.Envelope.From.Mailbox.String())
+	}
+}
+
+func TestFromJSON_Invalid(t *testing.T) {
+	_, err := FromJSON([]byte("not json"))
+	if err == nil {
+		t.Error("FromJSON with invalid JSON should return error")
+	}
+}
+
+func TestFromMessagePack_Invalid(t *testing.T) {
+	_, err := FromMessagePack([]byte{0xff, 0xfe})
+	if err == nil {
+		t.Error("FromMessagePack with invalid data should return error")
+	}
+}
+
+// ===== Content.ToMIME, FromMIME, FromRaw =====
+
+func TestContent_ToMIME(t *testing.T) {
+	c := Content{
+		Headers: Headers{
+			{Name: "Content-Type", Value: "text/plain; charset=utf-8"},
+			{Name: "Content-Transfer-Encoding", Value: "7bit"},
+		},
+		Body: []byte("Hello, MIME!"),
+	}
+	part, err := c.ToMIME()
+	if err != nil {
+		t.Fatalf("ToMIME: %v", err)
+	}
+	if part.ContentType != "text/plain" {
+		t.Errorf("ContentType = %q, want text/plain", part.ContentType)
+	}
+	if !bytes.Equal(part.Body, c.Body) {
+		t.Errorf("body not preserved")
+	}
+}
+
+func TestContent_FromMIME_SinglePart(t *testing.T) {
+	c := Content{
+		Headers: Headers{
+			{Name: "Content-Type", Value: "text/plain; charset=utf-8"},
+		},
+		Body: []byte("original"),
+	}
+	part, _ := c.ToMIME()
+	part.Body = []byte("updated body")
+
+	var c2 Content
+	if err := c2.FromMIME(part); err != nil {
+		t.Fatalf("FromMIME: %v", err)
+	}
+	if string(c2.Body) != "updated body" {
+		t.Errorf("body = %q, want \"updated body\"", string(c2.Body))
+	}
+	if c2.Charset != "utf-8" {
+		t.Errorf("charset = %q, want utf-8", c2.Charset)
+	}
+}
+
+func TestContent_FromMIME_DefaultEncoding(t *testing.T) {
+	c := Content{
+		Headers: Headers{{Name: "Content-Type", Value: "text/plain"}},
+		Body:    []byte("body"),
+	}
+	part, _ := c.ToMIME()
+	part.ContentTransferEncoding = "" // clear to test default
+
+	var c2 Content
+	if err := c2.FromMIME(part); err != nil {
+		t.Fatalf("FromMIME: %v", err)
+	}
+	if c2.Encoding != "7bit" {
+		t.Errorf("default encoding = %q, want 7bit", c2.Encoding)
+	}
+}
+
+func TestContent_FromRaw(t *testing.T) {
+	raw := []byte("From: sender@example.com\r\nSubject: Hello\r\nContent-Transfer-Encoding: 7bit\r\n\r\nBody text here")
+
+	var c Content
+	c.FromRaw(raw)
+
+	if c.Headers.Get("From") != "sender@example.com" {
+		t.Errorf("From header = %q", c.Headers.Get("From"))
+	}
+	if c.Headers.Get("Subject") != "Hello" {
+		t.Errorf("Subject header = %q", c.Headers.Get("Subject"))
+	}
+	if string(c.Body) != "Body text here" {
+		t.Errorf("body = %q", string(c.Body))
+	}
+	if c.Encoding != "7bit" {
+		t.Errorf("encoding = %q", c.Encoding)
+	}
+}
+
+func TestContent_FromRaw_Charset(t *testing.T) {
+	tests := []struct {
+		name   string
+		ct     string
+		wantCS string
+	}{
+		{"quoted charset", `text/plain; charset="utf-8"`, "utf-8"},
+		{"unquoted charset", "text/plain; charset=iso-8859-1", "iso-8859-1"},
+		{"charset with trailing semicolon", "text/plain; charset=utf-8; format=flowed", "utf-8"},
+		{"no charset", "text/plain", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte("Content-Type: " + tt.ct + "\r\n\r\n")
+			var c Content
+			c.FromRaw(raw)
+			if c.Charset != tt.wantCS {
+				t.Errorf("charset = %q, want %q", c.Charset, tt.wantCS)
+			}
+		})
+	}
+}
+
+func TestContent_FromRaw_NoContentTransferEncoding(t *testing.T) {
+	raw := []byte("Subject: Hi\r\n\r\nBody")
+	var c Content
+	c.FromRaw(raw)
+	if c.Encoding != "7bit" {
+		t.Errorf("default encoding = %q, want 7bit", c.Encoding)
+	}
+}
+
+// ===== parseRawContent edge cases =====
+
+func TestParseRawContent_CRLFCRLF(t *testing.T) {
+	data := []byte("From: a@b.com\r\nSubject: Hi\r\n\r\nbody here")
+	h, body := parseRawContent(data)
+	if h.Get("From") != "a@b.com" {
+		t.Errorf("From = %q", h.Get("From"))
+	}
+	if h.Get("Subject") != "Hi" {
+		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+	if string(body) != "body here" {
+		t.Errorf("body = %q", string(body))
+	}
+}
+
+func TestParseRawContent_BareLF(t *testing.T) {
+	data := []byte("From: a@b.com\nSubject: Hi\n\nbody here")
+	h, body := parseRawContent(data)
+	if h.Get("From") != "a@b.com" {
+		t.Errorf("From = %q", h.Get("From"))
+	}
+	if h.Get("Subject") != "Hi" {
+		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+	if string(body) != "body here" {
+		t.Errorf("body = %q", string(body))
+	}
+}
+
+func TestParseRawContent_NoSeparator(t *testing.T) {
+	// No header/body separator — treated as all-body
+	data := []byte("just some body text without headers")
+	h, body := parseRawContent(data)
+	if h != nil {
+		t.Errorf("expected nil headers, got %v", h)
+	}
+	if !bytes.Equal(body, data) {
+		t.Errorf("expected entire data as body")
+	}
+}
+
+func TestParseRawContent_EmptyHeaderSection(t *testing.T) {
+	// Separator immediately at start: empty headers, body only
+	data := []byte("\r\n\r\nbody only")
+	h, body := parseRawContent(data)
+	if len(h) != 0 {
+		t.Errorf("expected empty headers, got %v", h)
+	}
+	if string(body) != "body only" {
+		t.Errorf("body = %q", string(body))
+	}
+}
+
+func TestParseRawContent_EmptyBody(t *testing.T) {
+	data := []byte("From: a@b.com\r\n\r\n")
+	h, body := parseRawContent(data)
+	if h.Get("From") != "a@b.com" {
+		t.Errorf("From = %q", h.Get("From"))
+	}
+	if body != nil {
+		t.Errorf("expected nil body, got %q", body)
+	}
+}
+
+func TestParseRawContent_FoldedHeader(t *testing.T) {
+	data := []byte("Subject: long\r\n subject continuation\r\n\r\nbody")
+	h, _ := parseRawContent(data)
+	subj := h.Get("Subject")
+	if !strings.Contains(subj, "long") || !strings.Contains(subj, "subject continuation") {
+		t.Errorf("folded subject not reassembled: %q", subj)
+	}
+}
+
+func TestParseRawContent_FoldedHeader_BareLF(t *testing.T) {
+	data := []byte("Subject: long\n subject continuation\n\nbody")
+	h, _ := parseRawContent(data)
+	subj := h.Get("Subject")
+	if !strings.Contains(subj, "long") || !strings.Contains(subj, "subject continuation") {
+		t.Errorf("folded subject (bare LF) not reassembled: %q", subj)
+	}
+}
+
+func TestParseRawContent_MalformedHeader(t *testing.T) {
+	// Line without colon should be silently dropped
+	data := []byte("From: a@b.com\r\nNOCOLONHERE\r\nSubject: Hi\r\n\r\nbody")
+	h, _ := parseRawContent(data)
+	if h.Get("From") != "a@b.com" {
+		t.Errorf("From = %q", h.Get("From"))
+	}
+	if h.Get("Subject") != "Hi" {
+		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+}
+
+func TestParseRawContent_ContinuationWithNoCurrentHeader(t *testing.T) {
+	// Continuation line as very first line — should be silently ignored
+	data := []byte(" continuation with no preceding header\r\nSubject: OK\r\n\r\nbody")
+	h, _ := parseRawContent(data)
+	if h.Get("Subject") != "OK" {
+		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+}
+
+func TestParseRawContent_ShortData(t *testing.T) {
+	// Less than 4 bytes: can never contain CRLF CRLF
+	for _, d := range [][]byte{{}, {'\r'}, {'\r', '\n'}, {'\r', '\n', '\r'}} {
+		h, body := parseRawContent(d)
+		_ = h
+		_ = body
+		// Just must not panic
+	}
+}
+
+func TestParseRawContent_HeaderWithColonInValue(t *testing.T) {
+	data := []byte("Subject: re: reply: nested\r\n\r\nbody")
+	h, _ := parseRawContent(data)
+	if h.Get("Subject") != "re: reply: nested" {
+		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+}
+
+// ===== ParseAddress =====
+
+func TestParseAddress_Invalid(t *testing.T) {
+	_, err := ParseAddress("not-an-email")
+	if err == nil {
+		t.Error("expected error for invalid address")
+	}
+}
+
+func TestParseAddress_NoAtSign(t *testing.T) {
+	// mail.ParseAddress can handle "Name <user@domain>" but plain "local" with no @ is malformed
+	_, err := ParseAddress("plainlocal")
+	if err == nil {
+		t.Error("expected error for address without domain")
+	}
+}
+
+// ===== Builder: uncovered methods =====
+
+func TestMailBuilder_FromMailbox(t *testing.T) {
+	m, err := NewMailBuilder().
+		FromMailbox(MailboxAddress{LocalPart: "user", Domain: "example.com", DisplayName: "User"}).
+		To("rcpt@example.com").
+		TextBody("test").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Envelope.From.Mailbox.LocalPart != "user" {
+		t.Errorf("From local-part = %q", m.Envelope.From.Mailbox.LocalPart)
+	}
+}
+
+func TestMailBuilder_NullSender(t *testing.T) {
+	m, err := NewMailBuilder().
+		NullSender().
+		Header("From", "postmaster@example.com").
+		To("rcpt@example.com").
+		TextBody("bounce").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !m.Envelope.From.IsNull() {
+		t.Error("expected null sender")
+	}
+}
+
+func TestMailBuilder_ToMailbox(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("sender@example.com").
+		ToMailbox(MailboxAddress{LocalPart: "a", Domain: "x.com"}, MailboxAddress{LocalPart: "b", Domain: "x.com"}).
+		TextBody("test").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(m.Envelope.To) != 2 {
+		t.Errorf("expected 2 recipients, got %d", len(m.Envelope.To))
+	}
+}
+
+func TestMailBuilder_HTMLBody(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		HTMLBody("<h1>Hello</h1>").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	ct := m.Content.Headers.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html...", ct)
+	}
+}
+
+func TestMailBuilder_HTMLBody_NonASCII(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		HTMLBody("<p>こんにちは</p>").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Envelope.BodyType != BodyType8BitMIME {
+		t.Errorf("expected 8BITMIME body type, got %q", m.Envelope.BodyType)
+	}
+}
+
+func TestMailBuilder_Body(t *testing.T) {
+	raw := []byte{0x89, 0x50, 0x4e, 0x47} // PNG magic bytes
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		Body(raw, "image/png", "base64").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !bytes.Equal(m.Content.Body, raw) {
+		t.Error("body bytes not preserved")
+	}
+	if m.Content.Headers.Get("Content-Type") != "image/png" {
+		t.Errorf("Content-Type = %q", m.Content.Headers.Get("Content-Type"))
+	}
+}
+
+func TestMailBuilder_InvalidFromAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("not-valid").
+		To("r@example.com").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid From address")
+	}
+}
+
+func TestMailBuilder_InvalidToAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		To("not-valid").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid To address")
+	}
+}
+
+func TestMailBuilder_InvalidCcAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		Cc("not-valid").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid Cc address")
+	}
+}
+
+func TestMailBuilder_InvalidBccAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		Bcc("not-valid").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid Bcc address")
+	}
+}
+
+func TestMailBuilder_InvalidSenderAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		Sender("not-valid").
+		To("r@example.com").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid Sender address")
+	}
+}
+
+func TestMailBuilder_InvalidReplyToAddress(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		ReplyTo("not-valid").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error for invalid ReplyTo address")
+	}
+}
+
+func TestMailBuilder_SMTPUTF8(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		SMTPUTF8().
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !m.Envelope.SMTPUTF8 {
+		t.Error("expected SMTPUTF8 to be true")
+	}
+}
+
+func TestMailBuilder_Size(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		Size(12345).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// Size was manually set; Build() should not override it
+	if m.Envelope.Size != 12345 {
+		t.Errorf("Size = %d, want 12345", m.Envelope.Size)
+	}
+}
+
+func TestMailBuilder_Auth(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		Auth("identity@example.com").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Envelope.Auth != "identity@example.com" {
+		t.Errorf("Auth = %q", m.Envelope.Auth)
+	}
+}
+
+func TestMailBuilder_ExtensionParam(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		ExtensionParam("HOLDUNTIL", "2099-01-01").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Envelope.ExtensionParams["HOLDUNTIL"] != "2099-01-01" {
+		t.Errorf("ExtensionParam = %q", m.Envelope.ExtensionParams["HOLDUNTIL"])
+	}
+}
+
+func TestMailBuilder_RecipientDSN(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		RecipientDSN(0, []string{"SUCCESS", "FAILURE"}, "rfc822;original@example.com").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Envelope.To[0].DSNParams == nil {
+		t.Fatal("expected DSNParams to be set on recipient")
+	}
+	if m.Envelope.To[0].DSNParams.ORcpt != "rfc822;original@example.com" {
+		t.Errorf("ORcpt = %q", m.Envelope.To[0].DSNParams.ORcpt)
+	}
+}
+
+func TestMailBuilder_RecipientDSN_OutOfRange(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		RecipientDSN(99, []string{"SUCCESS"}, "").
+		Build()
+	if err == nil {
+		t.Error("expected error for out-of-range recipient index")
+	}
+}
+
+func TestMailBuilder_MustBuild_Panics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("MustBuild should panic on error")
+		}
+	}()
+	// No From or To — will fail
+	NewMailBuilder().MustBuild()
+}
+
+func TestMailBuilder_MustBuild_OK(t *testing.T) {
+	m := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		MustBuild()
+	if m == nil {
+		t.Error("MustBuild returned nil")
+	}
+}
+
+func TestMailBuilder_DisplayName_QuoteSpecials(t *testing.T) {
+	// Display name containing RFC 5322 special characters (e.g. parentheses) should be quoted.
+	m, err := NewMailBuilder().
+		From(`"Sean (Dev)" <sean@example.com>`).
+		To("r@example.com").
+		TextBody("test").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	from := m.Content.Headers.Get("From")
+	if from == "" {
+		t.Error("expected From header")
+	}
+}
+
+// ===== Attachment bug regression test =====
+
+func TestMailBuilder_AttachFile(t *testing.T) {
+	data := []byte("PDF content here")
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("Please find attachment.").
+		AttachFile("doc.pdf", data, "application/pdf").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	ct := m.Content.Headers.Get("Content-Type")
+	if !strings.HasPrefix(ct, "multipart/mixed") {
+		t.Errorf("Content-Type = %q, want multipart/mixed", ct)
+	}
+	if !strings.Contains(string(m.Content.Body), "Please find attachment.") {
+		t.Error("body should contain text part")
+	}
+	if !strings.Contains(string(m.Content.Body), "doc.pdf") {
+		t.Error("body should contain attachment filename")
+	}
+	// MIME-Version should still be present
+	if m.Content.Headers.Get("MIME-Version") != "1.0" {
+		t.Errorf("MIME-Version = %q, want 1.0", m.Content.Headers.Get("MIME-Version"))
+	}
+}
+
+func TestMailBuilder_AttachFile_NoContentType(t *testing.T) {
+	// Empty contentType should default to application/octet-stream
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("hi").
+		AttachFile("data.bin", []byte{0x01, 0x02}, "").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.Contains(string(m.Content.Body), "application/octet-stream") {
+		t.Error("empty content type should default to application/octet-stream")
+	}
+}
+
+func TestMailBuilder_AttachInline(t *testing.T) {
+	imgData := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		HTMLBody(`<img src="cid:logo">`).
+		AttachInline("logo.png", "logo", imgData, "image/png").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if !strings.HasPrefix(m.Content.Headers.Get("Content-Type"), "multipart/mixed") {
+		t.Errorf("Content-Type = %q, want multipart/mixed", m.Content.Headers.Get("Content-Type"))
+	}
+	if !strings.Contains(string(m.Content.Body), "inline") {
+		t.Error("inline attachment should have Content-Disposition: inline")
+	}
+	if !strings.Contains(string(m.Content.Body), "<logo>") {
+		t.Error("inline attachment should have Content-Id header")
+	}
+}
+
+func TestMailBuilder_AttachInline_NoContentType(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("hi").
+		AttachInline("img.jpg", "img", []byte{0xff, 0xd8}, "").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.Contains(string(m.Content.Body), "application/octet-stream") {
+		t.Error("empty content type on inline should default to application/octet-stream")
+	}
+}
+
+func TestMailBuilder_MultipleAttachments(t *testing.T) {
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("Two attachments follow.").
+		AttachFile("a.txt", []byte("file a"), "text/plain").
+		AttachFile("b.txt", []byte("file b"), "text/plain").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	body := string(m.Content.Body)
+	if !strings.Contains(body, "a.txt") {
+		t.Error("first attachment filename missing")
+	}
+	if !strings.Contains(body, "b.txt") {
+		t.Error("second attachment filename missing")
+	}
+}
+
+func TestMailBuilder_AttachFile_Base64Encoded(t *testing.T) {
+	// Verify the attachment data is actually base64 encoded in the output
+	rawData := []byte("Hello, attachment!")
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("see attachment").
+		AttachFile("hello.txt", rawData, "text/plain").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// base64("Hello, attachment!") = "SGVsbG8sIGF0dGFjaG1lbnQh"
+	if !strings.Contains(string(m.Content.Body), "SGVsbG8sIGF0dGFjaG1lbnQh") {
+		t.Errorf("expected base64-encoded content in body, got:\n%s", string(m.Content.Body))
+	}
+}
+
+// ===== Targeted gap-filling tests =====
+
+func TestMailBuilder_References_AlreadyBracketed(t *testing.T) {
+	// When IDs already have angle brackets they must not be double-bracketed.
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("test").
+		References("<msg1@example.com>", "<msg2@example.com>").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	refs := m.Content.Headers.Get("References")
+	if strings.Count(refs, "<<") > 0 {
+		t.Errorf("double-bracketed References: %q", refs)
+	}
+	if !strings.Contains(refs, "<msg1@example.com>") {
+		t.Errorf("References missing msg1: %q", refs)
+	}
+}
+
+func TestMailBuilder_NullSender_NoFromHeader(t *testing.T) {
+	// NullSender with no From header should return an error.
+	_, err := NewMailBuilder().
+		NullSender().
+		To("r@example.com").
+		TextBody("test").
+		Build()
+	if err == nil {
+		t.Error("expected error: NullSender with no From header")
+	}
+}
+
+func TestMailBuilder_AttachFile_NoFilename(t *testing.T) {
+	// Attachment without a filename should still build successfully.
+	m, err := NewMailBuilder().
+		From("s@example.com").
+		To("r@example.com").
+		TextBody("hi").
+		AttachFile("", []byte("data"), "application/octet-stream").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.HasPrefix(m.Content.Headers.Get("Content-Type"), "multipart/mixed") {
+		t.Errorf("Content-Type = %q", m.Content.Headers.Get("Content-Type"))
+	}
+}
+
+func TestFormatAddress_NonASCIIDisplayName(t *testing.T) {
+	// Non-ASCII display name should be RFC 2047 encoded.
+	addr := MailboxAddress{
+		LocalPart:   "user",
+		Domain:      "example.com",
+		DisplayName: "田中太郎",
+	}
+	result := formatAddress(addr)
+	if !strings.Contains(result, "=?UTF-8?B?") {
+		t.Errorf("non-ASCII display name not RFC2047-encoded: %q", result)
+	}
+	if !strings.Contains(result, "<user@example.com>") {
+		t.Errorf("address part missing in %q", result)
+	}
+}
+
+func TestContent_Validate_FinalLineTooLong(t *testing.T) {
+	// Body with no trailing CRLF whose final line exceeds MaxLineLength.
+	finalLine := bytes.Repeat([]byte("a"), MaxLineLength+1)
+	content := Content{
+		Headers: Headers{
+			{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+			{Name: "From", Value: "sender@example.com"},
+		},
+		Body: finalLine, // no trailing \r\n
+	}
+	err := content.Validate()
+	if err != ErrLineTooLong {
+		t.Errorf("expected ErrLineTooLong for long final line, got %v", err)
+	}
+}
+
+func TestContent_Validate_FinalLineAtLimit(t *testing.T) {
+	// Final line exactly at MaxLineLength (no CRLF) should be valid.
+	finalLine := bytes.Repeat([]byte("a"), MaxLineLength)
+	content := Content{
+		Headers: Headers{
+			{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+			{Name: "From", Value: "sender@example.com"},
+		},
+		Body: finalLine,
+	}
+	err := content.Validate()
+	if err != nil {
+		t.Errorf("expected no error for final line at MaxLineLength, got %v", err)
+	}
+}
+
+func TestContent_FromMIME_Multipart(t *testing.T) {
+	// FromMIME with a multipart Part should serialize the whole structure into Body.
+	boundary := "test-boundary-xyz"
+	part := &MIMEPart{
+		ContentType: "multipart/mixed; boundary=\"" + boundary + "\"",
+		Parts: []*MIMEPart{
+			{
+				ContentType:             "text/plain",
+				Charset:                 "utf-8",
+				ContentTransferEncoding: Encoding7Bit,
+				Body:                    []byte("Text part body"),
+			},
+			{
+				ContentType:             "application/octet-stream",
+				ContentTransferEncoding: EncodingBase64,
+				Body:                    []byte("attachment data"),
+			},
+		},
+	}
+
+	var c Content
+	if err := c.FromMIME(part); err != nil {
+		t.Fatalf("FromMIME: %v", err)
+	}
+	if !strings.Contains(string(c.Body), boundary) {
+		t.Errorf("multipart boundary missing from serialized body")
+	}
+	if !strings.Contains(string(c.Body), "Text part body") {
+		t.Errorf("first part body missing from serialized output")
+	}
+}
+
+func TestFoldHeader_ForceBreakAtMaxLength(t *testing.T) {
+	// A value with no whitespace longer than MaxLineLength must be force-broken.
+	longWord := strings.Repeat("x", MaxLineLength+10)
+	result := FoldHeader("X-Token", longWord)
+
+	lines := splitLines(result)
+	for i, line := range lines {
+		if len(line) > MaxLineLength {
+			t.Errorf("line %d exceeds MaxLineLength after force-break: len=%d", i, len(line))
+		}
+	}
+	// Result must end with CRLF.
+	if len(result) < 2 || result[len(result)-2] != '\r' || result[len(result)-1] != '\n' {
+		t.Error("result must end with CRLF")
+	}
 }

@@ -1,20 +1,24 @@
 package mail
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	stdmime "mime"
+	"mime/multipart"
+	"net/textproto"
 	"strings"
 	"time"
 
 	ravencrypto "github.com/synqronlabs/raven/crypto"
 	ravenio "github.com/synqronlabs/raven/io"
-	ravenmime "github.com/synqronlabs/raven/mime"
 )
 
 // MailBuilder provides a fluent API for constructing Mail objects.
 type MailBuilder struct {
-	mail   *Mail
-	errors []error
+	mail        *Mail
+	errors      []error
+	attachments []Attachment
 }
 
 // NewMailBuilder creates a new MailBuilder instance.
@@ -190,11 +194,11 @@ func (b *MailBuilder) TextBody(body string) *MailBuilder {
 
 	// Check if we need 8-bit encoding
 	if ravenio.ContainsNonASCII(normalizedBody) {
-		b.mail.Content.Encoding = ravenmime.Encoding8Bit
+		b.mail.Content.Encoding = Encoding8Bit
 		b.mail.AddHeader("Content-Transfer-Encoding", "8bit")
 		b.mail.Envelope.BodyType = BodyType8BitMIME
 	} else {
-		b.mail.Content.Encoding = ravenmime.Encoding7Bit
+		b.mail.Content.Encoding = Encoding7Bit
 		b.mail.AddHeader("Content-Transfer-Encoding", "7bit")
 	}
 
@@ -210,11 +214,11 @@ func (b *MailBuilder) HTMLBody(body string) *MailBuilder {
 	b.mail.AddHeader("Content-Type", "text/html; charset=utf-8")
 
 	if ravenio.ContainsNonASCII(normalizedBody) {
-		b.mail.Content.Encoding = ravenmime.Encoding8Bit
+		b.mail.Content.Encoding = Encoding8Bit
 		b.mail.AddHeader("Content-Transfer-Encoding", "8bit")
 		b.mail.Envelope.BodyType = BodyType8BitMIME
 	} else {
-		b.mail.Content.Encoding = ravenmime.Encoding7Bit
+		b.mail.Content.Encoding = Encoding7Bit
 		b.mail.AddHeader("Content-Transfer-Encoding", "7bit")
 	}
 
@@ -222,7 +226,7 @@ func (b *MailBuilder) HTMLBody(body string) *MailBuilder {
 }
 
 // Body sets the raw body with explicit content type and encoding.
-func (b *MailBuilder) Body(body []byte, contentType string, encoding ravenmime.ContentTransferEncoding) *MailBuilder {
+func (b *MailBuilder) Body(body []byte, contentType string, encoding ContentTransferEncoding) *MailBuilder {
 	b.mail.Content.Body = body
 	b.mail.Content.Encoding = encoding
 	b.mail.AddHeader("Content-Type", contentType)
@@ -420,6 +424,13 @@ func (b *MailBuilder) Build() (*Mail, error) {
 		}
 	}
 
+	// Wrap body and attachments in multipart/mixed if there are any attachments.
+	if len(b.attachments) > 0 {
+		if err := b.applyAttachments(); err != nil {
+			return nil, fmt.Errorf("applying attachments: %w", err)
+		}
+	}
+
 	// Add MIME-Version header if content type is set
 	if b.mail.Content.Headers.Get("Content-Type") != "" && b.mail.Content.Headers.Get("MIME-Version") == "" {
 		// Prepend MIME-Version before Content-Type
@@ -459,11 +470,120 @@ func (b *MailBuilder) MustBuild() *Mail {
 	return mail
 }
 
-// attachments is a temporary storage for attachments during building.
-var attachmentStore = make(map[*MailBuilder][]Attachment)
-
 func (b *MailBuilder) addAttachment(a Attachment) {
-	attachmentStore[b] = append(attachmentStore[b], a)
+	b.attachments = append(b.attachments, a)
+}
+
+// applyAttachments wraps the existing body and all pending attachments into a
+// multipart/mixed message, updating the mail's Content-Type and Body in place.
+func (b *MailBuilder) applyAttachments() error {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	// --- body part ---
+	existingCT := b.mail.Content.Headers.Get("Content-Type")
+	existingCTE := b.mail.Content.Headers.Get("Content-Transfer-Encoding")
+	if existingCT == "" {
+		existingCT = "text/plain; charset=utf-8"
+	}
+	if existingCTE == "" {
+		existingCTE = "7bit"
+	}
+	if err := validateMIMEHeaderValue("Content-Type", existingCT); err != nil {
+		return err
+	}
+	if err := validateMIMEHeaderValue("Content-Transfer-Encoding", existingCTE); err != nil {
+		return err
+	}
+	bodyPartH := make(textproto.MIMEHeader)
+	bodyPartH.Set("Content-Type", existingCT)
+	bodyPartH.Set("Content-Transfer-Encoding", existingCTE)
+	bw, err := mw.CreatePart(bodyPartH)
+	if err != nil {
+		return fmt.Errorf("creating body part: %w", err)
+	}
+	if _, err := bw.Write(b.mail.Content.Body); err != nil {
+		return fmt.Errorf("writing body part: %w", err)
+	}
+
+	// --- attachment parts ---
+	for _, att := range b.attachments {
+		if err := validateMIMEHeaderValue("Content-Type", att.ContentType); err != nil {
+			return fmt.Errorf("invalid attachment %q content type: %w", att.Filename, err)
+		}
+		if att.Filename != "" {
+			if err := validateMIMEHeaderValue("filename", att.Filename); err != nil {
+				return fmt.Errorf("invalid attachment filename %q: %w", att.Filename, err)
+			}
+		}
+		if att.ContentID != "" {
+			if err := validateMIMEHeaderValue("Content-ID", att.ContentID); err != nil {
+				return fmt.Errorf("invalid attachment content ID %q: %w", att.ContentID, err)
+			}
+		}
+
+		attH := make(textproto.MIMEHeader)
+		attH.Set("Content-Type", att.ContentType)
+		attH.Set("Content-Transfer-Encoding", "base64")
+		disp := "attachment"
+		if att.Inline {
+			disp = "inline"
+		}
+		if att.Filename != "" {
+			disp = stdmime.FormatMediaType(disp, map[string]string{"filename": att.Filename})
+		}
+		attH.Set("Content-Disposition", disp)
+		if att.ContentID != "" {
+			attH.Set("Content-Id", "<"+att.ContentID+">")
+		}
+		aw, err := mw.CreatePart(attH)
+		if err != nil {
+			return fmt.Errorf("creating attachment part for %q: %w", att.Filename, err)
+		}
+		// Encode as base64 with 76-character lines (RFC 2045 §6.8).
+		encoded := base64.StdEncoding.EncodeToString(att.Data)
+		const lineSize = 76
+		for len(encoded) > lineSize {
+			if _, err := fmt.Fprintf(aw, "%s\r\n", encoded[:lineSize]); err != nil {
+				return fmt.Errorf("writing attachment %q: %w", att.Filename, err)
+			}
+			encoded = encoded[lineSize:]
+		}
+		if len(encoded) > 0 {
+			if _, err := fmt.Fprintf(aw, "%s\r\n", encoded); err != nil {
+				return fmt.Errorf("writing attachment %q tail: %w", att.Filename, err)
+			}
+		}
+	}
+
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("closing multipart writer: %w", err)
+	}
+
+	// Replace Content-Type (strip body-level Content-Transfer-Encoding) in headers.
+	newCT := "multipart/mixed; boundary=\"" + mw.Boundary() + "\""
+	newHeaders := make(Headers, 0, len(b.mail.Content.Headers))
+	for _, h := range b.mail.Content.Headers {
+		switch strings.ToLower(h.Name) {
+		case "content-type", "content-transfer-encoding":
+			// stripped; replaced below
+		default:
+			newHeaders = append(newHeaders, h)
+		}
+	}
+	newHeaders = append(newHeaders, Header{Name: "Content-Type", Value: newCT})
+	b.mail.Content.Headers = newHeaders
+	b.mail.Content.Body = buf.Bytes()
+	b.mail.Content.Encoding = Encoding7Bit
+	b.mail.Content.Charset = ""
+	return nil
+}
+
+func validateMIMEHeaderValue(name, value string) error {
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("%s contains invalid line breaks", name)
+	}
+	return nil
 }
 
 // updateAddressHeader updates or adds an address header.

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	ravenio "github.com/synqronlabs/raven/io"
-	ravenmime "github.com/synqronlabs/raven/mime"
 )
 
 // RFC 5322 line length limits.
@@ -42,6 +41,17 @@ const (
 	BodyType7Bit       BodyType = "7BIT"
 	BodyType8BitMIME   BodyType = "8BITMIME"
 	BodyTypeBinaryMIME BodyType = "BINARYMIME"
+)
+
+// ContentTransferEncoding represents the wire-level MIME transfer encoding.
+type ContentTransferEncoding string
+
+const (
+	Encoding7Bit            ContentTransferEncoding = "7bit"
+	Encoding8Bit            ContentTransferEncoding = "8bit"
+	EncodingBinary          ContentTransferEncoding = "binary"
+	EncodingQuotedPrintable ContentTransferEncoding = "quoted-printable"
+	EncodingBase64          ContentTransferEncoding = "base64"
 )
 
 // MailboxAddress represents an email address.
@@ -235,10 +245,10 @@ func (h *Headers) Validate() error {
 
 // Content represents the message content (headers + body).
 type Content struct {
-	Headers  Headers                           `json:"headers"`
-	Body     []byte                            `json:"body,omitempty"`
-	Encoding ravenmime.ContentTransferEncoding `json:"encoding"`
-	Charset  string                            `json:"charset,omitempty"`
+	Headers  Headers                 `json:"headers"`
+	Body     []byte                  `json:"body,omitempty"`
+	Encoding ContentTransferEncoding `json:"encoding"`
+	Charset  string                  `json:"charset,omitempty"`
 }
 
 // TraceField represents a Received or Return-Path header.
@@ -578,15 +588,18 @@ func (c *Content) Validate() error {
 //
 // For multipart messages, it recursively parses all parts and their boundaries.
 // Returns the parsed Part structure or an error if the MIME structure is invalid.
-func (c *Content) ToMIME() (*ravenmime.Part, error) {
-	return ravenmime.Parse(&c.Headers, c.Body)
+func (c *Content) ToMIME() (*MIMEPart, error) {
+	return parseMIME(&c.Headers, c.Body)
 }
 
 // FromMIME populates the Content's Body from a MIME Part.
 // For multipart messages, it serializes the entire MIME structure back to bytes.
 // It also updates the Encoding and Charset fields based on the Part's properties.
 // Encoding will default to "7bit" if the Part's encoding is empty.
-func (c *Content) FromMIME(part *ravenmime.Part) error {
+func (c *Content) FromMIME(part *MIMEPart) error {
+	if part == nil {
+		return errors.New("mime part is required")
+	}
 	if part.IsMultipart() {
 		// For multipart, serialize the entire structure
 		body, err := part.ToBytes()
@@ -599,7 +612,7 @@ func (c *Content) FromMIME(part *ravenmime.Part) error {
 	}
 	c.Encoding = part.ContentTransferEncoding
 	if c.Encoding == "" {
-		c.Encoding = ravenmime.Encoding7Bit
+		c.Encoding = Encoding7Bit
 	}
 	c.Charset = part.Charset
 	return nil
@@ -613,9 +626,9 @@ func (c *Content) FromRaw(data []byte) {
 
 	cte := c.Headers.Get("Content-Transfer-Encoding")
 	if cte != "" {
-		c.Encoding = ravenmime.ContentTransferEncoding(strings.ToLower(cte))
+		c.Encoding = ContentTransferEncoding(strings.ToLower(cte))
 	} else {
-		c.Encoding = ravenmime.Encoding7Bit
+		c.Encoding = Encoding7Bit
 	}
 
 	// Set charset from Content-Type header if present
@@ -738,28 +751,42 @@ func FoldHeader(name, value string) []byte {
 }
 
 // parseRawContent parses raw message data into headers and body.
-// The header section is separated from the body by an empty line (CRLF CRLF).
+// The header section is separated from the body by an empty line.
+// Both CRLF (RFC 5322) and bare-LF (lenient fallback) separators are accepted.
 func parseRawContent(data []byte) (Headers, []byte) {
-	// Find the header/body separator (empty line)
-	// headers and body are separated by an empty line
-	var headerEnd int
 	dataLen := len(data)
 
+	// Find the header/body separator: CRLF CRLF (RFC 5322) or bare LF LF (lenient).
+	// headerEnd points to the first byte of the terminating line-ending sequence.
+	var headerEnd int
+	var lfOnly bool // true when a bare-LF separator was used
+
 	for i := 0; i < dataLen-3; i++ {
-		// Look for CRLF CRLF (end of headers)
 		if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
-			headerEnd = i + 2 // Points to the second CRLF
+			headerEnd = i + 2 // points to the '\r' of the second CRLF
 			break
 		}
 	}
 
-	// If no empty line found, treat entire data as body (malformed message)
+	// Fallback: accept bare-LF separator (common in messages piped through Unix tools).
+	if headerEnd == 0 && dataLen >= 2 {
+		for i := 0; i < dataLen-1; i++ {
+			if data[i] == '\n' && data[i+1] == '\n' {
+				headerEnd = i + 1 // points to the second bare LF
+				lfOnly = true
+				break
+			}
+		}
+	}
+
+	// No separator found: treat entire input as body (malformed message).
 	if headerEnd == 0 {
 		return nil, data
 	}
 
-	// Parse headers directly from bytes to avoid string conversion of entire header section
-	// Estimate header count (average ~50 bytes per header)
+	// Parse headers from bytes [0, headerEnd).
+	// Triggered on '\n'; an optional preceding '\r' is stripped, so both
+	// CRLF and bare-LF line endings are handled uniformly.
 	estimatedHeaders := max(headerEnd/50, 8)
 	headers := make(Headers, 0, estimatedHeaders)
 
@@ -767,51 +794,59 @@ func parseRawContent(data []byte) (Headers, []byte) {
 	lineStart := 0
 
 	for i := 0; i < headerEnd; i++ {
-		// Find end of line (CRLF)
-		if data[i] == '\r' && i+1 < headerEnd && data[i+1] == '\n' {
-			line := string(data[lineStart:i])
-			lineStart = i + 2
-			i++ // Skip the \n
+		if data[i] != '\n' {
+			continue
+		}
+		// Determine printable end of line (strip trailing CR if present).
+		lineEnd := i
+		if lineEnd > lineStart && data[lineEnd-1] == '\r' {
+			lineEnd--
+		}
+		line := string(data[lineStart:lineEnd])
+		lineStart = i + 1
 
-			if line == "" {
-				continue
-			}
+		if line == "" {
+			continue
+		}
 
-			// Check for continuation line (starts with whitespace)
-			if line[0] == ' ' || line[0] == '\t' {
-				// Continuation of previous header (folded header)
-				if currentName != "" {
-					currentValue += " " + strings.TrimSpace(line)
-				}
-				continue
-			}
-
-			// Save previous header if exists
+		// Continuation line (folded header)?
+		if line[0] == ' ' || line[0] == '\t' {
 			if currentName != "" {
-				headers = append(headers, Header{Name: currentName, Value: currentValue})
+				currentValue += " " + strings.TrimSpace(line)
 			}
+			continue
+		}
 
-			// Parse new header using strings.Cut
-			if name, value, found := strings.Cut(line, ":"); found {
-				currentName = strings.TrimSpace(name)
-				currentValue = strings.TrimSpace(value)
-			} else {
-				// Malformed header line, skip it
-				currentName = ""
-				currentValue = ""
-			}
+		// Flush the previous header field.
+		if currentName != "" {
+			headers = append(headers, Header{Name: currentName, Value: currentValue})
+		}
+
+		// Parse "Field-Name: field-value".
+		if name, value, found := strings.Cut(line, ":"); found {
+			currentName = strings.TrimSpace(name)
+			currentValue = strings.TrimSpace(value)
+		} else {
+			// Malformed line (no colon) — drop it.
+			currentName = ""
+			currentValue = ""
 		}
 	}
 
-	// Don't forget the last header
+	// Flush the last header field.
 	if currentName != "" {
 		headers = append(headers, Header{Name: currentName, Value: currentValue})
 	}
 
-	// Body starts after the empty line (CRLF CRLF)
+	// Body immediately follows the separator.
+	// CRLF separator: skip 2 bytes (\r\n); bare-LF separator: skip 1 byte (\n).
+	bodyStart := headerEnd + 2
+	if lfOnly {
+		bodyStart = headerEnd + 1
+	}
 	var body []byte
-	if headerEnd+2 < dataLen {
-		body = data[headerEnd+2:]
+	if bodyStart < dataLen {
+		body = data[bodyStart:]
 	}
 
 	return headers, body

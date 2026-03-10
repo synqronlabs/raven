@@ -131,10 +131,14 @@ func (z *Content) DecodeMsg(dc *msgp.Reader) (err error) {
 				return
 			}
 		case "Encoding":
-			err = z.Encoding.DecodeMsg(dc)
-			if err != nil {
-				err = msgp.WrapError(err, "Encoding")
-				return
+			{
+				var zb0004 string
+				zb0004, err = dc.ReadString()
+				if err != nil {
+					err = msgp.WrapError(err, "Encoding")
+					return
+				}
+				z.Encoding = ContentTransferEncoding(zb0004)
 			}
 		case "Charset":
 			z.Charset, err = dc.ReadString()
@@ -204,7 +208,7 @@ func (z *Content) EncodeMsg(en *msgp.Writer) (err error) {
 	if err != nil {
 		return
 	}
-	err = z.Encoding.EncodeMsg(en)
+	err = en.WriteString(string(z.Encoding))
 	if err != nil {
 		err = msgp.WrapError(err, "Encoding")
 		return
@@ -243,11 +247,7 @@ func (z *Content) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.AppendBytes(o, z.Body)
 	// string "Encoding"
 	o = append(o, 0xa8, 0x45, 0x6e, 0x63, 0x6f, 0x64, 0x69, 0x6e, 0x67)
-	o, err = z.Encoding.MarshalMsg(o)
-	if err != nil {
-		err = msgp.WrapError(err, "Encoding")
-		return
-	}
+	o = msgp.AppendString(o, string(z.Encoding))
 	// string "Charset"
 	o = append(o, 0xa7, 0x43, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74)
 	o = msgp.AppendString(o, z.Charset)
@@ -327,10 +327,14 @@ func (z *Content) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				return
 			}
 		case "Encoding":
-			bts, err = z.Encoding.UnmarshalMsg(bts)
-			if err != nil {
-				err = msgp.WrapError(err, "Encoding")
-				return
+			{
+				var zb0004 string
+				zb0004, bts, err = msgp.ReadStringBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Encoding")
+					return
+				}
+				z.Encoding = ContentTransferEncoding(zb0004)
 			}
 		case "Charset":
 			z.Charset, bts, err = msgp.ReadStringBytes(bts)
@@ -356,7 +360,59 @@ func (z *Content) Msgsize() (s int) {
 	for za0001 := range z.Headers {
 		s += 1 + 5 + msgp.StringPrefixSize + len(z.Headers[za0001].Name) + 6 + msgp.StringPrefixSize + len(z.Headers[za0001].Value)
 	}
-	s += 5 + msgp.BytesPrefixSize + len(z.Body) + 9 + z.Encoding.Msgsize() + 8 + msgp.StringPrefixSize + len(z.Charset)
+	s += 5 + msgp.BytesPrefixSize + len(z.Body) + 9 + msgp.StringPrefixSize + len(string(z.Encoding)) + 8 + msgp.StringPrefixSize + len(z.Charset)
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *ContentTransferEncoding) DecodeMsg(dc *msgp.Reader) (err error) {
+	{
+		var zb0001 string
+		zb0001, err = dc.ReadString()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		(*z) = ContentTransferEncoding(zb0001)
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z ContentTransferEncoding) EncodeMsg(en *msgp.Writer) (err error) {
+	err = en.WriteString(string(z))
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z ContentTransferEncoding) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	o = msgp.AppendString(o, string(z))
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ContentTransferEncoding) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	{
+		var zb0001 string
+		zb0001, bts, err = msgp.ReadStringBytes(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		(*z) = ContentTransferEncoding(zb0001)
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z ContentTransferEncoding) Msgsize() (s int) {
+	s = msgp.StringPrefixSize + len(string(z))
 	return
 }
 
