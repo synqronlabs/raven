@@ -8,8 +8,7 @@ to each other.
 ```
 github.com/synqronlabs/raven
 │
-├── mail/      Core message model (Mail, Envelope, Content, Headers, MailBuilder)
-├── mime/      MIME parsing (multipart, encodings, content types)
+├── mail/      Core message model and MIME handling (Mail, Content, MIMEPart, MailBuilder)
 ├── io/        SMTP-oriented I/O helpers (line reading, ASCII checks)
 ├── crypto/    Crypto utilities (ULID generation for Message-ID)
 │
@@ -33,39 +32,25 @@ shown; external deps (`miekg/dns`, `oklog/ulid`, `tinylib/msgp`, `x/net`) are
 omitted.
 
 ```
-                    ┌──────────┐
-                    │   mail   │  ◄── foundation: no raven deps
-                    └──┬───┬───┘
-                       │   │
-             ┌─────────┘   └──────────┐
-             ▼                        ▼
-        ┌────────┐              ┌──────────┐
-        │  mime  │              │  crypto  │
-        └────────┘              └──────────┘
+crypto -> (no raven deps)
+io     -> (no raven deps)
+dns    -> (no raven deps)
+sasl   -> (no raven deps)
 
-        ┌────────┐              ┌──────────┐
-        │   io   │   ◄── no deps│   dns    │  ◄── no raven deps
-        └────┬───┘              └────┬─────┘
-             │                       │
-     ┌───────┴───────┐       ┌───────┴──┬─────────┬─────────┐
-     ▼               ▼       ▼          ▼         ▼         ▼
-┌────────┐    ┌──────────┐ ┌──────┐ ┌───────┐ ┌───────┐  ┌─────┐
-│ client │    │  server  │ │ dkim │ │  spf  │ │ dmarc │  │ arc │
-└────────┘    └──────────┘ └──┬───┘ └───┬───┘ └───┬───┘  └──┬──┘
-     │             │          │         │         │         │
-     └──┬──────────┘          └─────────┴─────────┴─────────┘
-        ▼                         (auth packages share dns)
-   ┌────────┐
-   │  sasl  │
-   └────────┘
+mail   -> io, crypto
+client -> mail
+server -> io, sasl
+spf    -> dns
+dkim   -> dns, mail
+arc    -> dns, mail
+dmarc  -> dkim, dns, mail, spf
 ```
 
 ### Layer Summary
 
 | Layer              | Packages                        | Role                                     |
 |--------------------|---------------------------------|------------------------------------------|
-| **Foundation**     | `mail`, `io`, `crypto`          | Data model, low-level I/O, ID generation |
-| **Content**        | `mime`                          | MIME structure parsing                   |
+| **Foundation**     | `mail`, `io`, `crypto`          | Message model, MIME handling, low-level I/O, ID generation |
 | **Infrastructure** | `dns`, `sasl`                   | Shared DNS + auth mechanism primitives   |
 | **Transport**      | `client`, `server`              | SMTP send and receive                    |
 | **Authentication** | `spf`, `dkim`, `dmarc`, `arc`   | Email authentication protocols           |
@@ -77,19 +62,25 @@ omitted.
 The `mail` package defines the canonical representation of an email. Every other
 package that touches a message depends on types from `mail`.
 
+It also owns Raven's MIME APIs: `Content.ToMIME()`, `Content.FromMIME()`, and
+`MIMEPart` cover single-part and multipart parsing without a separate content
+subpackage.
+
 **Key types:**
 
 | Type              | Purpose                                          |
 |-------------------|-------------------------------------------------|
 | `Mail`            | Top-level object: Envelope + Content             |
 | `Envelope`        | SMTP envelope (sender, recipients, extensions)   |
-| `Content`         | RFC 5322 message (headers + body)                |
+| `Content`         | RFC 5322 message (headers + body, plus MIME conversion helpers) |
 | `Headers` / `Header` | Ordered header collection with accessors     |
 | `MailboxAddress`  | Parsed email address (local + domain)            |
+| `MIMEPart`        | Parsed MIME tree for single-part and multipart content |
 | `MailBuilder`     | Fluent API for building `Mail` objects           |
 
 `Content.Validate()` enforces RFC 5322 rules (required headers, line lengths,
-CRLF endings). `Content.ToRaw()` serialises back to wire format.
+CRLF endings). `Content.ToRaw()` serialises back to wire format, while
+`Content.ToMIME()` and `MIMEPart.ToBytes()` round-trip structured MIME bodies.
 
 ### io — Line Reading
 

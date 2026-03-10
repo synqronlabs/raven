@@ -17,6 +17,8 @@ import (
 )
 ```
 
+MIME parsing and multipart serialization now live in `github.com/synqronlabs/raven/mail`; there is no separate Raven `mime` package to import.
+
 ## Sending a Message
 
 ### 1. Build the message
@@ -55,6 +57,25 @@ fmt.Println("Sent:", result.Success)
 
 `DialAndSend` opens a connection, performs EHLO, STARTTLS, AUTH, sends the
 message, and issues QUIT — all in one call.
+
+## Inspecting MIME Content
+
+Use the `mail` package when you need to inspect or rewrite structured content:
+
+```go
+part, err := msg.Content.ToMIME()
+if err != nil {
+    log.Fatal(err)
+}
+
+if part.IsMultipart() {
+    fmt.Printf("root media type: %s (%d child parts)\n", part.ContentType, len(part.Parts))
+}
+
+if err := msg.Content.FromMIME(part); err != nil {
+    log.Fatal(err)
+}
+```
 
 ### 3. Send with the Client (low-level)
 

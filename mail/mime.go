@@ -14,7 +14,8 @@ type headerGetter interface {
 	Get(name string) string
 }
 
-// MIMEPart represents a parsed MIME part tree with raw wire body bytes.
+// MIMEPart represents a MIME entity parsed from Content, including multipart
+// children and the raw wire body bytes for each part.
 type MIMEPart struct {
 	Headers                 Headers                 `json:"headers,omitempty"`
 	ContentType             string                  `json:"content_type,omitempty"`

@@ -4,7 +4,7 @@ Raven is an idiomatic Go toolkit for ESMTP transport and email authentication pr
 
 It includes:
 - SMTP server and client primitives.
-- Structured message and MIME handling.
+- Structured message handling, including MIME parsing and multipart serialization.
 - SPF, DKIM, DMARC, and ARC verification/signing.
 - DNS resolvers with optional DNSSEC authenticity signals.
 
@@ -23,8 +23,7 @@ go get github.com/synqronlabs/raven
 - `dmarc`: DMARC lookup and policy evaluation
 - `dns`: DNS resolvers with optional DNSSEC awareness and domain validation helpers
 - `io`: SMTP-oriented line-reading helpers and ASCII string helpers
-- `mail`: Core message and envelope model
-- `mime`: MIME parsing and multipart handling
+- `mail`: Core message model, builder, and MIME parsing/serialization
 - `sasl`: SASL LOGIN and PLAIN primitives
 - `server`: SMTP server implementation (Backend/Session pattern)
 - `spf`: SPF parsing and evaluation

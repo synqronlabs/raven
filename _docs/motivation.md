@@ -3,7 +3,7 @@
 ## Why Raven?
 
 Modern email infrastructure relies on a stack of interrelated protocols — SMTP
-for transport, SPF/DKIM/DMARC/ARC for authentication, MIME for structured
+for transport, SPF/DKIM/DMARC/ARC for authentication, and MIME for structured
 content — yet most Go libraries focus on only one slice of that stack. Building
 a mail transfer agent (MTA), a submission server (MSA), or even a simple
 transactional-mail client means gluing together several packages that were never
@@ -20,14 +20,15 @@ full SMTP transport and authentication pipeline within one module.
 
 A single `mail.Mail` type threads through every layer:
 
-- **`mail.MailBuilder`** constructs the message (headers, body, MIME parts).
+- **`mail.MailBuilder`** constructs the message (headers, body, attachments, multipart content).
+- **`(*mail.Content).ToMIME`** and **`(*mail.Content).FromMIME`** convert between raw body bytes and a structured `mail.MIMEPart` tree inside the same package.
 - **`client.Client`** reads the `Mail` envelope to drive `MAIL FROM` / `RCPT TO`
   and serialises the content for `DATA`.
 - **`server.Session`** hands the received body back as an `io.Reader` that can be
   parsed into the same `Mail` structure.
 - **`dkim.SignMail`**, **`dmarc.VerifyMailObject`**, and **`arc.SignMail`** operate
   directly on `*mail.Mail` objects, so there is no translation layer between
-  transport and authentication.
+  transport, structured content handling, and authentication.
 
 ### 2. Backend / Session Pattern
 

@@ -1,9 +1,9 @@
-// Package mail provides core email types for the Raven SMTP library.
+// Package mail provides Raven's core email model, builder APIs, and MIME helpers.
 //
-// This package defines the fundamental structures used across both
-// the SMTP server and client: Mail, Envelope, Content, Headers,
-// and related types. Authentication packages (dkim, spf, dmarc, arc)
-// can import these types without circular dependencies.
+// The package defines the fundamental structures used across the module:
+// Mail, Envelope, Content, Headers, MIMEPart, and related builder and
+// serialization helpers. SMTP transport packages and authentication packages
+// (dkim, spf, dmarc, arc) can share these types without circular dependencies.
 package mail
 
 //go:generate msgp
@@ -583,19 +583,19 @@ func (c *Content) Validate() error {
 	return nil
 }
 
-// ToMIME parses and returns the MIME structure of the message content.
-// It validates Content-Type headers and parses multipart boundaries.
+// ToMIME parses the content body into a MIMEPart tree using the current headers.
 //
-// For multipart messages, it recursively parses all parts and their boundaries.
-// Returns the parsed Part structure or an error if the MIME structure is invalid.
+// Multipart content is parsed recursively. For single-part content, the returned
+// MIMEPart carries the decoded media type metadata and the original wire body.
 func (c *Content) ToMIME() (*MIMEPart, error) {
 	return parseMIME(&c.Headers, c.Body)
 }
 
-// FromMIME populates the Content's Body from a MIME Part.
-// For multipart messages, it serializes the entire MIME structure back to bytes.
-// It also updates the Encoding and Charset fields based on the Part's properties.
-// Encoding will default to "7bit" if the Part's encoding is empty.
+// FromMIME replaces the content body with the serialized representation of part.
+//
+// Multipart trees are serialized with their boundaries preserved. Encoding and
+// Charset are updated from the supplied part, defaulting the encoding to 7bit
+// when the part does not specify one.
 func (c *Content) FromMIME(part *MIMEPart) error {
 	if part == nil {
 		return errors.New("mime part is required")
