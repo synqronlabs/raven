@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,30 @@ func (m *MockResolver) LookupAddr(_ context.Context, addr string) ([]string, Res
 		return nil, Result{Authentic: m.Authentic}, ErrDNSNotFound
 	}
 	return records, Result{Authentic: m.Authentic}, nil
+}
+
+type networkRecordingResolver struct {
+	ips      []net.IP
+	networks []string
+	hosts    []string
+}
+
+func (r *networkRecordingResolver) LookupTXT(context.Context, string) ([]string, Result, error) {
+	return nil, Result{}, ErrDNSNotFound
+}
+
+func (r *networkRecordingResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, Result, error) {
+	r.networks = append(r.networks, network)
+	r.hosts = append(r.hosts, host)
+	return r.ips, Result{Authentic: true}, nil
+}
+
+func (r *networkRecordingResolver) LookupMX(context.Context, string) ([]*net.MX, Result, error) {
+	return nil, Result{}, ErrDNSNotFound
+}
+
+func (r *networkRecordingResolver) LookupAddr(context.Context, string) ([]string, Result, error) {
+	return nil, Result{}, ErrDNSNotFound
 }
 
 func TestVerify(t *testing.T) {
@@ -552,6 +577,58 @@ func TestExpandIP(t *testing.T) {
 	}
 }
 
+func TestEvaluateUsesRelevantIPFamily(t *testing.T) {
+	record, _, err := ParseRecord("v=spf1 a -all")
+	if err != nil {
+		t.Fatalf("ParseRecord() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		remoteIP string
+		wantNet  string
+	}{
+		{name: "ipv4 uses A", remoteIP: "192.0.2.1", wantNet: "ip4"},
+		{name: "ipv6 uses AAAA", remoteIP: "2001:db8::1", wantNet: "ip6"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &networkRecordingResolver{ips: []net.IP{net.ParseIP(tt.remoteIP)}}
+			status, mechanism, _, authentic, err := Evaluate(context.Background(), resolver, record, Args{
+				RemoteIP:       net.ParseIP(tt.remoteIP),
+				MailFromDomain: "example.com",
+				MailFromLocal:  "user",
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if status != StatusPass || mechanism != "a" || !authentic {
+				t.Fatalf("Evaluate() = (%v, %q, authentic=%v), want (pass, %q, authentic=true)", status, mechanism, authentic, "a")
+			}
+			if len(resolver.networks) != 1 || resolver.networks[0] != tt.wantNet {
+				t.Fatalf("LookupIP network = %v, want [%q]", resolver.networks, tt.wantNet)
+			}
+			if len(resolver.hosts) != 1 || resolver.hosts[0] != "example.com." {
+				t.Fatalf("LookupIP host = %v, want [example.com.]", resolver.hosts)
+			}
+		})
+	}
+}
+
+func TestEvaluateInvalidDomain(t *testing.T) {
+	status, mechanism, _, authentic, err := Evaluate(context.Background(), &MockResolver{}, &Record{Version: "spf1"}, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "localhost",
+	})
+	if status != StatusNone || mechanism != "default" || authentic {
+		t.Fatalf("Evaluate() = (%v, %q, authentic=%v), want (none, default, false)", status, mechanism, authentic)
+	}
+	if !errors.Is(err, ErrInvalidDomain) {
+		t.Fatalf("Evaluate() error = %v, want ErrInvalidDomain", err)
+	}
+}
+
 func TestReceivedHeader(t *testing.T) {
 	r := Received{
 		Result:       StatusPass,
@@ -582,6 +659,355 @@ func TestReceivedHeader(t *testing.T) {
 	}
 	if !contains(header, "identity=mailfrom") {
 		t.Error("Header() missing identity")
+	}
+}
+
+func TestReceivedHeaderEdgeCases(t *testing.T) {
+	r := Received{
+		Result:       StatusFail,
+		ClientIP:     net.ParseIP("192.0.2.1"),
+		EnvelopeFrom: "",
+		Helo:         `mail\"example`,
+		Problem:      strings.Repeat("x", 80),
+		Receiver:     "mx example",
+		Identity:     "mailfrom",
+	}
+
+	header := r.Header()
+	if strings.Contains(header, "(") {
+		t.Fatalf("Header() unexpectedly included comment: %q", header)
+	}
+	if !strings.Contains(header, `envelope-from=""`) {
+		t.Fatalf("Header() missing empty quoted envelope-from: %q", header)
+	}
+	if !strings.Contains(header, `helo="mail\\\"example"`) {
+		t.Fatalf("Header() missing escaped HELO value: %q", header)
+	}
+	if !strings.Contains(header, `receiver="mx example"`) {
+		t.Fatalf("Header() missing quoted receiver: %q", header)
+	}
+	if !strings.Contains(header, "problem="+strings.Repeat("x", 60)) {
+		t.Fatalf("Header() did not truncate problem to 60 characters: %q", header)
+	}
+	if strings.Contains(header, "mechanism=") {
+		t.Fatalf("Header() unexpectedly included empty mechanism: %q", header)
+	}
+}
+
+func TestLookupInvalidDomains(t *testing.T) {
+	tests := []string{"localhost", "bad..example.com"}
+	for _, domain := range tests {
+		t.Run(domain, func(t *testing.T) {
+			status, _, _, authentic, err := Lookup(context.Background(), &MockResolver{}, domain)
+			if status != StatusNone || authentic {
+				t.Fatalf("Lookup(%q) = (%v, authentic=%v), want (none, false)", domain, status, authentic)
+			}
+			if !errors.Is(err, ErrInvalidDomain) {
+				t.Fatalf("Lookup(%q) error = %v, want ErrInvalidDomain", domain, err)
+			}
+		})
+	}
+}
+
+func TestExpandDomainSpecUppercaseEscapes(t *testing.T) {
+	got, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "%{L}", Args{senderLocal: "a b+c"}, false)
+	if err != nil {
+		t.Fatalf("expandDomainSpec() error = %v", err)
+	}
+	if got != "a%20b%2Bc" {
+		t.Fatalf("expandDomainSpec() = %q, want %q", got, "a%20b%2Bc")
+	}
+}
+
+func TestUtilityValidationHelpers(t *testing.T) {
+	if got := ensureAbsDNS("example.com"); got != "example.com." {
+		t.Fatalf("ensureAbsDNS() = %q, want %q", got, "example.com.")
+	}
+	if got := ensureAbsDNS("example.com."); got != "example.com." {
+		t.Fatalf("ensureAbsDNS() preserved value = %q, want %q", got, "example.com.")
+	}
+	if got := escapeMacroValue("a b+c/~"); got != "a%20b%2Bc%2F~" {
+		t.Fatalf("escapeMacroValue() = %q, want %q", got, "a%20b%2Bc%2F~")
+	}
+
+	if err := validateDomain("example.com."); err != nil {
+		t.Fatalf("validateDomain() unexpected error = %v", err)
+	}
+	if err := validateDomain("bad..example.com"); err == nil {
+		t.Fatal("validateDomain() expected error for empty label")
+	}
+	if err := validateLookupDomain("_spf.example.com"); err != nil {
+		t.Fatalf("validateLookupDomain() unexpected error = %v", err)
+	}
+	if err := validateSenderDomain("localhost"); err == nil {
+		t.Fatal("validateSenderDomain() expected error for single-label domain")
+	}
+	if err := validateSenderDomain("example.com"); err != nil {
+		t.Fatalf("validateSenderDomain() unexpected error = %v", err)
+	}
+	if err := validateLookupDomain(strings.Repeat("a", 254) + ".com"); err == nil {
+		t.Fatal("validateLookupDomain() expected error for overlong domain")
+	}
+	if err := validateLookupDomain("192.0.2.1"); err == nil {
+		t.Fatal("validateLookupDomain() expected error for IP literal")
+	}
+	if err := validateSenderDomain("_spf.example.com"); err == nil {
+		t.Fatal("validateSenderDomain() expected syntax error for underscore label")
+	}
+	if err := validateDomain(""); err == nil {
+		t.Fatal("validateDomain() expected error for empty domain")
+	}
+	tooMany := strings.Repeat("a.", 128)
+	if err := validateDomain(strings.TrimSuffix(tooMany, ".")); err == nil {
+		t.Fatal("validateDomain() expected error for too many labels")
+	}
+	if err := validateDomain(strings.Repeat("a", 64) + ".example.com"); err == nil {
+		t.Fatal("validateDomain() expected error for long label")
+	}
+}
+
+func TestVerifyInvalidSenderDomain(t *testing.T) {
+	received, domain, explanation, authentic, err := Verify(context.Background(), &MockResolver{}, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "localhost",
+		MailFromLocal:  "user",
+	})
+	if received.Result != StatusNone || domain != "localhost" || explanation != "" || authentic {
+		t.Fatalf("Verify() = (%v, %q, %q, authentic=%v), want (none, localhost, empty, false)", received.Result, domain, explanation, authentic)
+	}
+	if !errors.Is(err, ErrInvalidDomain) {
+		t.Fatalf("Verify() error = %v, want ErrInvalidDomain", err)
+	}
+	if received.Identity != "mailfrom" || received.Problem == "" {
+		t.Fatalf("Verify() received = %+v, want invalid mailfrom result with problem", received)
+	}
+}
+
+func TestEvaluateRecordExpansionAndRedirectErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		record string
+	}{
+		{name: "a expansion error", record: "v=spf1 a:%{c} -all"},
+		{name: "mx expansion error", record: "v=spf1 mx:%{c} -all"},
+		{name: "ptr expansion error", record: "v=spf1 ptr:%{c} -all"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record, _, err := ParseRecord(tt.record)
+			if err != nil {
+				t.Fatalf("ParseRecord() error = %v", err)
+			}
+			status, _, _, _, err := Evaluate(context.Background(), &MockResolver{}, record, Args{
+				RemoteIP:       net.ParseIP("192.0.2.1"),
+				MailFromDomain: "example.com",
+			})
+			if status != StatusPermerror || err == nil {
+				t.Fatalf("Evaluate() = (%v, %v), want (permerror, error)", status, err)
+			}
+		})
+	}
+
+	record, _, err := ParseRecord("v=spf1 redirect=absent.example.com")
+	if err != nil {
+		t.Fatalf("ParseRecord() redirect error = %v", err)
+	}
+	status, _, _, _, err := Evaluate(context.Background(), &MockResolver{}, record, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusPermerror || err == nil {
+		t.Fatalf("Evaluate() redirect-none = (%v, %v), want (permerror, error)", status, err)
+	}
+}
+
+func TestEvaluateRecordMechanismErrorBranches(t *testing.T) {
+	aRecord, _, _ := ParseRecord("v=spf1 a -all")
+	status, _, _, _, err := Evaluate(context.Background(), &MockResolver{Errors: map[string]error{"example.com.": errors.New("dns fail")}}, aRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusTemperror || err == nil {
+		t.Fatalf("Evaluate() a temperror = (%v, %v), want (temperror, error)", status, err)
+	}
+
+	mxRecord, _, _ := ParseRecord("v=spf1 mx -all")
+	status, _, _, _, err = Evaluate(context.Background(), &MockResolver{Errors: map[string]error{"example.com.": errors.New("dns fail")}}, mxRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusTemperror || err == nil {
+		t.Fatalf("Evaluate() mx temperror = (%v, %v), want (temperror, error)", status, err)
+	}
+
+	existsRecord, _, _ := ParseRecord("v=spf1 exists:test.example.com -all")
+	status, _, _, _, err = Evaluate(context.Background(), &MockResolver{Errors: map[string]error{"test.example.com.": errors.New("dns fail")}}, existsRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusTemperror || err == nil {
+		t.Fatalf("Evaluate() exists temperror = (%v, %v), want (temperror, error)", status, err)
+	}
+
+	ptrRecord, _, _ := ParseRecord("v=spf1 ptr:example.com ~all")
+	status, _, _, _, err = Evaluate(context.Background(), &MockResolver{Errors: map[string]error{"192.0.2.1": errors.New("dns fail")}}, ptrRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusTemperror || err == nil {
+		t.Fatalf("Evaluate() ptr temperror = (%v, %v), want (temperror, error)", status, err)
+	}
+}
+
+func TestEvaluateRecordTypeMismatchAndUnknownMechanism(t *testing.T) {
+	record, _, _ := ParseRecord("v=spf1 a ?all")
+	status, _, _, _, err := evaluateRecord(context.Background(), &networkRecordingResolver{ips: []net.IP{net.ParseIP("2001:db8::1")}}, record, Args{
+		RemoteIP:     net.ParseIP("192.0.2.1"),
+		domain:       "example.com",
+		senderDomain: "example.com",
+		senderLocal:  "user",
+		dnsRequests:  new(int),
+		voidLookups:  new(int),
+	})
+	if status != StatusNeutral || err != nil {
+		t.Fatalf("evaluateRecord() ipv4 mismatch = (%v, %v), want (neutral, nil)", status, err)
+	}
+
+	status, _, _, _, err = evaluateRecord(context.Background(), &networkRecordingResolver{ips: []net.IP{net.ParseIP("192.0.2.1")}}, record, Args{
+		RemoteIP:     net.ParseIP("2001:db8::1"),
+		domain:       "example.com",
+		senderDomain: "example.com",
+		senderLocal:  "user",
+		dnsRequests:  new(int),
+		voidLookups:  new(int),
+	})
+	if status != StatusNeutral || err != nil {
+		t.Fatalf("evaluateRecord() ipv6 mismatch = (%v, %v), want (neutral, nil)", status, err)
+	}
+
+	status, _, _, _, err = evaluateRecord(context.Background(), &MockResolver{}, &Record{Version: "spf1", Directives: []Directive{{Mechanism: "bogus"}}}, Args{
+		RemoteIP:     net.ParseIP("192.0.2.1"),
+		domain:       "example.com",
+		senderDomain: "example.com",
+		senderLocal:  "user",
+		dnsRequests:  new(int),
+		voidLookups:  new(int),
+	})
+	if status != StatusPermerror || err == nil {
+		t.Fatalf("evaluateRecord() unknown mechanism = (%v, %v), want (permerror, error)", status, err)
+	}
+}
+
+func TestPTRAndMXAdditionalBranches(t *testing.T) {
+	mxRecord, _, _ := ParseRecord("v=spf1 mx -all")
+	status, _, _, _, err := Evaluate(context.Background(), &MockResolver{MXRecords: map[string][]*net.MX{"example.com.": {{Host: "", Pref: 10}}}}, mxRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusFail || err != nil {
+		t.Fatalf("Evaluate() empty MX host = (%v, %v), want (fail, nil)", status, err)
+	}
+
+	ptrRecord, _, _ := ParseRecord("v=spf1 ptr:example.com ~all")
+	status, _, _, _, err = Evaluate(context.Background(), &MockResolver{PTRRecords: map[string][]string{"192.0.2.1": {"other.example.net."}}}, ptrRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusSoftfail || err != nil {
+		t.Fatalf("Evaluate() non-matching PTR = (%v, %v), want (softfail, nil)", status, err)
+	}
+
+	ptrs := make([]string, 11)
+	aRecords := map[string][]net.IP{}
+	for i := range ptrs {
+		name := fmt.Sprintf("mx%d.example.com.", i+1)
+		ptrs[i] = name
+		aRecords[name] = []net.IP{net.ParseIP(fmt.Sprintf("192.0.2.%d", i+10))}
+	}
+	status, _, _, _, err = Evaluate(context.Background(), &MockResolver{PTRRecords: map[string][]string{"192.0.2.1": ptrs}, ARecords: aRecords}, ptrRecord, Args{
+		RemoteIP:       net.ParseIP("192.0.2.1"),
+		MailFromDomain: "example.com",
+	})
+	if status != StatusSoftfail || err != nil {
+		t.Fatalf("Evaluate() PTR lookup limit = (%v, %v), want (softfail, nil)", status, err)
+	}
+}
+
+func TestExplanationAndMacroEdgeBranches(t *testing.T) {
+	resolver := &MockResolver{TXTRecords: map[string][]string{
+		"exp.example.com.":      {"broken %"},
+		"override.example.com.": {"override"},
+	}}
+
+	if explanation, _ := getExplanation(context.Background(), resolver, &Record{Explanation: "%{c}"}, Args{MailFromDomain: "example.com"}); explanation != "" {
+		t.Fatalf("getExplanation() invalid domain-spec = %q, want empty", explanation)
+	}
+
+	args := Args{senderDomain: "example.com", senderLocal: "user", domain: "example.com", explanation: ptrTo("override.example.com")}
+	if explanation, _ := getExplanation(context.Background(), resolver, &Record{Explanation: "exp.example.com"}, args); explanation != "override" {
+		t.Fatalf("getExplanation() override = %q, want %q", explanation, "override")
+	}
+
+	if explanation, _ := getExplanation(context.Background(), resolver, &Record{Explanation: "exp.example.com"}, Args{senderDomain: "example.com", senderLocal: "user", domain: "example.com"}); explanation != "" {
+		t.Fatalf("getExplanation() broken macro text = %q, want empty", explanation)
+	}
+
+	if got, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "%{c}", Args{}, false); err != nil || got != "" {
+		t.Fatalf("expandDomainSpec() empty c = (%q, %v), want (empty, nil)", got, err)
+	}
+	if got, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "%{r}", Args{}, false); err != nil || got != "" {
+		t.Fatalf("expandDomainSpec() empty r = (%q, %v), want (empty, nil)", got, err)
+	}
+	if _, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "%{s"+strings.Repeat("9", 64)+"}", Args{senderDomain: "example.com", senderLocal: "user"}, false); err == nil {
+		t.Fatal("expandDomainSpec() expected error for overflow transformer digits")
+	}
+	if _, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "bad..example.com", Args{}, true); err == nil {
+		t.Fatal("expandDomainSpec() expected error for invalid expanded domain")
+	}
+	args = Args{domain: "example.com", RemoteIP: net.ParseIP("192.0.2.1"), dnsRequests: intPtr(dnsRequestsMax), voidLookups: new(int)}
+	if _, _, err := expandDomainSpec(context.Background(), &MockResolver{}, "%{p}", args, false); !errors.Is(err, ErrTooManyDNSRequests) {
+		t.Fatalf("expandDomainSpec() p lookup limit error = %v, want ErrTooManyDNSRequests", err)
+	}
+}
+
+func ptrTo(s string) *string {
+	return &s
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func TestFindValidatedPTROrdering(t *testing.T) {
+	resolver := &MockResolver{
+		ARecords: map[string][]net.IP{
+			"example.com.":         {net.ParseIP("192.0.2.1")},
+			"mail.example.com.":    {net.ParseIP("192.0.2.1")},
+			"other.example.net.":   {net.ParseIP("192.0.2.1")},
+			"invalid.example.com.": {net.ParseIP("192.0.2.55")},
+		},
+	}
+	args := Args{domain: "example.com", RemoteIP: net.ParseIP("192.0.2.1")}
+
+	authentic := true
+	if got := findValidatedPTR(context.Background(), resolver, []string{"example.com."}, args, &authentic); got != "example.com" {
+		t.Fatalf("findValidatedPTR() exact = %q, want %q", got, "example.com")
+	}
+
+	authentic = true
+	if got := findValidatedPTR(context.Background(), resolver, []string{"mail.example.com."}, args, &authentic); got != "mail.example.com" {
+		t.Fatalf("findValidatedPTR() subdomain = %q, want %q", got, "mail.example.com")
+	}
+
+	authentic = true
+	if got := findValidatedPTR(context.Background(), resolver, []string{"other.example.net."}, args, &authentic); got != "other.example.net" {
+		t.Fatalf("findValidatedPTR() fallback = %q, want %q", got, "other.example.net")
+	}
+
+	authentic = true
+	if got := findValidatedPTR(context.Background(), resolver, []string{"invalid.example.com."}, args, &authentic); got != "unknown" {
+		t.Fatalf("findValidatedPTR() unknown = %q, want %q", got, "unknown")
 	}
 }
 
@@ -960,8 +1386,8 @@ func TestVerifyScenarios(t *testing.T) {
 	if received.Result != StatusFail {
 		t.Errorf("expl-multi.example fail: got %v, want fail", received.Result)
 	}
-	if expl != "your ip 10.0.1.2 is not allowed" {
-		t.Errorf("multi explanation: got %q, want 'your ip 10.0.1.2 is not allowed'", expl)
+	if expl != "" {
+		t.Errorf("multi explanation: got %q, want empty explanation", expl)
 	}
 
 	// Verify with IP EHLO

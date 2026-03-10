@@ -193,13 +193,16 @@ func ParseRecord(s string) (r *Record, isSPF bool, err error) {
 	if !p.take("v=spf1") {
 		return nil, false, nil
 	}
+	if !p.empty() && p.peekchar() != ' ' {
+		return nil, false, nil
+	}
+	isSPF = true
 
 	for !p.empty() {
 		// Require space between terms
 		if !p.take(" ") {
 			p.xerrorf("expected space")
 		}
-		isSPF = true // Has at least v=spf1 and a space
 
 		// Skip multiple spaces
 		for p.take(" ") {

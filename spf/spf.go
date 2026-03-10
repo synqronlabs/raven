@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	rdns "github.com/synqronlabs/raven/dns"
 )
 
 // SPF evaluation errors.
@@ -224,7 +225,7 @@ var timeNow = time.Now
 // Lookup looks up and parses an SPF TXT record for a domain.
 func Lookup(ctx context.Context, resolver Resolver, domain string) (status Status, txt string, record *Record, authentic bool, err error) {
 	// Validate domain name
-	if err := validateDomain(domain); err != nil {
+	if err := validateLookupDomain(domain); err != nil {
 		return StatusNone, "", nil, false, fmt.Errorf("%w: validating domain %q: %w", ErrInvalidDomain, domain, err)
 	}
 
@@ -285,6 +286,19 @@ func Verify(ctx context.Context, resolver Resolver, args Args) (received Receive
 		}
 		return received, "", "", false, nil
 	}
+	if err := validateSenderDomain(args.domain); err != nil {
+		received = Received{
+			Result:       StatusNone,
+			Comment:      fmt.Sprintf("invalid domain %s", args.domain),
+			ClientIP:     args.RemoteIP,
+			EnvelopeFrom: fmt.Sprintf("%s@%s", args.senderLocal, args.senderDomain),
+			Helo:         args.HelloDomain,
+			Receiver:     args.LocalHostname,
+			Identity:     map[bool]string{true: "helo", false: "mailfrom"}[isHelo],
+			Problem:      fmt.Errorf("%w: validating domain %q: %w", ErrInvalidDomain, args.domain, err).Error(),
+		}
+		return received, args.domain, "", false, fmt.Errorf("%w: validating domain %q: %w", ErrInvalidDomain, args.domain, err)
+	}
 
 	status, mechanism, expl, authentic, err := checkHost(ctx, resolver, args)
 
@@ -323,6 +337,9 @@ func Evaluate(ctx context.Context, resolver Resolver, record *Record, args Args)
 	_, ok := prepareArgs(&args)
 	if !ok {
 		return StatusNone, "default", "", false, fmt.Errorf("no domain name to validate")
+	}
+	if err := validateSenderDomain(args.domain); err != nil {
+		return StatusNone, "default", "", false, fmt.Errorf("%w: validating domain %q: %w", ErrInvalidDomain, args.domain, err)
 	}
 	return evaluateRecord(ctx, resolver, record, args)
 }
@@ -413,9 +430,13 @@ func evaluateRecord(ctx context.Context, resolver Resolver, record *Record, args
 		return ip6.Mask(mask).Equal(remote6.Mask(mask))
 	}
 
-	// checkHostIP checks if any A/AAAA record for a domain matches.
+	// checkHostIP checks if any address record for the relevant IP family matches.
 	checkHostIP := func(domain string, d Directive) (bool, Status, error) {
-		ips, result, err := resolver.LookupIP(ctx, "ip", domain+".")
+		network := "ip6"
+		if remote4 != nil {
+			network = "ip4"
+		}
+		ips, result, err := resolver.LookupIP(ctx, network, domain+".")
 		authentic = authentic && result.Authentic
 		trackVoidLookup(err, &args)
 		if err != nil && !errors.Is(err, ErrDNSNotFound) {
@@ -681,7 +702,7 @@ func getExplanation(ctx context.Context, resolver Resolver, record *Record, args
 
 	txts, result, err := resolver.LookupTXT(ctx, ensureAbsDNS(name))
 	authentic = authentic && result.Authentic
-	if err != nil || len(txts) == 0 {
+	if err != nil || len(txts) != 1 {
 		return "", authentic
 	}
 
@@ -863,9 +884,9 @@ func expandDomainSpec(ctx context.Context, resolver Resolver, spec string, args 
 			v = strings.Join(t, ".")
 		}
 
-		// URL encode if uppercase
+		// Uppercase macros use RFC 3986 percent-encoding.
 		if upper {
-			v = url.QueryEscape(v)
+			v = escapeMacroValue(v)
 		}
 
 		b.WriteString(v)
@@ -1027,16 +1048,46 @@ func validateDomain(s string) error {
 		return fmt.Errorf("too many labels")
 	}
 
-	for _, label := range labels {
+	for i, label := range labels {
 		if len(label) > 63 {
 			return fmt.Errorf("label too long")
 		}
-		if label == "" && s != "" {
-			// Allow trailing dot but not empty labels otherwise
+		if label == "" && i == len(labels)-1 {
+			// Allow a trailing root label.
 			continue
+		}
+		if label == "" {
+			return fmt.Errorf("empty label")
 		}
 	}
 
+	return nil
+}
+
+func validateLookupDomain(s string) error {
+	if err := validateDomain(s); err != nil {
+		return err
+	}
+	trimmed := strings.TrimSuffix(s, ".")
+	if !strings.Contains(trimmed, ".") {
+		return fmt.Errorf("domain must be multi-label")
+	}
+	if len(trimmed) > 253 {
+		return fmt.Errorf("domain too long")
+	}
+	if net.ParseIP(trimmed) != nil {
+		return fmt.Errorf("ip literals are not allowed")
+	}
+	return nil
+}
+
+func validateSenderDomain(s string) error {
+	if err := validateLookupDomain(s); err != nil {
+		return err
+	}
+	if !rdns.IsValidDomain(s) {
+		return fmt.Errorf("invalid domain syntax")
+	}
 	return nil
 }
 
@@ -1057,4 +1108,22 @@ func trackVoidLookup(err error, args *Args) {
 	if errors.Is(err, ErrDNSNotFound) {
 		*args.voidLookups++
 	}
+}
+
+func escapeMacroValue(s string) string {
+	const hex = "0123456789ABCDEF"
+
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0x0F])
+	}
+	return b.String()
 }
