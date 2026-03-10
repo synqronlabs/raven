@@ -83,7 +83,7 @@ type networkRecordingResolver struct {
 	hosts    []string
 }
 
-func (r *networkRecordingResolver) LookupTXT(context.Context, string) ([]string, Result, error) {
+func (*networkRecordingResolver) LookupTXT(context.Context, string) ([]string, Result, error) {
 	return nil, Result{}, ErrDNSNotFound
 }
 
@@ -93,11 +93,11 @@ func (r *networkRecordingResolver) LookupIP(_ context.Context, network, host str
 	return r.ips, Result{Authentic: true}, nil
 }
 
-func (r *networkRecordingResolver) LookupMX(context.Context, string) ([]*net.MX, Result, error) {
+func (*networkRecordingResolver) LookupMX(context.Context, string) ([]*net.MX, Result, error) {
 	return nil, Result{}, ErrDNSNotFound
 }
 
-func (r *networkRecordingResolver) LookupAddr(context.Context, string) ([]string, Result, error) {
+func (*networkRecordingResolver) LookupAddr(context.Context, string) ([]string, Result, error) {
 	return nil, Result{}, ErrDNSNotFound
 }
 
