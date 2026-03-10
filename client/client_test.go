@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -2273,7 +2274,7 @@ func TestDialer_StartTLS_NotAvailable_Required(t *testing.T) {
 func TestClient_DialTLSContext_ClosedClient(t *testing.T) {
 	c := NewClient(nil)
 	c.closed = true
-	err := c.DialTLSContext(nil, "127.0.0.1:465")
+	err := c.DialTLSContext(context.TODO(), "127.0.0.1:465")
 	if err != ErrClientClosed {
 		t.Errorf("expected ErrClientClosed, got %v", err)
 	}
