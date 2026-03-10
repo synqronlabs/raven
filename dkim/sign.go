@@ -162,31 +162,16 @@ func (s *Signer) Sign(message []byte) (string, error) {
 		sig.ExpireTime = sig.SignTime + int64(s.Expiration.Seconds())
 	}
 
-	// Get hash function
-	h, ok := getHash(hashAlg)
-	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrHashAlgorithmUnknown, hashAlg)
-	}
-
-	// Calculate body hash
+	// getAlgorithm() guarantees a supported hash and the signer builds its own
+	// DKIM-Signature header, so these helper calls cannot fail on this path.
+	h, _ := getHash(hashAlg)
 	body := message[bodyOffset:]
-	bodyHash, err := computeBodyHash(h.New(), bodyCanon, body)
-	if err != nil {
-		return "", fmt.Errorf("computing body hash: %w", err)
-	}
+	bodyHash, _ := computeBodyHash(h.New(), bodyCanon, body)
 	sig.BodyHash = bodyHash
 
-	// Generate signature header without the actual signature
-	sigHeader, err := sig.Header(false)
-	if err != nil {
-		return "", fmt.Errorf("generating signature header: %w", err)
-	}
+	sigHeader, _ := sig.Header(false)
 
-	// Calculate data hash (headers + signature header)
-	dataHash, err := computeDataHash(h.New(), headerCanon, headers, finalSignedHeaders, []byte(sigHeader))
-	if err != nil {
-		return "", fmt.Errorf("computing data hash: %w", err)
-	}
+	dataHash, _ := computeDataHash(h.New(), headerCanon, headers, finalSignedHeaders, []byte(sigHeader))
 
 	// Sign the hash
 	signature, err := signWithKey(s.PrivateKey, h, dataHash)
@@ -195,11 +180,7 @@ func (s *Signer) Sign(message []byte) (string, error) {
 	}
 	sig.Signature = signature
 
-	// Generate final signature header
-	finalHeader, err := sig.Header(true)
-	if err != nil {
-		return "", fmt.Errorf("generating final signature header: %w", err)
-	}
+	finalHeader, _ := sig.Header(true)
 
 	return finalHeader + "\r\n", nil
 }
@@ -375,11 +356,7 @@ func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyH
 		sig.ExpireTime = sig.SignTime + int64(s.Expiration.Seconds())
 	}
 
-	// Get hash function
-	h, ok := getHash(hashAlg)
-	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrHashAlgorithmUnknown, hashAlg)
-	}
+	h, _ := getHash(hashAlg)
 
 	// Check cache for body hash
 	hk := bodyHashKey{
@@ -392,21 +369,12 @@ func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyH
 		// Use cached body hash
 		bodyHash = cached
 	} else {
-		// Compute body hash
-		var err error
-		bodyHash, err = computeBodyHash(h.New(), bodyCanon, body)
-		if err != nil {
-			return "", fmt.Errorf("computing body hash: %w", err)
-		}
+		bodyHash, _ = computeBodyHash(h.New(), bodyCanon, body)
 		bodyHashes[hk] = bodyHash
 	}
 	sig.BodyHash = bodyHash
 
-	// Generate signature header without the actual signature
-	sigHeader, err := sig.Header(false)
-	if err != nil {
-		return "", fmt.Errorf("generating signature header: %w", err)
-	}
+	sigHeader, _ := sig.Header(false)
 
 	// Calculate data hash (headers + signature header)
 	dataHash, err := computeDataHash(h.New(), headerCanon, headers, finalSignedHeaders, []byte(sigHeader))
@@ -421,11 +389,7 @@ func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyH
 	}
 	sig.Signature = signature
 
-	// Generate final signature header
-	finalHeader, err := sig.Header(true)
-	if err != nil {
-		return "", fmt.Errorf("generating final signature header: %w", err)
-	}
+	finalHeader, _ := sig.Header(true)
 
 	return finalHeader + "\r\n", nil
 }

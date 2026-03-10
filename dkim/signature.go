@@ -41,11 +41,7 @@ func NewSignature() *Signature {
 
 // AlgorithmSign returns the signing algorithm part (e.g., "rsa" from "rsa-sha256").
 func (s *Signature) AlgorithmSign() string {
-	parts := strings.SplitN(s.Algorithm, "-", 2)
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return ""
+	return strings.SplitN(s.Algorithm, "-", 2)[0]
 }
 
 // AlgorithmHash returns the hash algorithm part (e.g., "sha256" from "rsa-sha256").
@@ -59,11 +55,7 @@ func (s *Signature) AlgorithmHash() string {
 
 // HeaderCanon returns the header canonicalization algorithm.
 func (s *Signature) HeaderCanon() Canonicalization {
-	parts := strings.SplitN(s.Canonicalization, "/", 2)
-	if len(parts) > 0 {
-		return Canonicalization(strings.ToLower(parts[0]))
-	}
-	return CanonSimple
+	return Canonicalization(strings.ToLower(strings.SplitN(s.Canonicalization, "/", 2)[0]))
 }
 
 // BodyCanon returns the body canonicalization algorithm.

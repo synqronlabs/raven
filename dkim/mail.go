@@ -4,16 +4,40 @@ import (
 	"context"
 	"crypto"
 	"fmt"
+	"strings"
 
 	ravendns "github.com/synqronlabs/raven/dns"
 	ravenmail "github.com/synqronlabs/raven/mail"
 )
 
+func rawMailMessage(mail *ravenmail.Mail) []byte {
+	estimatedSize := len(mail.Content.Body) + 2
+	for _, header := range mail.Content.Headers {
+		estimatedSize += len(header.Name) + 2 + len(header.Value) + 10
+	}
+
+	buf := make([]byte, 0, estimatedSize)
+	for _, header := range mail.Content.Headers {
+		if strings.EqualFold(header.Name, "DKIM-Signature") {
+			buf = append(buf, header.Name...)
+			buf = append(buf, ':', ' ')
+			buf = append(buf, header.Value...)
+			buf = append(buf, '\r', '\n')
+			continue
+		}
+		buf = append(buf, ravenmail.FoldHeader(header.Name, header.Value)...)
+	}
+
+	buf = append(buf, '\r', '\n')
+	buf = append(buf, mail.Content.Body...)
+	return buf
+}
+
 // SignMail signs a mail message and adds the DKIM-Signature header.
 // This is a convenience function for signing mail objects.
 func SignMail(mail *ravenmail.Mail, signer *Signer) error {
 	// Build raw message
-	rawMessage := mail.Content.ToRaw()
+	rawMessage := rawMailMessage(mail)
 
 	// Sign the message
 	sigHeader, err := signer.Sign(rawMessage)
@@ -60,7 +84,7 @@ func QuickSign(mail *ravenmail.Mail, domain, selector string, privateKey crypto.
 // VerifyMailContext verifies DKIM signatures in a mail message.
 // Returns verification results for each signature found.
 func VerifyMailContext(ctx context.Context, mail *ravenmail.Mail, resolver ravendns.Resolver) ([]Result, error) {
-	rawMessage := mail.Content.ToRaw()
+	rawMessage := rawMailMessage(mail)
 	verifier := &Verifier{Resolver: resolver}
 	results, err := verifier.Verify(ctx, rawMessage)
 	if err != nil {

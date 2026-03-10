@@ -154,9 +154,8 @@ func marshalPublicKey(key any) ([]byte, error) {
 func encodeQPSection(s string) string {
 	const hex = "0123456789ABCDEF"
 	var b strings.Builder
-	for i, c := range []byte(s) {
-		// First character cannot be whitespace
-		if (i == 0 && (c == ' ' || c == '\t')) || c > ' ' && c < 0x7f && c != '=' {
+	for _, c := range []byte(s) {
+		if c >= '!' && c <= '~' && c != '=' && c != ';' {
 			b.WriteByte(c)
 		} else {
 			b.WriteByte('=')

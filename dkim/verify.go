@@ -267,11 +267,6 @@ func (v *Verifier) verifyWithRecord(
 		}
 	}
 
-	// Body length not supported (security risk)
-	if sig.Length >= 0 {
-		return StatusPermerror, fmt.Errorf("body length limit (l=) not supported")
-	}
-
 	// Calculate data hash (headers + signature header)
 	dataHash, err := computeDataHash(hashFunc.New(), headerCanon, headers, sig.SignedHeaders, verifySig)
 	if err != nil {
@@ -285,8 +280,11 @@ func (v *Verifier) verifyWithRecord(
 
 	// Calculate body hash
 	bodyReader := &atReader{r: message, offset: int64(bodyOffset)}
-	bodyHash, err := computeBodyHashReader(hashFunc.New(), bodyCanon, bodyReader)
+	bodyHash, _, err := computeBodyHashLimitedReader(hashFunc.New(), bodyCanon, bodyReader, sig.Length)
 	if err != nil {
+		if errors.Is(err, ErrBodyHashLength) {
+			return StatusPermerror, fmt.Errorf("computing body hash: %w", err)
+		}
 		return StatusTemperror, fmt.Errorf("computing body hash: %w", err)
 	}
 
