@@ -132,7 +132,6 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 			}
 			h.Write(crlf)
 			written += 2
-			endsWithCRLF = true
 		}
 		emptyLines = 0
 

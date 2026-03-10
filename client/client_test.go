@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,25 +70,53 @@ func (s *mockSMTPServer) close() {
 
 // smtpGreeting writes a standard 220 greeting.
 func smtpGreeting(w *bufio.Writer) {
-	w.WriteString("220 mock.example.com ESMTP\r\n")
-	w.Flush()
+	mustWriteString(w, "220 mock.example.com ESMTP\r\n")
+	mustFlush(w)
 }
 
 // smtpEHLO handles an EHLO command and responds with given extensions.
 func smtpEHLO(w *bufio.Writer, extensions []string) {
 	if len(extensions) == 0 {
-		w.WriteString("250 mock.example.com\r\n")
+		mustWriteString(w, "250 mock.example.com\r\n")
 	} else {
-		w.WriteString("250-mock.example.com\r\n")
+		mustWriteString(w, "250-mock.example.com\r\n")
 		for i, ext := range extensions {
 			if i == len(extensions)-1 {
-				w.WriteString("250 " + ext + "\r\n")
+				mustWriteString(w, "250 "+ext+"\r\n")
 			} else {
-				w.WriteString("250-" + ext + "\r\n")
+				mustWriteString(w, "250-"+ext+"\r\n")
 			}
 		}
 	}
-	w.Flush()
+	mustFlush(w)
+}
+
+func mustWriteString(w *bufio.Writer, s string) {
+	if _, err := w.WriteString(s); err != nil {
+		panic(err)
+	}
+}
+
+func mustFlush(w *bufio.Writer) {
+	if err := w.Flush(); err != nil {
+		panic(err)
+	}
+}
+
+func splitMockServerAddr(t *testing.T, addr string) (string, int) {
+	t.Helper()
+
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("Atoi port %q: %v", portStr, err)
+	}
+
+	return host, port
 }
 
 // readLine reads one CRLF-terminated line from the buffered reader.
@@ -129,26 +158,26 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			smtpEHLO(w, exts)
 
 		case strings.HasPrefix(cmd, "HELO"):
-			w.WriteString("250 mock.example.com\r\n")
-			w.Flush()
+			mustWriteString(w, "250 mock.example.com\r\n")
+			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "MAIL FROM:"):
-			w.WriteString("250 2.1.0 Ok\r\n")
-			w.Flush()
+			mustWriteString(w, "250 2.1.0 Ok\r\n")
+			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "RCPT TO:"):
 			addr := line[len("RCPT TO:"):]
 			addr = strings.TrimSpace(addr)
 			if h.rejectRcptTo != nil && h.rejectRcptTo[addr] {
-				w.WriteString("550 5.1.1 User unknown\r\n")
+				mustWriteString(w, "550 5.1.1 User unknown\r\n")
 			} else {
-				w.WriteString("250 2.1.5 Ok\r\n")
+				mustWriteString(w, "250 2.1.5 Ok\r\n")
 			}
-			w.Flush()
+			mustFlush(w)
 
 		case cmd == "DATA":
-			w.WriteString("354 Start mail input\r\n")
-			w.Flush()
+			mustWriteString(w, "354 Start mail input\r\n")
+			mustFlush(w)
 			// Read until ".\r\n"
 			for {
 				dataLine, err := readLine(r)
@@ -167,64 +196,64 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			if msg == "" {
 				msg = "2.0.0 Ok: queued as MOCK123"
 			}
-			w.WriteString(fmt.Sprintf("%d %s\r\n", code, msg))
-			w.Flush()
+			mustWriteString(w, fmt.Sprintf("%d %s\r\n", code, msg))
+			mustFlush(w)
 
 		case cmd == "RSET":
-			w.WriteString("250 2.0.0 Ok\r\n")
-			w.Flush()
+			mustWriteString(w, "250 2.0.0 Ok\r\n")
+			mustFlush(w)
 
 		case cmd == "NOOP":
-			w.WriteString("250 2.0.0 Ok\r\n")
-			w.Flush()
+			mustWriteString(w, "250 2.0.0 Ok\r\n")
+			mustFlush(w)
 
 		case cmd == "QUIT":
-			w.WriteString("221 2.0.0 Bye\r\n")
-			w.Flush()
+			mustWriteString(w, "221 2.0.0 Bye\r\n")
+			mustFlush(w)
 			return
 
 		case strings.HasPrefix(cmd, "VRFY"):
 			arg := strings.TrimSpace(line[4:])
-			w.WriteString(fmt.Sprintf("250 <%s@example.com>\r\n", arg))
-			w.Flush()
+			mustWriteString(w, fmt.Sprintf("250 <%s@example.com>\r\n", arg))
+			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "EXPN"):
-			w.WriteString("250-user1@example.com\r\n")
-			w.WriteString("250 user2@example.com\r\n")
-			w.Flush()
+			mustWriteString(w, "250-user1@example.com\r\n")
+			mustWriteString(w, "250 user2@example.com\r\n")
+			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "AUTH PLAIN"):
 			if h.rejectAuth {
-				w.WriteString("535 5.7.8 Authentication failed\r\n")
+				mustWriteString(w, "535 5.7.8 Authentication failed\r\n")
 			} else {
-				w.WriteString("235 2.7.0 Authentication successful\r\n")
+				mustWriteString(w, "235 2.7.0 Authentication successful\r\n")
 			}
-			w.Flush()
+			mustFlush(w)
 
 		case cmd == "AUTH LOGIN":
 			if h.rejectAuth {
-				w.WriteString("535 5.7.8 Authentication failed\r\n")
-				w.Flush()
+				mustWriteString(w, "535 5.7.8 Authentication failed\r\n")
+				mustFlush(w)
 			} else {
-				w.WriteString("334 VXNlcm5hbWU6\r\n") // "Username:" base64
-				w.Flush()
+				mustWriteString(w, "334 VXNlcm5hbWU6\r\n") // "Username:" base64
+				mustFlush(w)
 				_, err := readLine(r)
 				if err != nil {
 					return
 				}
-				w.WriteString("334 UGFzc3dvcmQ6\r\n") // "Password:" base64
-				w.Flush()
+				mustWriteString(w, "334 UGFzc3dvcmQ6\r\n") // "Password:" base64
+				mustFlush(w)
 				_, err = readLine(r)
 				if err != nil {
 					return
 				}
-				w.WriteString("235 2.7.0 Authentication successful\r\n")
-				w.Flush()
+				mustWriteString(w, "235 2.7.0 Authentication successful\r\n")
+				mustFlush(w)
 			}
 
 		case strings.HasPrefix(cmd, "STARTTLS"):
-			w.WriteString("220 2.0.0 Ready for TLS\r\n")
-			w.Flush()
+			mustWriteString(w, "220 2.0.0 Ready for TLS\r\n")
+			mustFlush(w)
 			// We won't actually do TLS in this mock; the client will fail.
 			return
 
@@ -233,17 +262,23 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			parts := strings.Fields(line)
 			size := 0
 			if len(parts) >= 2 {
-				fmt.Sscanf(parts[1], "%d", &size)
+				parsedSize, err := strconv.Atoi(parts[1])
+				if err != nil {
+					return
+				}
+				size = parsedSize
 			}
 			// Read exactly size bytes
 			buf := make([]byte, size)
-			io.ReadFull(r, buf)
-			w.WriteString("250 2.0.0 Ok\r\n")
-			w.Flush()
+			if _, err := io.ReadFull(r, buf); err != nil {
+				return
+			}
+			mustWriteString(w, "250 2.0.0 Ok\r\n")
+			mustFlush(w)
 
 		default:
-			w.WriteString("502 5.5.1 Command not recognized\r\n")
-			w.Flush()
+			mustWriteString(w, "502 5.5.1 Command not recognized\r\n")
+			mustFlush(w)
 		}
 	}
 }
@@ -345,9 +380,6 @@ func TestSMTPError_WithoutEnhancedCode(t *testing.T) {
 	s := err.Error()
 	if !strings.Contains(s, "421") || !strings.Contains(s, "Try again") {
 		t.Errorf("unexpected error string: %s", s)
-	}
-	if strings.Contains(s, ".") && strings.Count(s, ".") > 0 {
-		// Enhanced codes have dots; just check format looks right
 	}
 }
 
@@ -886,18 +918,18 @@ func TestClient_Hello_FallbackToHELO(t *testing.T) {
 			cmd := strings.ToUpper(line)
 			switch {
 			case strings.HasPrefix(cmd, "EHLO"):
-				w.WriteString("502 5.5.1 Not supported\r\n")
-				w.Flush()
+				mustWriteString(w, "502 5.5.1 Not supported\r\n")
+				mustFlush(w)
 			case strings.HasPrefix(cmd, "HELO"):
-				w.WriteString("250 mock.example.com\r\n")
-				w.Flush()
+				mustWriteString(w, "250 mock.example.com\r\n")
+				mustFlush(w)
 			case cmd == "QUIT":
-				w.WriteString("221 Bye\r\n")
-				w.Flush()
+				mustWriteString(w, "221 Bye\r\n")
+				mustFlush(w)
 				return
 			default:
-				w.WriteString("502 5.5.1 Not supported\r\n")
-				w.Flush()
+				mustWriteString(w, "502 5.5.1 Not supported\r\n")
+				mustFlush(w)
 			}
 		}
 	})
@@ -938,8 +970,8 @@ func TestClient_Greeting_AfterDial(t *testing.T) {
 func TestClient_Dial_BadGreeting(t *testing.T) {
 	srv := newMockSMTPServer(t, func(conn net.Conn) {
 		w := bufio.NewWriter(conn)
-		w.WriteString("421 Service unavailable\r\n")
-		w.Flush()
+		mustWriteString(w, "421 Service unavailable\r\n")
+		mustFlush(w)
 	})
 	defer srv.close()
 
@@ -1738,9 +1770,7 @@ func TestPool_Put_ClosedPool(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 5)
@@ -1782,9 +1812,7 @@ func TestDialer_Dial(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	client, err := d.Dial()
@@ -1803,9 +1831,7 @@ func TestDialer_Dial_WithLocalName(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	d.LocalName = "my.client.example.com"
@@ -1821,9 +1847,7 @@ func TestDialer_DialAndSend(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 
@@ -1848,9 +1872,7 @@ func TestDialer_DialAndSendMultiple(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 
@@ -1889,9 +1911,7 @@ func TestDialer_Dial_WithAuth(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	d.Auth = &ClientAuth{Username: "user", Password: "pass"}
@@ -2235,9 +2255,7 @@ func TestDialer_StartTLS_NotAvailable_NotRequired(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	d.StartTLS = true
@@ -2255,9 +2273,7 @@ func TestDialer_StartTLS_NotAvailable_Required(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	d.StartTLS = true
@@ -2606,9 +2622,7 @@ func TestPool_SendAndReturn(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 2)
@@ -2635,9 +2649,7 @@ func TestPool_GetAndPut(t *testing.T) {
 	srv := newMockSMTPServer(t, h.handle)
 	defer srv.close()
 
-	host, portStr, _ := net.SplitHostPort(srv.addr())
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	host, port := splitMockServerAddr(t, srv.addr())
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 2)

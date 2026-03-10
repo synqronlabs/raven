@@ -32,7 +32,7 @@ const (
 // Returns the parsed record, whether the string looks like a DMARC record
 // (starts with "v=DMARC1"), and any parsing error.
 func ParseRecord(s string, mode ParseMode) (record *Record, isDMARC bool, rerr error) {
-	checkRequired := true
+	checkRequired := false
 	switch mode {
 	case ParseModeStrict:
 		checkRequired = true

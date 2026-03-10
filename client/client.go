@@ -633,7 +633,9 @@ func (c *Client) Quit() error {
 
 	if err := c.writeCommand("QUIT"); err != nil {
 		// Still close the connection
-		c.closeLocked()
+		if closeErr := c.closeLocked(); closeErr != nil {
+			return errors.Join(fmt.Errorf("sending QUIT command: %w", err), closeErr)
+		}
 		return fmt.Errorf("sending QUIT command: %w", err)
 	}
 
