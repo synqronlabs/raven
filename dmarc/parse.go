@@ -47,11 +47,7 @@ func ParseRecord(s string, mode ParseMode) (record *Record, isDMARC bool, rerr e
 		if x == nil {
 			return
 		}
-		if err, ok := x.(parseErr); ok {
-			rerr = err
-			return
-		}
-		panic(x)
+		rerr = recoverParseError(x)
 	}()
 
 	r := DefaultRecord
@@ -184,6 +180,13 @@ func ParseRecord(s string, mode ParseMode) (record *Record, isDMARC bool, rerr e
 	}
 
 	return &r, true, nil
+}
+
+func recoverParseError(x any) error {
+	if err, ok := x.(parseErr); ok {
+		return err
+	}
+	panic(x)
 }
 
 // parser holds state for parsing DMARC records.

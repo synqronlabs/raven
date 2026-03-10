@@ -168,11 +168,15 @@ func ExtractFromDomain(fromHeader string) (string, error) {
 	if len(addrs) == 0 {
 		return "", ErrNoFromHeader
 	}
-	// DMARC evaluates a single RFC5322.From domain. When multiple addresses are
-	// present, this implementation uses the first parsed address.
+	if len(addrs) > 1 {
+		return "", ErrMultipleFromAddresses
+	}
 
 	// Extract domain from the email address
-	addr := addrs[0].Address
+	return domainFromAddress(addrs[0].Address)
+}
+
+func domainFromAddress(addr string) (string, error) {
 	at := strings.LastIndex(addr, "@")
 	if at < 0 || at == len(addr)-1 {
 		return "", ErrInvalidFromHeader

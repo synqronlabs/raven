@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/synqronlabs/raven/dkim"
 	"github.com/synqronlabs/raven/dns"
+	ravenmail "github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/spf"
 )
 
@@ -984,6 +986,16 @@ func TestExtractFromDomain(t *testing.T) {
 			fromHeader: "not an email",
 			wantErr:    ErrInvalidFromHeader,
 		},
+		{
+			name:       "group syntax without addresses",
+			fromHeader: "Undisclosed recipients:;",
+			wantErr:    ErrNoFromHeader,
+		},
+		{
+			name:       "multiple addresses",
+			fromHeader: "a@example.com, b@example.com",
+			wantErr:    ErrMultipleFromAddresses,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1158,5 +1170,318 @@ func TestEffectivePolicy(t *testing.T) {
 				t.Errorf("EffectivePolicy: got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestVerifyMail(t *testing.T) {
+	resolver := dns.MockResolver{
+		TXT: map[string][]string{
+			"_dmarc.example.com.": {"v=DMARC1; p=reject"},
+		},
+	}
+
+	t.Run("success", func(t *testing.T) {
+		useResult, result := VerifyMail(
+			context.Background(),
+			resolver,
+			"Sender <user@example.com>",
+			spf.StatusPass,
+			"example.com",
+			nil,
+			true,
+		)
+
+		if !useResult {
+			t.Fatalf("expected useResult=true")
+		}
+		if result.Status != StatusPass {
+			t.Fatalf("status: got %v, want %v", result.Status, StatusPass)
+		}
+		if !result.AlignedSPFPass {
+			t.Fatalf("expected aligned SPF pass")
+		}
+	})
+
+	t.Run("multiple from addresses", func(t *testing.T) {
+		useResult, result := VerifyMail(
+			context.Background(),
+			resolver,
+			"a@example.com, b@example.com",
+			spf.StatusNone,
+			"",
+			nil,
+			true,
+		)
+
+		if useResult {
+			t.Fatalf("expected useResult=false")
+		}
+		if result.Status != StatusPermerror {
+			t.Fatalf("status: got %v, want %v", result.Status, StatusPermerror)
+		}
+		if !errors.Is(result.Err, ErrMultipleFromAddresses) {
+			t.Fatalf("error: got %v, want %v", result.Err, ErrMultipleFromAddresses)
+		}
+	})
+}
+
+func TestVerifyMailObjectAndAuthenticationResults(t *testing.T) {
+	resolver := dns.MockResolver{
+		TXT: map[string][]string{
+			"_dmarc.example.com.": {"v=DMARC1; p=reject"},
+		},
+	}
+
+	t.Run("verify success", func(t *testing.T) {
+		mail := &ravenmail.Mail{
+			Content: ravenmail.Content{
+				Headers: ravenmail.Headers{{Name: "From", Value: "Sender <user@example.com>"}},
+			},
+		}
+
+		result, useResult, err := VerifyMailObject(context.Background(), resolver, mail, MailVerifyArgs{
+			SPFResult:             spf.StatusPass,
+			SPFDomain:             "example.com",
+			ApplyRandomPercentage: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !useResult {
+			t.Fatalf("expected useResult=true")
+		}
+		if result.Status != StatusPass {
+			t.Fatalf("status: got %v, want %v", result.Status, StatusPass)
+		}
+	})
+
+	t.Run("missing from", func(t *testing.T) {
+		mail := &ravenmail.Mail{Content: ravenmail.Content{Headers: ravenmail.Headers{{Name: "Subject", Value: "test"}}}}
+		result, useResult, err := VerifyMailObject(context.Background(), resolver, mail, MailVerifyArgs{})
+		if useResult {
+			t.Fatalf("expected useResult=false")
+		}
+		if !errors.Is(err, ErrNoFromHeader) {
+			t.Fatalf("error: got %v, want %v", err, ErrNoFromHeader)
+		}
+		if !errors.Is(result.Err, ErrNoFromHeader) {
+			t.Fatalf("result error: got %v, want %v", result.Err, ErrNoFromHeader)
+		}
+		if result.Status != StatusPermerror {
+			t.Fatalf("status: got %v, want %v", result.Status, StatusPermerror)
+		}
+	})
+
+	t.Run("invalid from", func(t *testing.T) {
+		mail := &ravenmail.Mail{
+			Content: ravenmail.Content{
+				Headers: ravenmail.Headers{{Name: "From", Value: "a@example.com, b@example.com"}},
+			},
+		}
+		result, useResult, err := VerifyMailObject(context.Background(), resolver, mail, MailVerifyArgs{})
+		if useResult {
+			t.Fatalf("expected useResult=false")
+		}
+		if !errors.Is(err, ErrMultipleFromAddresses) {
+			t.Fatalf("error: got %v, want %v", err, ErrMultipleFromAddresses)
+		}
+		if !errors.Is(result.Err, ErrMultipleFromAddresses) {
+			t.Fatalf("result error: got %v, want %v", result.Err, ErrMultipleFromAddresses)
+		}
+	})
+
+	t.Run("add authentication results", func(t *testing.T) {
+		mail := &ravenmail.Mail{
+			Content: ravenmail.Content{
+				Headers: ravenmail.Headers{
+					{Name: "From", Value: "Sender <user@example.com>"},
+					{Name: "Subject", Value: "demo"},
+				},
+			},
+		}
+
+		longReason := "bad \"quote\"\n" + strings.Repeat("x", 128)
+		AddAuthenticationResults(mail, "mx.example.net", Result{
+			Status:          StatusFail,
+			AlignedSPFPass:  true,
+			AlignedDKIMPass: true,
+			Domain:          "policy.example.net",
+			Record: &Record{
+				Policy:          PolicyReject,
+				SubdomainPolicy: PolicyQuarantine,
+			},
+			Err: errors.New(longReason),
+		})
+
+		if len(mail.Content.Headers) == 0 {
+			t.Fatalf("expected headers to be present")
+		}
+		header := mail.Content.Headers[0]
+		if header.Name != "Authentication-Results" {
+			t.Fatalf("first header name: got %q, want Authentication-Results", header.Name)
+		}
+		for _, want := range []string{
+			"mx.example.net; dmarc=fail",
+			"header.from=example.com",
+			"policy.domain=policy.example.net",
+			"policy.published=reject",
+			"policy.subdomain=quarantine",
+			"spf=pass",
+			"dkim=pass",
+			`reason="bad 'quote' x`,
+		} {
+			if !strings.Contains(header.Value, want) {
+				t.Fatalf("Authentication-Results header %q does not contain %q", header.Value, want)
+			}
+		}
+		if strings.Contains(header.Value, "\n") || strings.Contains(header.Value, "\r") {
+			t.Fatalf("Authentication-Results header should not contain raw newlines: %q", header.Value)
+		}
+	})
+}
+
+func TestCheckAlignment(t *testing.T) {
+	spfAligned, dkimAligned := CheckAlignment(
+		"alerts.example.com",
+		spf.StatusPass,
+		"example.com",
+		[]dkim.Result{{
+			Status: dkim.StatusPass,
+			Signature: &dkim.Signature{
+				Domain: "example.com",
+			},
+		}},
+		AlignRelaxed,
+		AlignRelaxed,
+	)
+
+	if !spfAligned {
+		t.Fatalf("expected SPF alignment")
+	}
+	if !dkimAligned {
+		t.Fatalf("expected DKIM alignment")
+	}
+}
+
+func TestPublicSuffixHelpers(t *testing.T) {
+	if !IsSubdomain("example.com", "example.com") {
+		t.Fatalf("expected exact-match IsSubdomain to return true")
+	}
+	if !IsSubdomain("Mail.Example.COM.", "example.com") {
+		t.Fatalf("expected IsSubdomain to return true")
+	}
+	if IsSubdomain("example.net", "example.com") {
+		t.Fatalf("expected IsSubdomain to return false")
+	}
+	if !IsOrganizationalDomain("example.co.uk") {
+		t.Fatalf("expected organizational domain")
+	}
+	if IsOrganizationalDomain("sub.example.co.uk") {
+		t.Fatalf("expected subdomain to not be organizational domain")
+	}
+	if got := PublicSuffix("Mail.Example.CO.UK."); got != "co.uk" {
+		t.Fatalf("PublicSuffix: got %q, want %q", got, "co.uk")
+	}
+}
+
+func TestURIAndRecordStringCoverage(t *testing.T) {
+	if got := (URI{Address: "mailto:report@example.com,ops!alerts"}).String(); got != "mailto:report@example.com%2Cops%21alerts" {
+		t.Fatalf("URI.String without size: got %q", got)
+	}
+	if got := (URI{Address: "mailto:report@example.com,ops!alerts", MaxSize: 10, Unit: "m"}).String(); got != "mailto:report@example.com%2Cops%21alerts!10m" {
+		t.Fatalf("URI.String with size: got %q", got)
+	}
+
+	var nilRecord *Record
+	if got := nilRecord.String(); got != "" {
+		t.Fatalf("nil Record.String: got %q, want empty string", got)
+	}
+
+	record := &Record{
+		Version:         "DMARC1",
+		Policy:          PolicyReject,
+		SubdomainPolicy: PolicyQuarantine,
+		AggregateReportAddresses: []URI{{
+			Address: "mailto:agg@example.com",
+		}},
+		FailureReportAddresses: []URI{{
+			Address: "mailto:fail@example.com",
+		}},
+		ADKIM:                      AlignStrict,
+		ASPF:                       AlignStrict,
+		AggregateReportingInterval: 3600,
+		FailureReportingOptions:    []string{"1", "d"},
+		ReportingFormat:            []string{"afrf", "iodef"},
+		Percentage:                 50,
+	}
+
+	serialized := record.String()
+	for _, want := range []string{
+		"v=DMARC1",
+		"p=reject",
+		"sp=quarantine",
+		"rua=mailto:agg@example.com",
+		"ruf=mailto:fail@example.com",
+		"adkim=s",
+		"aspf=s",
+		"ri=3600",
+		"fo=1:d",
+		"rf=afrf:iodef",
+		"pct=50",
+	} {
+		if !strings.Contains(serialized, want) {
+			t.Fatalf("Record.String %q does not contain %q", serialized, want)
+		}
+	}
+}
+
+func TestParseRecordAdditionalCoverage(t *testing.T) {
+	record, isDMARC, err := ParseRecord("v=DMARC1; p=none; rua=mailto:dmarc@example.com!42", ParseModeStrict)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isDMARC {
+		t.Fatalf("expected DMARC record")
+	}
+	if len(record.AggregateReportAddresses) != 1 || record.AggregateReportAddresses[0].MaxSize != 42 || record.AggregateReportAddresses[0].Unit != "" {
+		t.Fatalf("unexpected rua parse result: %#v", record.AggregateReportAddresses)
+	}
+
+	_, _, err = ParseRecord("v=DMARC1; p=none", ParseMode(255))
+	if err == nil {
+		t.Fatalf("expected invalid parse mode error")
+	}
+
+	_, _, err = ParseRecord("v=DMARC1; p=none; rua=://", ParseModeStrict)
+	if err == nil {
+		t.Fatalf("expected URI parse error")
+	}
+}
+
+func TestRecoverParseError(t *testing.T) {
+	if err := recoverParseError(parseErr("boom")); err == nil || err.Error() != "boom" {
+		t.Fatalf("unexpected parseErr recovery result: %v", err)
+	}
+
+	defer func() {
+		x := recover()
+		if x == nil {
+			t.Fatalf("expected non-parse panic to be rethrown")
+		}
+		if got := x.(string); got != "panic" {
+			t.Fatalf("panic: got %q, want %q", got, "panic")
+		}
+	}()
+
+	_ = recoverParseError("panic")
+}
+
+func TestDomainFromAddress(t *testing.T) {
+	if domain, err := domainFromAddress("user@example.com"); err != nil || domain != "example.com" {
+		t.Fatalf("domainFromAddress success: domain=%q err=%v", domain, err)
+	}
+
+	if _, err := domainFromAddress("user@"); !errors.Is(err, ErrInvalidFromHeader) {
+		t.Fatalf("domainFromAddress error: got %v, want %v", err, ErrInvalidFromHeader)
 	}
 }
