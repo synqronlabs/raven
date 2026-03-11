@@ -14,20 +14,20 @@ import (
 
 type benchAddr string
 
-func (a benchAddr) Network() string { return "tcp" }
-func (a benchAddr) String() string  { return string(a) }
+func (benchAddr) Network() string  { return "tcp" }
+func (a benchAddr) String() string { return string(a) }
 
 type benchConn struct {
 	bytes.Buffer
 }
 
-func (c *benchConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
-func (c *benchConn) Close() error                       { return nil }
-func (c *benchConn) LocalAddr() net.Addr                { return benchAddr("127.0.0.1:25") }
-func (c *benchConn) RemoteAddr() net.Addr               { return benchAddr("127.0.0.1:54321") }
-func (c *benchConn) SetDeadline(_ time.Time) error      { return nil }
-func (c *benchConn) SetReadDeadline(_ time.Time) error  { return nil }
-func (c *benchConn) SetWriteDeadline(_ time.Time) error { return nil }
+func (*benchConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (*benchConn) Close() error                       { return nil }
+func (*benchConn) LocalAddr() net.Addr                { return benchAddr("127.0.0.1:25") }
+func (*benchConn) RemoteAddr() net.Addr               { return benchAddr("127.0.0.1:54321") }
+func (*benchConn) SetDeadline(_ time.Time) error      { return nil }
+func (*benchConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (*benchConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type benchSession struct{}
 
