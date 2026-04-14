@@ -13,7 +13,7 @@
 // Basic Usage:
 //
 //	resolver := spf.NewResolver(spf.ResolverConfig{
-//	    Nameservers: []string{"8.8.8.8:53"},
+//	    Nameservers: []string{"127.0.0.1:53"},
 //	    DNSSEC:      true,
 //	})
 //

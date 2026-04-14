@@ -66,9 +66,9 @@ type Resolver interface {
 }
 ```
 
-`Result[T]` carries an `Authentic` flag that propagates DNSSEC validation
-status, enabling consumers (SPF, DKIM, DMARC) to enforce stricter policies when
-DNS answers are validated. Two implementations ship out of the box:
+`Result[T]` carries an `Authentic` flag that propagates status from a trusted
+validating recursive resolver, enabling consumers (SPF, DKIM, DMARC) to enforce
+stricter policies when DNS answers are authenticated upstream. Two implementations ship out of the box:
 
 | Resolver        | DNSSEC | Dependency       |
 |-----------------|--------|------------------|

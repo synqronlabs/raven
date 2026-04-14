@@ -19,7 +19,8 @@ var (
 
 // Result contains information about a DNS lookup result.
 type Result struct {
-	// Authentic indicates if the DNS response was DNSSEC-validated.
+	// Authentic indicates if a trusted validating recursive resolver authenticated
+	// the DNS response.
 	Authentic bool
 }
 
@@ -50,14 +51,14 @@ type DNSResolver struct {
 	r *dns.DNSResolver
 }
 
-// NewResolver creates a new DNS resolver with DNSSEC support.
+// NewResolver creates a new DNS resolver with validating-recursive-resolver DNSSEC support.
 // This is a convenience function that wraps dns.NewResolver.
 func NewResolver(config ResolverConfig) *DNSResolver {
 	return &DNSResolver{r: dns.NewResolver(config)}
 }
 
 // NewResolverWithDefaults creates a new DNS resolver with sensible defaults.
-// It uses system nameservers and enables DNSSEC validation.
+// It uses system nameservers and trusts DNSSEC status from a validating recursive resolver.
 func NewResolverWithDefaults() *DNSResolver {
 	return NewResolver(ResolverConfig{
 		DNSSEC:  true,
@@ -126,7 +127,7 @@ func (r *DNSResolver) LookupAddr(ctx context.Context, addr string) ([]string, Re
 }
 
 // StdResolver wraps the standard library net.Resolver to implement Resolver.
-// This is useful when DNSSEC validation is not required.
+// This is useful when validating-recursive-resolver DNSSEC status is not required.
 type StdResolver struct {
 	r *dns.StdResolver
 }

@@ -130,7 +130,8 @@ type Received struct {
 	// Mechanism is the SPF mechanism that caused the result.
 	Mechanism string
 
-	// Authentic indicates if DNS responses were DNSSEC-validated.
+	// Authentic indicates if DNS responses were authenticated by a trusted
+	// validating recursive resolver.
 	Authentic bool
 }
 

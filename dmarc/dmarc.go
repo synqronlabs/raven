@@ -111,7 +111,8 @@ type Result struct {
 	// Record is the parsed DMARC record, or nil if not found or invalid.
 	Record *Record
 
-	// RecordAuthentic indicates if the DMARC DNS response was DNSSEC-signed.
+	// RecordAuthentic indicates if a trusted validating recursive resolver
+	// authenticated the DMARC DNS response.
 	RecordAuthentic bool
 
 	// Err contains details about any error condition, such as parsing failures.

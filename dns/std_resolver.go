@@ -9,14 +9,14 @@ import (
 )
 
 // StdResolver implements the Resolver interface using the standard library net package.
-// This resolver does not support DNSSEC validation (Authentic will always be false).
-// Use DNSResolver for DNSSEC support.
+// This resolver does not surface AD/EDE DNSSEC status (Authentic will always be false).
+// Use DNSResolver when you want to trust a validating recursive resolver.
 type StdResolver struct {
 	resolver *net.Resolver
 }
 
 // NewStdResolver creates a resolver using the standard library.
-// This is useful when DNSSEC validation is not required.
+// This is useful when validating-recursive-resolver DNSSEC status is not required.
 func NewStdResolver() *StdResolver {
 	return &StdResolver{
 		resolver: net.DefaultResolver,

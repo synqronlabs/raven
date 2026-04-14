@@ -14,14 +14,15 @@ import (
 
 // ResolverConfig contains configuration for the DNS resolver.
 type ResolverConfig struct {
-	// Nameservers is a list of DNS servers to query (e.g., "8.8.8.8:53").
-	// If empty, system resolvers from /etc/resolv.conf are used,
-	// falling back to public DNS (8.8.8.8, 1.1.1.1).
+	// Nameservers is a list of DNS servers to query (e.g., "127.0.0.1:53").
+	// If empty, system resolvers from /etc/resolv.conf are used. If none are found,
+	// lookups fail with ErrDNSNoNameservers.
 	Nameservers []string
 
-	// DNSSEC enables DNSSEC validation for queries.
-	// Requires DNSSEC-validating upstream resolvers.
-	// When enabled, the Authentic field in Result indicates validation status.
+	// DNSSEC enables trusting DNSSEC status from validating recursive resolvers.
+	// When enabled, the resolver sets the DO bit on queries, trusts the AD bit on
+	// responses, and maps explicit RFC 8914 EDE DNSSEC Bogus responses to ErrDNSBogus.
+	// It does not perform local DNSSEC chain validation.
 	DNSSEC bool
 
 	// Timeout is the timeout for individual DNS queries. Default is 5 seconds.
@@ -32,13 +33,15 @@ type ResolverConfig struct {
 }
 
 // DNSResolver implements the Resolver interface using github.com/miekg/dns.
-// It provides DNSSEC validation support and configurable query behavior.
+// It acts as a stub resolver and can trust a validating recursive resolver for
+// DNSSEC status.
 type DNSResolver struct {
 	config ResolverConfig
 	client *mdns.Client
 }
 
-// NewResolver creates a new DNS resolver with optional DNSSEC support.
+// NewResolver creates a new DNS resolver with optional validating-recursive-resolver
+// DNSSEC support.
 func NewResolver(config ResolverConfig) *DNSResolver {
 	if config.Timeout == 0 {
 		config.Timeout = 5 * time.Second
@@ -58,12 +61,11 @@ func NewResolver(config ResolverConfig) *DNSResolver {
 	}
 }
 
-// getSystemNameservers tries to get system DNS servers from resolv.conf.
+// getSystemNameservers returns DNS servers from resolv.conf.
 func getSystemNameservers() []string {
 	config, err := mdns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil || len(config.Servers) == 0 {
-		// Fallback to common public DNS servers
-		return []string{"8.8.8.8:53", "1.1.1.1:53"}
+		return nil
 	}
 
 	servers := make([]string, 0, len(config.Servers))
@@ -101,7 +103,31 @@ func classifyQueryError(err error) error {
 	return err
 }
 
-// query performs a DNS query with retries and DNSSEC checking.
+func dnssecBogusError(resp *mdns.Msg) error {
+	if resp == nil {
+		return nil
+	}
+
+	opt := resp.IsEdns0()
+	if opt == nil {
+		return nil
+	}
+
+	for _, option := range opt.Option {
+		ede, ok := option.(*mdns.EDNS0_EDE)
+		if !ok || ede.InfoCode != mdns.ExtendedErrorCodeDNSBogus {
+			continue
+		}
+		if ede.ExtraText == "" {
+			return ErrDNSBogus
+		}
+		return fmt.Errorf("%w: %s", ErrDNSBogus, ede.ExtraText)
+	}
+
+	return nil
+}
+
+// query performs a DNS query with retries and validating-recursive-resolver DNSSEC checks.
 func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*mdns.Msg, bool, error) {
 	absName := ensureAbsolute(name)
 	if len(r.config.Nameservers) == 0 {
@@ -112,9 +138,9 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 	m.SetQuestion(absName, qtype)
 	m.RecursionDesired = true
 
-	// Set DNSSEC OK bit if DNSSEC is enabled
+	// Set the DO bit when trusting a validating recursive resolver for DNSSEC status.
 	if r.config.DNSSEC {
-		m.SetEdns0(4096, true) // Enable EDNS0 with DO bit
+		m.SetEdns0(4096, true)
 	}
 
 	var lastErr error
@@ -135,7 +161,7 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 				continue
 			}
 
-			// Check for DNSSEC authentication
+			// Trust AD when a validating recursive resolver authenticated the response.
 			if r.config.DNSSEC && resp.AuthenticatedData {
 				authentic = true
 			}
@@ -147,12 +173,13 @@ func (r *DNSResolver) query(ctx context.Context, name string, qtype uint16) (*md
 			case mdns.RcodeNameError: // NXDOMAIN
 				return nil, authentic, fmt.Errorf("query for %q returned NXDOMAIN: %w", absName, ErrDNSNotFound)
 			case mdns.RcodeServerFailure:
-				// SERVFAIL might indicate DNSSEC validation failure
 				if r.config.DNSSEC {
-					lastErr = fmt.Errorf("query for %q returned SERVFAIL with DNSSEC enabled: %w", absName, ErrDNSBogus)
-				} else {
-					lastErr = fmt.Errorf("query for %q returned SERVFAIL: %w", absName, ErrDNSServFail)
+					if bogusErr := dnssecBogusError(resp); bogusErr != nil {
+						lastErr = fmt.Errorf("query for %q returned SERVFAIL with explicit DNSSEC failure: %w", absName, bogusErr)
+						continue
+					}
 				}
+				lastErr = fmt.Errorf("query for %q returned SERVFAIL: %w", absName, ErrDNSServFail)
 				continue
 			case mdns.RcodeRefused:
 				lastErr = fmt.Errorf("query for %q was refused: %w", absName, ErrDNSRefused)

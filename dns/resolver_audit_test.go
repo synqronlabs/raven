@@ -194,11 +194,32 @@ func TestDNSResolverLookupTXTClassifiesDeadlineExceededAsTimeout(t *testing.T) {
 	}
 }
 
-func TestDNSResolverQueryMapsServfailToBogusWithDNSSEC(t *testing.T) {
+func TestDNSResolverQueryMapsServfailToServfailWithDNSSEC(t *testing.T) {
 	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
 		resp := new(mdns.Msg)
 		resp.SetReply(req)
 		resp.Rcode = mdns.RcodeServerFailure
+		if err := w.WriteMsg(resp); err != nil {
+			_ = err
+		}
+	}))
+
+	_, err := newTestResolver(addr, true).LookupTXT(context.Background(), "bogus.example")
+	if !errors.Is(err, ErrDNSServFail) {
+		t.Fatalf("LookupTXT() error = %v, want ErrDNSServFail", err)
+	}
+}
+
+func TestDNSResolverQueryMapsServfailWithBogusEDEToBogus(t *testing.T) {
+	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = mdns.RcodeServerFailure
+		opt := resp.SetEdns0(4096, false).IsEdns0()
+		opt.Option = append(opt.Option, &mdns.EDNS0_EDE{
+			InfoCode:  mdns.ExtendedErrorCodeDNSBogus,
+			ExtraText: "signature validation failed",
+		})
 		if err := w.WriteMsg(resp); err != nil {
 			_ = err
 		}

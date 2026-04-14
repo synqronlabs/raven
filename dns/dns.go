@@ -1,16 +1,21 @@
-// Package dns provides DNS resolution utilities with DNSSEC support for email authentication.
+// Package dns provides DNS resolution utilities for email authentication.
 //
 // This package is designed to be used by SPF, DKIM, DMARC, and other email authentication
-// mechanisms that require DNS lookups with optional DNSSEC validation.
+// mechanisms that require DNS lookups with optional DNSSEC awareness.
+//
+// In DNSSEC mode, DNSResolver acts as a stub resolver and trusts a validating recursive
+// resolver such as Unbound. It sets the DO bit on queries, treats the AD bit as authenticated
+// status, and classifies explicit RFC 8914 EDE "DNSSEC Bogus" responses as ErrDNSBogus. It does
+// not perform local DNSSEC chain validation.
 //
 // The package provides two resolver implementations:
-//   - DNSResolver: Uses github.com/miekg/dns for DNSSEC-validated queries
-//   - StdResolver: Uses the standard library net package (no DNSSEC)
+//   - DNSResolver: Uses github.com/miekg/dns with a validating recursive resolver
+//   - StdResolver: Uses the standard library net package (no DNSSEC status)
 //
 // Basic Usage:
 //
 //	resolver := dns.NewResolver(dns.ResolverConfig{
-//	    Nameservers: []string{"8.8.8.8:53"},
+//	    Nameservers: []string{"127.0.0.1:53"}, // Local validating resolver, e.g. Unbound
 //	    DNSSEC:      true,
 //	})
 //
@@ -22,7 +27,7 @@
 //	    fmt.Println(txt)
 //	}
 //	if result.Authentic {
-//	    // Response was DNSSEC-validated
+//	    // Response was authenticated by the validating resolver
 //	}
 package dns
 
@@ -46,20 +51,21 @@ var (
 	// ErrDNSRefused indicates the query was refused.
 	ErrDNSRefused = errors.New("dns: query refused")
 
-	// ErrDNSBogus indicates DNSSEC validation failed.
-	ErrDNSBogus = errors.New("dns: DNSSEC validation failed")
+	// ErrDNSBogus indicates the validating recursive resolver reported DNSSEC Bogus.
+	ErrDNSBogus = errors.New("dns: validating resolver reported DNSSEC bogus")
 
 	// ErrDNSNoNameservers indicates no nameservers are configured.
 	ErrDNSNoNameservers = errors.New("dns: no nameservers configured")
 )
 
-// Result wraps DNS lookup results with DNSSEC authentication status.
+// Result wraps DNS lookup results with validating-resolver DNSSEC status.
 type Result[T any] struct {
 	// Records contains the DNS records returned by the query.
 	Records []T
 
-	// Authentic indicates whether the response was DNSSEC-validated.
-	// This is only meaningful when using a resolver configured for DNSSEC.
+	// Authentic indicates whether a trusted validating recursive resolver marked the
+	// response as authenticated via the AD bit. This is only meaningful when using a
+	// resolver configured for DNSSEC.
 	Authentic bool
 }
 

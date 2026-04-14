@@ -95,6 +95,7 @@ func TestResolverInterface(_ *testing.T) {
 
 func TestNewResolverDefaults(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
+	wantNameservers := getSystemNameservers()
 
 	// Should have default timeout
 	if r.config.Timeout == 0 {
@@ -106,9 +107,8 @@ func TestNewResolverDefaults(t *testing.T) {
 		t.Error("expected default retries to be set")
 	}
 
-	// Should have nameservers (either from system or fallback)
-	if len(r.config.Nameservers) == 0 {
-		t.Error("expected nameservers to be set")
+	if len(r.config.Nameservers) != len(wantNameservers) {
+		t.Fatalf("expected %d default nameservers, got %d", len(wantNameservers), len(r.config.Nameservers))
 	}
 }
 

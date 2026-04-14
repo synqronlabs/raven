@@ -12,7 +12,7 @@ github.com/synqronlabs/raven
 ├── io/        SMTP-oriented I/O helpers (line reading, ASCII checks)
 ├── crypto/    Crypto utilities (ULID generation for Message-ID)
 │
-├── dns/       DNS resolver abstraction with DNSSEC support
+├── dns/       DNS resolver abstraction with validating-recursive-resolver DNSSEC status
 │
 ├── sasl/      SASL mechanisms (PLAIN, LOGIN) for SMTP AUTH
 │
@@ -105,11 +105,11 @@ type Resolver interface {
 }
 ```
 
-`Result[T]` wraps `[]T` records + an `Authentic` boolean for DNSSEC.
+`Result[T]` wraps `[]T` records + an `Authentic` boolean from a trusted validating recursive resolver.
 
 Implementations:
 
-- **`DNSResolver`** — DNSSEC-aware, uses `miekg/dns`.
+- **`DNSResolver`** — Trusts AD/EDE from a validating recursive resolver via `miekg/dns`.
 - **`StdResolver`** — Standard library `net.Resolver`, no DNSSEC.
 - **`MockResolver`** — Deterministic testing (set records in maps, configure
   failures, authentic/inauthentic lists).

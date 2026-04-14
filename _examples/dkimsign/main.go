@@ -101,7 +101,7 @@ func signCmd(args []string) {
 
 func verifyCmd(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
-	dnssec := fs.Bool("dnssec", true, "Use DNSSEC-aware resolver")
+	dnssec := fs.Bool("dnssec", true, "Trust DNSSEC status from a validating resolver")
 	fs.Parse(args)
 
 	message, err := io.ReadAll(os.Stdin)

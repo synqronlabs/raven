@@ -18,7 +18,8 @@
 // Looking up a DMARC policy:
 //
 //	resolver := dns.NewResolver(dns.ResolverConfig{
-//	    DNSSEC: true,
+//	    Nameservers: []string{"127.0.0.1:53"},
+//	    DNSSEC:      true,
 //	})
 //
 //	lookup, err := dmarc.Lookup(ctx, resolver, "example.com")

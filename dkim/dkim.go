@@ -134,7 +134,8 @@ type Result struct {
 	// Record is the parsed DKIM DNS record.
 	Record *Record
 
-	// RecordAuthentic indicates if the DNS record was DNSSEC-validated.
+	// RecordAuthentic indicates if a trusted validating recursive resolver
+	// authenticated the DNS record lookup.
 	RecordAuthentic bool
 
 	// Err contains any error that occurred during verification.
