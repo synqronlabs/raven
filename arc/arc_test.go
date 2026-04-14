@@ -474,6 +474,10 @@ func (*mockResolver) LookupIP(_ context.Context, _ string) (ravendns.Result[net.
 	return ravendns.Result[net.IP]{}, nil
 }
 
+func (*mockResolver) LookupCNAME(_ context.Context, _ string) (ravendns.Result[string], error) {
+	return ravendns.Result[string]{}, nil
+}
+
 func (*mockResolver) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
 	return ravendns.Result[*net.MX]{}, nil
 }

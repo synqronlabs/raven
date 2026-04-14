@@ -10,11 +10,12 @@ import (
 // MockResolver is a Resolver used for testing.
 // Set DNS records in the fields, which map FQDNs (with trailing dot) to values.
 type MockResolver struct {
-	PTR  map[string][]string
-	A    map[string][]string
-	AAAA map[string][]string
-	TXT  map[string][]string
-	MX   map[string][]*net.MX
+	PTR   map[string][]string
+	A     map[string][]string
+	AAAA  map[string][]string
+	TXT   map[string][]string
+	CNAME map[string][]string
+	MX    map[string][]*net.MX
 
 	// Fail contains records that will return a temporary error (SERVFAIL).
 	// Format: "type name", e.g. "txt example.com." where type is lowercase.
@@ -37,7 +38,7 @@ var _ Resolver = MockResolver{}
 
 // mockReq represents a mock DNS request.
 type mockReq struct {
-	Type string // E.g. "txt", "a", "aaaa", "mx", "ptr"
+	Type string // E.g. "txt", "cname", "a", "aaaa", "mx", "ptr"
 	Name string // FQDN with trailing dot
 }
 
@@ -88,6 +89,25 @@ func (r MockResolver) LookupTXT(ctx context.Context, name string) (Result[string
 	}
 
 	records, ok := r.TXT[fqdn]
+	if !ok || len(records) == 0 {
+		return result, ErrDNSNotFound
+	}
+
+	result.Records = records
+	return result, nil
+}
+
+// LookupCNAME returns CNAME records for the given domain.
+func (r MockResolver) LookupCNAME(ctx context.Context, name string) (Result[string], error) {
+	fqdn := ensureFQDN(name)
+	mr := mockReq{"cname", fqdn}
+
+	result, err := r.result(ctx, mr)
+	if err != nil {
+		return result, err
+	}
+
+	records, ok := r.CNAME[fqdn]
 	if !ok || len(records) == 0 {
 		return result, ErrDNSNotFound
 	}

@@ -10,7 +10,7 @@ import "github.com/synqronlabs/raven/dns"
 
 ## What It Does
 
-- Resolves TXT, MX, A/AAAA, and PTR data through a common interface.
+- Resolves TXT, CNAME, MX, A/AAAA, and PTR data through a common interface.
 - When `DNSSEC` is enabled, trusts AD and RFC 8914 EDE status from a validating recursive resolver such as Unbound.
 - Provides typed error helpers for timeout/not-found/temporary cases.
 - Provides domain and SMTP hostname validation helpers.
@@ -22,6 +22,7 @@ The package does not perform local DNSSEC chain validation. It is intended to be
 - `NewResolver(config)`
 - `NewStdResolver()`
 - `Resolver` interface and `Result[T]`
+- `LookupTXT`, `LookupCNAME`, `LookupIP`, `LookupMX`, `LookupAddr`
 - `IsNotFound(err)`, `IsTimeout(err)`, `IsTemporary(err)`
 - `IsValidDomain(domain)`
 - `IsValidSMTPHostname(hostname)`

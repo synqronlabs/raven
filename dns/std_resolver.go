@@ -51,6 +51,25 @@ func (r *StdResolver) LookupTXT(ctx context.Context, name string) (Result[string
 	return Result[string]{Records: records, Authentic: false}, nil
 }
 
+// LookupCNAME retrieves explicit CNAME records using the standard library.
+func (r *StdResolver) LookupCNAME(ctx context.Context, name string) (Result[string], error) {
+	// Strip trailing dot for stdlib compatibility
+	name = strings.TrimSuffix(name, ".")
+	requestedName := ensureAbsolute(name)
+
+	cname, err := r.resolver.LookupCNAME(ctx, name)
+	if err != nil {
+		return Result[string]{}, fmt.Errorf("looking up CNAME records for %q: %w", name, convertError(err))
+	}
+
+	cname = ensureAbsolute(cname)
+	if cname == "" || strings.EqualFold(cname, requestedName) {
+		return Result[string]{}, ErrDNSNotFound
+	}
+
+	return Result[string]{Records: []string{cname}, Authentic: false}, nil
+}
+
 // LookupIP retrieves A and AAAA records using the standard library.
 func (r *StdResolver) LookupIP(ctx context.Context, domain string) (Result[net.IP], error) {
 	// Strip trailing dot for stdlib compatibility

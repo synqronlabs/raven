@@ -220,6 +220,27 @@ func (r *DNSResolver) LookupTXT(ctx context.Context, name string) (Result[string
 	return Result[string]{Records: records, Authentic: authentic}, nil
 }
 
+// LookupCNAME retrieves CNAME records for the given domain.
+func (r *DNSResolver) LookupCNAME(ctx context.Context, name string) (Result[string], error) {
+	resp, authentic, err := r.query(ctx, name, mdns.TypeCNAME)
+	if err != nil {
+		return Result[string]{Authentic: authentic}, fmt.Errorf("resolving CNAME records for %q: %w", name, err)
+	}
+
+	var records []string
+	for _, rr := range resp.Answer {
+		if cname, ok := rr.(*mdns.CNAME); ok {
+			records = append(records, ensureAbsolute(cname.Target))
+		}
+	}
+
+	if len(records) == 0 {
+		return Result[string]{Authentic: authentic}, fmt.Errorf("%w: no CNAME records for %q", ErrDNSNotFound, name)
+	}
+
+	return Result[string]{Records: records, Authentic: authentic}, nil
+}
+
 // LookupIP retrieves A and/or AAAA records for the given domain.
 func (r *DNSResolver) LookupIP(ctx context.Context, domain string) (Result[net.IP], error) {
 	var ips []net.IP

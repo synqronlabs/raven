@@ -47,6 +47,9 @@ func (r *benchDKIMResolver) LookupTXT(_ context.Context, name string) (ravendns.
 func (*benchDKIMResolver) LookupIP(_ context.Context, _ string) (ravendns.Result[net.IP], error) {
 	return ravendns.Result[net.IP]{}, nil
 }
+func (*benchDKIMResolver) LookupCNAME(_ context.Context, _ string) (ravendns.Result[string], error) {
+	return ravendns.Result[string]{}, nil
+}
 func (*benchDKIMResolver) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
 	return ravendns.Result[*net.MX]{}, nil
 }

@@ -77,6 +77,10 @@ type Resolver interface {
 	// Character strings within a single TXT record are concatenated per RFC 7208.
 	LookupTXT(ctx context.Context, domain string) (Result[string], error)
 
+	// LookupCNAME returns explicit CNAME records for the given domain.
+	// It returns ErrDNSNotFound when the name resolves directly without a CNAME alias.
+	LookupCNAME(ctx context.Context, domain string) (Result[string], error)
+
 	// LookupIP returns A and AAAA records for the given domain.
 	// Both IPv4 and IPv6 addresses are returned in a single result.
 	LookupIP(ctx context.Context, domain string) (Result[net.IP], error)

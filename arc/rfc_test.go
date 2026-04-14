@@ -57,6 +57,10 @@ func (*resolverWithErrors) LookupIP(_ context.Context, _ string) (ravendns.Resul
 	return ravendns.Result[net.IP]{}, nil
 }
 
+func (*resolverWithErrors) LookupCNAME(_ context.Context, _ string) (ravendns.Result[string], error) {
+	return ravendns.Result[string]{}, nil
+}
+
 func (*resolverWithErrors) LookupMX(_ context.Context, _ string) (ravendns.Result[*net.MX], error) {
 	return ravendns.Result[*net.MX]{}, nil
 }

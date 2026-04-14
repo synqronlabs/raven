@@ -124,6 +124,34 @@ func TestDNSResolverLookupTXTJoinsSegmentsAndMarksAuthentic(t *testing.T) {
 	}
 }
 
+func TestDNSResolverLookupCNAMEReturnsTargetAndAuthentic(t *testing.T) {
+	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(req)
+		resp.AuthenticatedData = true
+		resp.Answer = []mdns.RR{
+			&mdns.CNAME{
+				Hdr:    mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeCNAME, Class: mdns.ClassINET, Ttl: 300},
+				Target: "target.example.com.",
+			},
+		}
+		if err := w.WriteMsg(resp); err != nil {
+			_ = err
+		}
+	}))
+
+	result, err := newTestResolver(addr, true).LookupCNAME(context.Background(), "alias.example.com")
+	if err != nil {
+		t.Fatalf("LookupCNAME() error = %v", err)
+	}
+	if len(result.Records) != 1 || result.Records[0] != "target.example.com." {
+		t.Fatalf("LookupCNAME() records = %#v, want CNAME target", result.Records)
+	}
+	if !result.Authentic {
+		t.Fatal("LookupCNAME() Authentic = false, want true")
+	}
+}
+
 func TestDNSResolverLookupIPNotFoundIsNeverAuthenticWithoutDNSSEC(t *testing.T) {
 	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
 		resp := new(mdns.Msg)
@@ -262,6 +290,24 @@ func TestDNSResolverLookupTXTNotFoundWithoutTXTAnswers(t *testing.T) {
 	_, err := newTestResolver(addr, false).LookupTXT(context.Background(), "example.com")
 	if !errors.Is(err, ErrDNSNotFound) {
 		t.Fatalf("LookupTXT() error = %v, want ErrDNSNotFound", err)
+	}
+}
+
+func TestDNSResolverLookupCNAMENotFoundWithoutCNAMEAnswers(t *testing.T) {
+	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(req)
+		resp.Answer = []mdns.RR{
+			&mdns.A{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: net.ParseIP("192.0.2.1").To4()},
+		}
+		if err := w.WriteMsg(resp); err != nil {
+			_ = err
+		}
+	}))
+
+	_, err := newTestResolver(addr, false).LookupCNAME(context.Background(), "example.com")
+	if !errors.Is(err, ErrDNSNotFound) {
+		t.Fatalf("LookupCNAME() error = %v, want ErrDNSNotFound", err)
 	}
 }
 
@@ -422,6 +468,7 @@ func TestConvertErrorWrapsNonDNSErrors(t *testing.T) {
 
 func TestStdResolverWithDialerLookupMethods(t *testing.T) {
 	ip4 := net.ParseIP("192.0.2.25").To4()
+	aliasIP := net.ParseIP("192.0.2.26").To4()
 	ip6 := net.ParseIP("2001:db8::25")
 
 	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
@@ -433,9 +480,23 @@ func TestStdResolverWithDialerLookupMethods(t *testing.T) {
 			resp.Answer = []mdns.RR{
 				&mdns.TXT{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeTXT, Class: mdns.ClassINET, Ttl: 300}, Txt: []string{"hello", "world"}},
 			}
+		case mdns.TypeCNAME:
+			if req.Question[0].Name == "alias.example.com." {
+				resp.Answer = []mdns.RR{
+					&mdns.CNAME{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeCNAME, Class: mdns.ClassINET, Ttl: 300}, Target: "canonical.example.com."},
+				}
+			}
 		case mdns.TypeA:
-			resp.Answer = []mdns.RR{
-				&mdns.A{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: ip4},
+			switch req.Question[0].Name {
+			case "alias.example.com.":
+				resp.Answer = []mdns.RR{
+					&mdns.CNAME{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeCNAME, Class: mdns.ClassINET, Ttl: 300}, Target: "canonical.example.com."},
+					&mdns.A{Hdr: mdns.RR_Header{Name: "canonical.example.com.", Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: aliasIP},
+				}
+			default:
+				resp.Answer = []mdns.RR{
+					&mdns.A{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: ip4},
+				}
 			}
 		case mdns.TypeAAAA:
 			resp.Answer = []mdns.RR{
@@ -462,6 +523,14 @@ func TestStdResolverWithDialerLookupMethods(t *testing.T) {
 		t.Fatalf("LookupTXT() records = %#v, want concatenated TXT record", txtResult.Records)
 	}
 
+	cnameResult, err := resolver.LookupCNAME(context.Background(), "alias.example.com.")
+	if err != nil {
+		t.Fatalf("LookupCNAME() error = %v", err)
+	}
+	if len(cnameResult.Records) != 1 || cnameResult.Records[0] != "canonical.example.com." {
+		t.Fatalf("LookupCNAME() records = %#v, want canonical target", cnameResult.Records)
+	}
+
 	ipResult, err := resolver.LookupIP(context.Background(), "example.com.")
 	if err != nil {
 		t.Fatalf("LookupIP() error = %v", err)
@@ -476,6 +545,33 @@ func TestStdResolverWithDialerLookupMethods(t *testing.T) {
 	}
 	if len(mxResult.Records) != 1 || mxResult.Records[0].Host != "mx.example.com." {
 		t.Fatalf("LookupMX() records = %#v, want MX result", mxResult.Records)
+	}
+}
+
+func TestStdResolverLookupCNAMENotFoundWithoutAlias(t *testing.T) {
+	addr := startTestDNSServer(t, mdns.HandlerFunc(func(w mdns.ResponseWriter, req *mdns.Msg) {
+		resp := new(mdns.Msg)
+		resp.SetReply(req)
+
+		switch req.Question[0].Qtype {
+		case mdns.TypeA:
+			resp.Answer = []mdns.RR{
+				&mdns.A{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: net.ParseIP("192.0.2.30").To4()},
+			}
+		case mdns.TypeAAAA:
+			resp.Answer = []mdns.RR{
+				&mdns.AAAA{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeAAAA, Class: mdns.ClassINET, Ttl: 300}, AAAA: net.ParseIP("2001:db8::30")},
+			}
+		}
+
+		if err := w.WriteMsg(resp); err != nil {
+			_ = err
+		}
+	}))
+
+	_, err := newTestStdResolver(addr).LookupCNAME(context.Background(), "example.com")
+	if !errors.Is(err, ErrDNSNotFound) {
+		t.Fatalf("LookupCNAME() error = %v, want ErrDNSNotFound", err)
 	}
 }
 
@@ -506,10 +602,11 @@ func TestMockResolverHonorsCanceledContext(t *testing.T) {
 	cancel()
 
 	resolver := MockResolver{
-		TXT: map[string][]string{"example.com.": {"v=spf1 -all"}},
-		A:   map[string][]string{"example.com.": {"192.0.2.1"}},
-		MX:  map[string][]*net.MX{"example.com.": {{Host: "mx.example.com.", Pref: 10}}},
-		PTR: map[string][]string{"192.0.2.1": {"mx.example.com."}},
+		TXT:   map[string][]string{"example.com.": {"v=spf1 -all"}},
+		CNAME: map[string][]string{"alias.example.com.": {"target.example.com."}},
+		A:     map[string][]string{"example.com.": {"192.0.2.1"}},
+		MX:    map[string][]*net.MX{"example.com.": {{Host: "mx.example.com.", Pref: 10}}},
+		PTR:   map[string][]string{"192.0.2.1": {"mx.example.com."}},
 	}
 
 	tests := []struct {
@@ -520,6 +617,13 @@ func TestMockResolverHonorsCanceledContext(t *testing.T) {
 			name: "txt",
 			call: func() error {
 				_, err := resolver.LookupTXT(ctx, "example.com")
+				return err
+			},
+		},
+		{
+			name: "cname",
+			call: func() error {
+				_, err := resolver.LookupCNAME(ctx, "alias.example.com")
 				return err
 			},
 		},
@@ -566,13 +670,14 @@ func TestMockResolverLookupAddrRejectsNilIP(t *testing.T) {
 func TestMockResolverAuthenticityAndFailures(t *testing.T) {
 	resolver := MockResolver{
 		TXT:          map[string][]string{"example.com.": {"v=spf1 -all"}},
+		CNAME:        map[string][]string{"alias.example.com.": {"target.example.com."}},
 		A:            map[string][]string{"example.com.": {"192.0.2.1"}},
 		AAAA:         map[string][]string{"example.com.": {"2001:db8::1"}},
 		MX:           map[string][]*net.MX{"example.com.": {{Host: "mx.example.com.", Pref: 10}}},
 		PTR:          map[string][]string{"192.0.2.1": {"mail.example.com."}},
 		AllAuthentic: true,
 		Inauthentic:  []string{"aaaa example.com."},
-		Fail:         []string{"mx fail.example.com."},
+		Fail:         []string{"mx fail.example.com.", "cname fail.alias.example.com."},
 	}
 
 	txtResult, err := resolver.LookupTXT(context.Background(), "example.com")
@@ -581,6 +686,17 @@ func TestMockResolverAuthenticityAndFailures(t *testing.T) {
 	}
 	if !txtResult.Authentic {
 		t.Fatal("LookupTXT() Authentic = false, want true")
+	}
+
+	cnameResult, err := resolver.LookupCNAME(context.Background(), "alias.example.com")
+	if err != nil {
+		t.Fatalf("LookupCNAME() error = %v", err)
+	}
+	if len(cnameResult.Records) != 1 || cnameResult.Records[0] != "target.example.com." {
+		t.Fatalf("LookupCNAME() records = %#v, want CNAME result", cnameResult.Records)
+	}
+	if !cnameResult.Authentic {
+		t.Fatal("LookupCNAME() Authentic = false, want true")
 	}
 
 	ipResult, err := resolver.LookupIP(context.Background(), "example.com")
@@ -602,5 +718,10 @@ func TestMockResolverAuthenticityAndFailures(t *testing.T) {
 	_, err = resolver.LookupMX(context.Background(), "fail.example.com")
 	if !errors.Is(err, ErrDNSServFail) {
 		t.Fatalf("LookupMX() error = %v, want ErrDNSServFail", err)
+	}
+
+	_, err = resolver.LookupCNAME(context.Background(), "fail.alias.example.com")
+	if !errors.Is(err, ErrDNSServFail) {
+		t.Fatalf("LookupCNAME() error = %v, want ErrDNSServFail", err)
 	}
 }
