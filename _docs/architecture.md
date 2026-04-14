@@ -10,7 +10,6 @@ github.com/synqronlabs/raven
 │
 ├── mail/      Core message model and MIME handling (Mail, Content, MIMEPart, MailBuilder)
 ├── io/        SMTP-oriented I/O helpers (line reading, ASCII checks)
-├── crypto/    Crypto utilities (ULID generation for Message-ID)
 │
 ├── dns/       DNS resolver abstraction with validating-recursive-resolver DNSSEC status
 │
@@ -28,16 +27,15 @@ github.com/synqronlabs/raven
 ## Dependency Graph
 
 Arrows point from consumer → dependency. Only intra-module dependencies are
-shown; external deps (`miekg/dns`, `oklog/ulid`, `tinylib/msgp`, `x/net`) are
+shown; external deps (`miekg/dns`, `gofrs/uuid`, `tinylib/msgp`, `x/net`) are
 omitted.
 
 ```
-crypto -> (no raven deps)
 io     -> (no raven deps)
 dns    -> (no raven deps)
 sasl   -> (no raven deps)
 
-mail   -> io, crypto
+mail   -> io
 client -> mail
 server -> io, sasl
 spf    -> dns
@@ -50,7 +48,7 @@ dmarc  -> dkim, dns, mail, spf
 
 | Layer              | Packages                        | Role                                     |
 |--------------------|---------------------------------|------------------------------------------|
-| **Foundation**     | `mail`, `io`, `crypto`          | Message model, MIME handling, low-level I/O, ID generation |
+| **Foundation**     | `mail`, `io`                    | Message model, MIME handling, low-level I/O |
 | **Infrastructure** | `dns`, `sasl`                   | Shared DNS + auth mechanism primitives   |
 | **Transport**      | `client`, `server`              | SMTP send and receive                    |
 | **Authentication** | `spf`, `dkim`, `dmarc`, `arc`   | Email authentication protocols           |
@@ -87,10 +85,6 @@ CRLF endings). `Content.ToRaw()` serialises back to wire format, while
 Provides `ReadLine()` with strict CRLF enforcement and configurable length
 limits — essential for SMTP protocol parsing. Also provides
 `ContainsNonASCII()` for 7-bit checks.
-
-### crypto — Identifiers
-
-Provides `GenerateID()` for ULID-based unique identifiers used as Message‑IDs.
 
 ### dns — Resolver Abstraction
 

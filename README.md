@@ -18,7 +18,6 @@ go get github.com/synqronlabs/raven
 
 - `arc`: Authenticated Received Chain (RFC 8617)
 - `client`: SMTP client and probing utilities
-- `crypto`: cryptographic helpers (currently ULID generation)
 - `dkim`: DKIM signing and verification
 - `dmarc`: DMARC lookup and policy evaluation
 - `dns`: DNS resolvers with optional DNSSEC awareness and domain validation helpers

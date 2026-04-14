@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	ravencrypto "github.com/synqronlabs/raven/crypto"
+	"github.com/gofrs/uuid/v5"
 	ravenio "github.com/synqronlabs/raven/io"
 )
 
@@ -410,7 +410,11 @@ func (b *MailBuilder) Build() (*Mail, error) {
 		if domain == "" {
 			domain = "localhost"
 		}
-		msgID := fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), ravencrypto.GenerateID(), domain)
+		messageUUID, err := uuid.NewV7()
+		if err != nil {
+			return nil, fmt.Errorf("generating Message-ID UUID: %w", err)
+		}
+		msgID := fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), messageUUID.String(), domain)
 		b.mail.AddHeader("Message-ID", msgID)
 	}
 
