@@ -105,6 +105,17 @@ func (c *Conn) AuthIdentity() string {
 	return c.authIdentity
 }
 
+// SetAuthIdentity records the authenticated user identity for the connection.
+//
+// Custom AUTH implementations can call this during a successful SASL exchange
+// so later session logic can inspect Conn.AuthIdentity(). This does not mark
+// the connection as authenticated; AUTH completion still controls that state.
+func (c *Conn) SetAuthIdentity(identity string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authIdentity = identity
+}
+
 // RemoteAddr returns the remote address of the connection.
 func (c *Conn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
@@ -510,7 +521,12 @@ func (c *Conn) handleAUTH(args string) error {
 			// Authentication successful
 			c.mu.Lock()
 			c.authenticated = true
-			// Note: authIdentity should be set by the AuthSession during Auth()
+			if provider, ok := saslServer.(interface{ AuthIdentity() string }); ok {
+				identity := provider.AuthIdentity()
+				if identity != "" || c.authIdentity == "" {
+					c.authIdentity = identity
+				}
+			}
 			c.mu.Unlock()
 			c.writeResponse(235, "2.7.0 Authentication successful")
 			return nil

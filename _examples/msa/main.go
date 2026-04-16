@@ -11,7 +11,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/x509"
@@ -106,66 +105,26 @@ func (s *MSASession) AuthMechanisms() []string {
 func (s *MSASession) Auth(mech string) (sasl.Server, error) {
 	switch mech {
 	case "PLAIN":
-		return &plainAuthServer{}, nil
+		return sasl.NewPlainServer(func(creds *sasl.Credentials) error {
+			return s.verifyCredentials(mech, creds)
+		}), nil
 	case "LOGIN":
-		return &loginAuthServer{}, nil
+		return sasl.NewLoginServer(func(creds *sasl.Credentials) error {
+			return s.verifyCredentials(mech, creds)
+		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported mechanism: %s", mech)
 	}
 }
 
-// plainAuthServer implements sasl.Server for PLAIN authentication.
-type plainAuthServer struct {
-	done bool
-}
+func (s *MSASession) verifyCredentials(mech string, creds *sasl.Credentials) error {
+	if creds.AuthenticationID == "" || creds.Password == "" {
+		return fmt.Errorf("missing credentials")
+	}
 
-func (s *plainAuthServer) Next(response []byte) (challenge []byte, done bool, err error) {
-	if s.done {
-		return nil, true, fmt.Errorf("unexpected data after auth")
-	}
-	if len(response) == 0 {
-		// Request initial response
-		return nil, false, nil
-	}
-	// PLAIN format: authzid\0authcid\0password
-	parts := bytes.SplitN(response, []byte{0}, 3)
-	if len(parts) != 3 {
-		s.done = true
-		return nil, true, fmt.Errorf("invalid PLAIN format")
-	}
-	user := string(parts[1])
-	// TODO: replace with real credential verification
-	log.Printf("AUTH PLAIN: user=%q", user)
-	s.done = true
-	return nil, true, nil
-}
-
-// loginAuthServer implements sasl.Server for LOGIN authentication.
-// LOGIN is a challenge-response mechanism: server sends "Username:" then "Password:".
-type loginAuthServer struct {
-	step     int
-	username string
-}
-
-func (s *loginAuthServer) Next(response []byte) (challenge []byte, done bool, err error) {
-	switch s.step {
-	case 0:
-		// Send "Username:" challenge
-		s.step = 1
-		return []byte("Username:"), false, nil
-	case 1:
-		// Received username, send "Password:" challenge
-		s.username = string(response)
-		s.step = 2
-		return []byte("Password:"), false, nil
-	case 2:
-		// Received password — authentication complete
-		// TODO: replace with real credential verification
-		log.Printf("AUTH LOGIN: user=%q", s.username)
-		return nil, true, nil
-	default:
-		return nil, true, fmt.Errorf("unexpected LOGIN state")
-	}
+	// TODO: replace with real credential verification.
+	log.Printf("AUTH %s: user=%q identity=%q", mech, creds.AuthenticationID, creds.Identity())
+	return nil
 }
 
 func (s *MSASession) Mail(from string, opts *server.MailOptions) error {

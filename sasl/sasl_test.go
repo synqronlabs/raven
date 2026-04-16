@@ -205,6 +205,45 @@ func TestLogin_Name(t *testing.T) {
 	}
 }
 
+func TestLogin_StartWithInitialResponse(t *testing.T) {
+	l := NewLogin()
+
+	username := base64.StdEncoding.EncodeToString([]byte("user@example.com"))
+	challenge, done, err := l.Start(username)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if done {
+		t.Error("expected done to be false")
+	}
+	if challenge != LoginChallengePassword {
+		t.Errorf("expected password challenge, got %s", challenge)
+	}
+
+	password := base64.StdEncoding.EncodeToString([]byte("secret123"))
+	challenge, done, err = l.Next(password)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !done {
+		t.Error("expected done to be true")
+	}
+	if challenge != "" {
+		t.Errorf("expected empty challenge, got %s", challenge)
+	}
+
+	creds := l.Credentials()
+	if creds == nil {
+		t.Fatal("expected credentials, got nil")
+	}
+	if creds.AuthenticationID != "user@example.com" {
+		t.Errorf("expected user@example.com, got %s", creds.AuthenticationID)
+	}
+	if creds.Password != "secret123" {
+		t.Errorf("expected secret123, got %s", creds.Password)
+	}
+}
+
 func TestLogin_FullExchange(t *testing.T) {
 	l := NewLogin()
 

@@ -70,6 +70,11 @@ type AuthSession interface {
 	// Auth is called when a client initiates authentication with AUTH command.
 	// It should return a sasl.Server for the requested mechanism.
 	// Return an error if the mechanism is not supported.
+	//
+	// Sessions that keep the *Conn from Backend.NewSession can call
+	// Conn.SetAuthIdentity() from custom sasl.Server implementations.
+	// sasl.NewPlainServer and sasl.NewLoginServer populate Conn.AuthIdentity()
+	// automatically on successful authentication.
 	Auth(mech string) (sasl.Server, error)
 }
 

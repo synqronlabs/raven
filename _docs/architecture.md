@@ -118,6 +118,8 @@ Client- and server-side SASL:
 - `Mechanism` interface — client side (`Start`, `Next`, `Credentials`).
 - `Server` interface — server side (`Next` returns challenge/done).
 - `NewPlain()` / `NewLogin()` — the two mechanisms SMTP commonly uses.
+- `NewPlainServer()` / `NewLoginServer()` — ready-made verifiers for
+  `server.AuthSession` implementations.
 - `Credentials` — result of successful authentication (AuthorizationID,
   AuthenticationID, Password).
 

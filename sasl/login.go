@@ -42,7 +42,24 @@ func (*Login) Name() string {
 }
 
 // Start begins the LOGIN authentication exchange.
-func (l *Login) Start(_ string) (challenge string, done bool, err error) {
+func (l *Login) Start(initialResponse string) (challenge string, done bool, err error) {
+	if initialResponse == "*" {
+		l.state = loginStateDone
+		return "", true, ErrAuthenticationCancelled
+	}
+
+	if initialResponse != "" {
+		decoded, err := base64.StdEncoding.DecodeString(initialResponse)
+		if err != nil {
+			l.state = loginStateDone
+			return "", true, fmt.Errorf("%w: decoding LOGIN username: %w", ErrInvalidBase64, err)
+		}
+
+		l.username = string(decoded)
+		l.state = loginStatePassword
+		return LoginChallengePassword, false, nil
+	}
+
 	l.state = loginStateUsername
 	return LoginChallengeUsername, false, nil
 }

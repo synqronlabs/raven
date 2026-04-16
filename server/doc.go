@@ -63,11 +63,24 @@
 //	}
 //
 //	func (s *MySession) Auth(mech string) (sasl.Server, error) {
-//	    return &mySASLServer{}, nil
+//	    switch mech {
+//	    case "PLAIN":
+//	        return sasl.NewPlainServer(func(creds *sasl.Credentials) error {
+//	            return verifyCredentials(creds)
+//	        }), nil
+//	    case "LOGIN":
+//	        return sasl.NewLoginServer(func(creds *sasl.Credentials) error {
+//	            return verifyCredentials(creds)
+//	        }), nil
+//	    default:
+//	        return nil, fmt.Errorf("unsupported mechanism: %s", mech)
+//	    }
 //	}
 //
 // The server automatically detects if your Session implements AuthSession
-// using a type assertion and advertises AUTH accordingly.
+// using a type assertion and advertises AUTH accordingly. If you implement a
+// custom sasl.Server, store the *Conn from Backend.NewSession and call
+// Conn.SetAuthIdentity() after you have verified the effective identity.
 //
 // # CHUNKING (BDAT)
 //
