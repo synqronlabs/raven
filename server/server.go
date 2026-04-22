@@ -61,8 +61,13 @@ type ServerConfig struct {
 	MaxRecipients int
 
 	// MaxLineLength is the maximum command line length.
-	// Default: 2000 (per RFC 5321 section 4.5.3.1.6, doubled for safety)
+	// Default: 512 (per RFC 5321 section 4.5.3.1.4, including CRLF)
 	MaxLineLength int
+
+	// MaxAuthLineLength is the maximum SMTP AUTH exchange line length.
+	// This applies to base64 challenge/response lines after the AUTH command.
+	// Default: 12288 (per RFC 4954 guidance for deployed SASL mechanisms)
+	MaxAuthLineLength int
 
 	// EnableSMTPUTF8 advertises SMTPUTF8 extension (RFC 6531).
 	// Default: true
@@ -132,7 +137,10 @@ func NewServer(backend Backend, cfg ServerConfig) *Server {
 		cfg.MaxRecipients = 100
 	}
 	if cfg.MaxLineLength == 0 {
-		cfg.MaxLineLength = 2000
+		cfg.MaxLineLength = 512
+	}
+	if cfg.MaxAuthLineLength == 0 {
+		cfg.MaxAuthLineLength = 12288
 	}
 	if cfg.MaxReceivedHeaders == 0 {
 		cfg.MaxReceivedHeaders = 100

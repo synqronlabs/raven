@@ -229,9 +229,9 @@ func (c *Conn) readLine() (string, error) {
 	return line, nil
 }
 
-// readLineASCII reads a line with ASCII enforcement (for AUTH responses).
+// readLineASCII reads an AUTH exchange line with ASCII enforcement.
 func (c *Conn) readLineASCII() (string, error) {
-	line, err := ravenio.ReadLine(c.reader, c.server.config.MaxLineLength, true)
+	line, err := ravenio.ReadLine(c.reader, c.server.config.MaxAuthLineLength, true)
 	if err != nil {
 		return "", fmt.Errorf("reading SMTP AUTH response line: %w", err)
 	}

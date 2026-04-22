@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -70,6 +71,38 @@ func (s *manualIdentityServer) Next([]byte) ([]byte, bool, error) {
 	}
 	s.conn.SetAuthIdentity("manual-user")
 	s.done = true
+	return nil, true, nil
+}
+
+type longAuthSession struct{}
+
+func (*longAuthSession) Mail(string, *server.MailOptions) error { return nil }
+func (*longAuthSession) Rcpt(string, *server.RcptOptions) error { return nil }
+func (*longAuthSession) Data(io.Reader) error                   { return nil }
+func (*longAuthSession) Reset()                                 {}
+func (*longAuthSession) Logout() error                          { return nil }
+
+func (*longAuthSession) AuthMechanisms() []string { return []string{"LONG"} }
+
+func (*longAuthSession) Auth(mech string) (sasl.Server, error) {
+	if mech != "LONG" {
+		return nil, fmt.Errorf("unsupported mechanism: %s", mech)
+	}
+	return &longAuthServer{}, nil
+}
+
+type longAuthServer struct {
+	challenged bool
+}
+
+func (s *longAuthServer) Next(response []byte) ([]byte, bool, error) {
+	if !s.challenged {
+		s.challenged = true
+		return []byte("continue"), false, nil
+	}
+	if len(response) != 2000 {
+		return nil, false, fmt.Errorf("unexpected response length: %d", len(response))
+	}
 	return nil, true, nil
 }
 
@@ -152,4 +185,39 @@ func TestServer_AUTHCustomServerCanSetIdentity(t *testing.T) {
 	if !sess.conn.Authenticated() {
 		t.Fatal("expected connection to be authenticated")
 	}
+}
+
+func TestServer_AUTHResponseUsesSeparateLineLimit(t *testing.T) {
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			return &longAuthSession{}, nil
+		},
+	}
+
+	ts := newTestServer(t, backend, server.ServerConfig{
+		AllowInsecureAuth: true,
+		MaxLineLength:     512,
+		MaxAuthLineLength: 4096,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	tc.send("AUTH LONG")
+	tc.expectCode(334)
+
+	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 2000))
+	if len(payload)+2 <= 512 {
+		t.Fatalf("test payload too short: got %d bytes including CRLF", len(payload)+2)
+	}
+	if len(payload)+2 > 4096 {
+		t.Fatalf("test payload too long for MaxAuthLineLength: got %d bytes including CRLF", len(payload)+2)
+	}
+
+	tc.send("%s", payload)
+	tc.expectCode(235)
 }
