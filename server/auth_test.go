@@ -221,3 +221,40 @@ func TestServer_AUTHResponseUsesSeparateLineLimit(t *testing.T) {
 	tc.send("%s", payload)
 	tc.expectCode(235)
 }
+
+func TestServer_AUTHOverlongResponseReturns500AndKeepsSessionOpen(t *testing.T) {
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			return &longAuthSession{}, nil
+		},
+	}
+
+	ts := newTestServer(t, backend, server.ServerConfig{
+		AllowInsecureAuth: true,
+		MaxAuthLineLength: 1024,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	tc.send("AUTH LONG")
+	tc.expectCode(334)
+
+	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 800))
+	if len(payload)+2 <= 1024 {
+		t.Fatalf("test payload too short: got %d bytes including CRLF", len(payload)+2)
+	}
+
+	tc.send("%s", payload)
+	line := tc.expectCode(500)
+	if line != "500 5.5.6 Authentication exchange line is too long" {
+		t.Fatalf("unexpected response: %s", line)
+	}
+
+	tc.send("QUIT")
+	tc.expectCode(221)
+}

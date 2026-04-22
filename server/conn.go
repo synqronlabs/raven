@@ -190,9 +190,13 @@ func (c *Conn) serve() {
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 				return
 			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				c.writeError(errTimeout)
 				return
+			}
+			if c.writeCommandReadError(err) {
+				continue
 			}
 			c.server.logf("read error: %v", err)
 			return
@@ -241,6 +245,35 @@ func (c *Conn) readLineASCII() (string, error) {
 	}
 
 	return line, nil
+}
+
+func (c *Conn) writeCommandReadError(err error) bool {
+	switch {
+	case errors.Is(err, ravenio.ErrLineTooLong):
+		c.writeError(errCommandLineTooLong)
+		return true
+	case errors.Is(err, ravenio.ErrBadLineEnding):
+		c.writeError(errBadCommandLineEnding)
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Conn) writeAuthReadError(err error) bool {
+	switch {
+	case errors.Is(err, ravenio.Err8BitIn7BitMode):
+		c.writeError(errInvalidCharacters)
+		return true
+	case errors.Is(err, ravenio.ErrLineTooLong):
+		c.writeError(errAuthExchangeLineTooLong)
+		return true
+	case errors.Is(err, ravenio.ErrBadLineEnding):
+		c.writeError(errAuthBadLineEnding)
+		return true
+	default:
+		return false
+	}
 }
 
 // writeResponse writes an SMTP response.
@@ -539,8 +572,7 @@ func (c *Conn) handleAUTH(args string) error {
 		// Read response (with ASCII enforcement for AUTH)
 		line, err := c.readLineASCII()
 		if err != nil {
-			if errors.Is(err, ravenio.Err8BitIn7BitMode) {
-				c.writeError(errInvalidCharacters)
+			if c.writeAuthReadError(err) {
 				return nil
 			}
 			return fmt.Errorf("reading AUTH client response: %w", err)

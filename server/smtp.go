@@ -216,6 +216,16 @@ var (
 		Code: 500, EnhancedCode: EnhancedCode{5, 5, 1},
 		Message: "Unrecognized command",
 	}
+	errCommandLineTooLong = &SMTPError{
+		Code:         500,
+		EnhancedCode: NoEnhancedCode,
+		Message:      "Line too long",
+	}
+	errBadCommandLineEnding = &SMTPError{
+		Code:         500,
+		EnhancedCode: NoEnhancedCode,
+		Message:      "Line not terminated by CRLF",
+	}
 	errEncryptionRequired = &SMTPError{
 		Code: 538, EnhancedCode: EnhancedCode{5, 7, 11},
 		Message: "Encryption required",
@@ -240,9 +250,19 @@ var (
 		Code: 501, EnhancedCode: EnhancedCode{5, 5, 2},
 		Message: "Invalid base64",
 	}
+	errAuthExchangeLineTooLong = &SMTPError{
+		Code:         500,
+		EnhancedCode: EnhancedCode{5, 5, 6},
+		Message:      "Authentication exchange line is too long",
+	}
 	errAuthCancelled = &SMTPError{
 		Code: 501, EnhancedCode: EnhancedCode{5, 0, 0},
 		Message: "Authentication cancelled",
+	}
+	errAuthBadLineEnding = &SMTPError{
+		Code:         501,
+		EnhancedCode: NoEnhancedCode,
+		Message:      "Authentication response not terminated by CRLF",
 	}
 	errInvalidCharacters = &SMTPError{
 		Code: 501, EnhancedCode: EnhancedCode{5, 5, 2},

@@ -668,6 +668,29 @@ func TestServer_SizeParameter(t *testing.T) {
 	tc.expectCode(552) // Size exceeded
 }
 
+func TestServer_OverlongCommandLineReturns500AndKeepsSessionOpen(t *testing.T) {
+	backend := &testBackend{}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	if _, err := fmt.Fprintf(tc.conn, "%s\r\n", strings.Repeat("X", 511)); err != nil {
+		t.Fatalf("send raw command failed: %v", err)
+	}
+	line := tc.expectCode(500)
+	if line != "500 Line too long" {
+		t.Fatalf("unexpected response: %s", line)
+	}
+
+	tc.send("NOOP")
+	tc.expectCode(250)
+
+	tc.send("QUIT")
+	tc.expectCode(221)
+}
+
 // =============================================================================
 // Max Recipients Tests
 // =============================================================================
