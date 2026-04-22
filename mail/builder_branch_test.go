@@ -31,6 +31,22 @@ func TestMailBuilder_Build_AutoAddsSenderForMultipleFrom(t *testing.T) {
 	}
 }
 
+func TestMailBuilder_Build_DoesNotAutoAddSenderForQuotedComma(t *testing.T) {
+	b := NewMailBuilder()
+	b.mail.SetFrom(MailboxAddress{LocalPart: "sender", Domain: "example.com"})
+	b.mail.Content.Headers = Headers{{Name: "From", Value: `"Doe, John" <john@example.com>`}}
+	b.mail.AddRecipient(MailboxAddress{LocalPart: "rcpt", Domain: "example.com"})
+	b.mail.Content.Body = []byte("body")
+
+	m, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := m.Content.Headers.Get("Sender"); got != "" {
+		t.Fatalf("Sender = %q, want empty", got)
+	}
+}
+
 func TestMailBuilder_Build_MessageIDFallsBackToLocalhost(t *testing.T) {
 	b := NewMailBuilder()
 	b.mail.Content.Headers = Headers{{Name: "From", Value: "sender"}}

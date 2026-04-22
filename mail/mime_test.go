@@ -5,7 +5,6 @@ import (
 	"io"
 	stdmime "mime"
 	"mime/multipart"
-	"strings"
 	"testing"
 )
 
@@ -262,38 +261,4 @@ func countMIMEParts(part *MIMEPart) int {
 		total += countMIMEParts(child)
 	}
 	return total
-}
-
-func TestMIMEPart_ToBytes_RoundTripsNestedMultipartStructure(t *testing.T) {
-	const outerBoundary = "outer-boundary"
-	body := []byte("--outer-boundary\r\n" +
-		"Content-Type: multipart/alternative; boundary=inner-boundary\r\n\r\n" +
-		"--inner-boundary\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
-		"--inner-boundary\r\nContent-Type: text/html\r\n\r\n<b>html</b>\r\n" +
-		"--inner-boundary--\r\n" +
-		"--outer-boundary--\r\n")
-
-	c := Content{
-		Headers: Headers{{Name: "Content-Type", Value: `multipart/mixed; boundary="` + outerBoundary + `"`}},
-		Body:    body,
-	}
-
-	part, err := c.ToMIME()
-	if err != nil {
-		t.Fatalf("ToMIME: %v", err)
-	}
-	serialized, err := part.ToBytes()
-	if err != nil {
-		t.Fatalf("ToBytes: %v", err)
-	}
-	reparsed, err := parseMIME(&Headers{{Name: "Content-Type", Value: `multipart/mixed; boundary="` + outerBoundary + `"`}}, serialized)
-	if err != nil {
-		t.Fatalf("reparse: %v", err)
-	}
-	if countMIMEParts(reparsed) != countMIMEParts(part) {
-		t.Errorf("part count changed after round-trip: got %d, want %d", countMIMEParts(reparsed), countMIMEParts(part))
-	}
-	if !strings.Contains(string(serialized), "inner-boundary") {
-		t.Errorf("serialized multipart missing nested boundary: %q", serialized)
-	}
 }

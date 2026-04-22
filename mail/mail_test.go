@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,19 @@ func TestRFC5322_HeaderValidation_LineTooLong(t *testing.T) {
 	}
 }
 
+func TestRFC5322_HeaderValidation_LongFoldableHeader(t *testing.T) {
+	value := strings.Repeat("word ", 260)
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: value},
+	}
+
+	if err := headers.Validate(); err != nil {
+		t.Fatalf("Expected no error for long foldable header, got %v", err)
+	}
+}
+
 func TestRFC5322_HeaderValidation_AtLimit(t *testing.T) {
 	// Test that header lines exactly at 998 characters pass validation
 	// Header line: "Subject: " (9 chars) + value = 998, so value = 989
@@ -456,9 +470,8 @@ func TestRFC5322_HeaderValidation_AtLimit(t *testing.T) {
 	}
 }
 
-func TestRFC5322_HeaderValidation_FoldedLines(t *testing.T) {
-	// Test that folded header lines are validated per-line
-	// A header with a folded value where each line is under the limit should pass
+func TestRFC5322_HeaderValidation_RawFoldedValueRejected(t *testing.T) {
+	// Header values are stored in unfolded semantic form; raw CRLF folding must not appear in-memory.
 	headers := Headers{
 		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
 		{Name: "From", Value: "sender@example.com"},
@@ -466,8 +479,8 @@ func TestRFC5322_HeaderValidation_FoldedLines(t *testing.T) {
 	}
 
 	err := headers.Validate()
-	if err != nil {
-		t.Errorf("Expected no error for folded header with short lines, got %v", err)
+	if err != ErrInvalidLineEnding {
+		t.Errorf("Expected ErrInvalidLineEnding for raw folded header value, got %v", err)
 	}
 }
 
@@ -485,6 +498,174 @@ func TestRFC5322_HeaderValidation_BareLF(t *testing.T) {
 	}
 }
 
+func TestRFC5322_HeaderValidation_HeaderInjectionRejected(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Subject", Value: "ok\r\nX-Injected: bad"},
+	}
+
+	err := headers.Validate()
+	if err != ErrInvalidLineEnding {
+		t.Errorf("Expected ErrInvalidLineEnding for CRLF injection, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_InvalidHeaderName(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Bad Header", Value: "oops"},
+	}
+
+	err := headers.Validate()
+	if err != ErrInvalidHeaderName {
+		t.Errorf("Expected ErrInvalidHeaderName, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_InvalidDate(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "not a date"},
+		{Name: "From", Value: "sender@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for invalid Date, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_InvalidMessageID(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Message-ID", Value: "not-a-msg-id"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for invalid Message-ID, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_InvalidReferences(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "References", Value: "<one@example.com> garbage <two@example.com>"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for invalid References, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_Keywords(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Keywords", Value: `alpha, "two words", project-x`},
+	}
+
+	if err := headers.Validate(); err != nil {
+		t.Fatalf("Expected no error for valid Keywords, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_InvalidKeywords(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Keywords", Value: `alpha, , beta`},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for invalid Keywords, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_QuotedCommaInFrom(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: `"Doe, John" <john@example.com>`},
+	}
+
+	err := headers.Validate()
+	if err != nil {
+		t.Errorf("Expected quoted comma in From to remain valid, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_ResentBlockRequiresDateAndFrom(t *testing.T) {
+	headers := Headers{
+		{Name: "Resent-To", Value: "recipient@example.com"},
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for incomplete resent block, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_ResentMultipleFromRequiresSender(t *testing.T) {
+	headers := Headers{
+		{Name: "Resent-Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "Resent-From", Value: "alice@example.com, bob@example.com"},
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for resent multiple From without Resent-Sender, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_ResentFieldsMustBePrepended(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Resent-Date", Value: "Thu, 12 Dec 2024 11:00:00 +0000"},
+		{Name: "Resent-From", Value: "resender@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for resent fields after regular headers, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_ResentReplyToRejected(t *testing.T) {
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "Resent-Reply-To", Value: "reply@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for obsolete Resent-Reply-To, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_ReturnPathMustUseAngleAddr(t *testing.T) {
+	headers := Headers{
+		{Name: "Return-Path", Value: "sender@example.com"},
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+	}
+
+	err := headers.Validate()
+	if !errors.Is(err, ErrInvalidHeaderValue) {
+		t.Errorf("Expected ErrInvalidHeaderValue for invalid Return-Path, got %v", err)
+	}
+}
+
 func TestRFC5322_ContentValidation_BareLF(t *testing.T) {
 	// Test that bare LF in body is rejected
 	content := Content{
@@ -498,6 +679,21 @@ func TestRFC5322_ContentValidation_BareLF(t *testing.T) {
 	err := content.Validate()
 	if err != ErrInvalidLineEnding {
 		t.Errorf("Expected ErrInvalidLineEnding for bare LF in body, got %v", err)
+	}
+}
+
+func TestRFC5322_ContentValidation_BareCR(t *testing.T) {
+	content := Content{
+		Headers: Headers{
+			{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+			{Name: "From", Value: "sender@example.com"},
+		},
+		Body: []byte("Line one\rLine two\r\n"),
+	}
+
+	err := content.Validate()
+	if err != ErrInvalidLineEnding {
+		t.Errorf("Expected ErrInvalidLineEnding for bare CR in body, got %v", err)
 	}
 }
 
@@ -1349,6 +1545,26 @@ func TestParseRawContent_HeaderWithColonInValue(t *testing.T) {
 	h, _ := parseRawContent(data)
 	if h.Get("Subject") != "re: reply: nested" {
 		t.Errorf("Subject = %q", h.Get("Subject"))
+	}
+}
+
+func TestParseHeaders_BlockWithoutSeparator(t *testing.T) {
+	headers := ParseHeaders([]byte("Subject: folded\r\n value\r\nFrom: Sender <sender@example.com>\r\n"))
+	if headers.Get("Subject") != "folded value" {
+		t.Fatalf("Subject = %q, want folded value", headers.Get("Subject"))
+	}
+	if headers.Get("From") != "Sender <sender@example.com>" {
+		t.Fatalf("From = %q", headers.Get("From"))
+	}
+}
+
+func TestParseHeaders_BlockWithoutSeparator_BareLF(t *testing.T) {
+	headers := ParseHeaders([]byte("Subject: folded\n value\nFrom: Sender <sender@example.com>\n"))
+	if headers.Get("Subject") != "folded value" {
+		t.Fatalf("Subject = %q, want folded value", headers.Get("Subject"))
+	}
+	if headers.Get("From") != "Sender <sender@example.com>" {
+		t.Fatalf("From = %q", headers.Get("From"))
 	}
 }
 

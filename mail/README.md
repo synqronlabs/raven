@@ -13,6 +13,7 @@ import "github.com/synqronlabs/raven/mail"
 - Represents SMTP envelope and RFC 5322 content separately.
 - Provides fluent message construction via `MailBuilder`, including multipart content and attachments.
 - Parses message content into `MIMEPart` trees and serializes MIME structures back to wire bytes.
+- Walks and validates MIME structure from streaming readers without building a full MIME tree.
 - Validates header/body constraints (line endings, required headers, lengths).
 - Supports JSON and MessagePack serialization helpers.
 
@@ -23,6 +24,8 @@ import "github.com/synqronlabs/raven/mail"
 - `(*Content).Validate()`
 - `(*Content).ToMIME()`, `(*Content).FromMIME(...)`
 - `(*MIMEPart).IsMultipart()`, `(*MIMEPart).ToBytes()`
+- `WalkMIME(...)`
+- `ValidateMIMEStream(...)`
 - `(*Mail).ToJSON()`, `FromJSON(...)`
 - `(*Mail).ToMessagePack()`, `FromMessagePack(...)`
 

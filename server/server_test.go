@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/server"
 )
 
@@ -1528,6 +1529,62 @@ func TestServer_FoldedHeaders(t *testing.T) {
 	}
 }
 
+func TestServer_SessionHeaders_ParseAndValidateWithMailPackage(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	tc.send("From: Sender <sender@example.com>\r\nDate: Thu, 12 Dec 2024 10:00:00 +0000\r\nSubject: folded\r\n value\r\n\r\nBody.\r\n.")
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+
+	parsed := mail.ParseHeaders(sess.completed[0].headers)
+	if err := parsed.Validate(); err != nil {
+		t.Fatalf("expected session header block to parse and validate, got %v\nraw headers:\n%s", err, string(sess.completed[0].headers))
+	}
+	if got := parsed.Get("Subject"); got != "folded value" {
+		t.Fatalf("parsed Subject = %q, want %q", got, "folded value")
+	}
+	if got := parsed.Get("From"); got != "Sender <sender@example.com>" {
+		t.Fatalf("parsed From = %q", got)
+	}
+	if got := parsed.Get("Date"); got != "Thu, 12 Dec 2024 10:00:00 +0000" {
+		t.Fatalf("parsed Date = %q", got)
+	}
+	if parsed.Count("Received") != 1 {
+		t.Fatalf("parsed Received count = %d, want 1", parsed.Count("Received"))
+	}
+	if string(sess.completed[0].body) != "Body.\r\n" {
+		t.Fatalf("expected DATA body to remain separate, got %q", string(sess.completed[0].body))
+	}
+	if raw := string(sess.completed[0].headers); strings.Contains(raw, "\r\n\r\n") {
+		t.Fatalf("expected raw session headers to exclude blank-line separator, got:\n%s", raw)
+	}
+}
+
 // --- Loop Detection ---
 
 func TestServer_LoopDetection(t *testing.T) {
@@ -1695,6 +1752,68 @@ func TestServer_BDAT_FoldedHeadersAcrossChunks(t *testing.T) {
 	}
 	if string(sess.completed[0].body) != "Body." {
 		t.Fatalf("expected BDAT body to exclude folded headers, got %q", string(sess.completed[0].body))
+	}
+}
+
+func TestServer_BDAT_SessionHeaders_ParseAndValidateWithMailPackage(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	chunk1 := "From: Sender <sender@example.com>\r\nDate: Thu, 12 Dec 2024 10:00:00 +0000\r\nSubject: folded\r\n va"
+	tc.send("BDAT %d", len(chunk1))
+	fmt.Fprint(tc.conn, chunk1)
+	tc.expectCode(250)
+
+	chunk2 := "lue\r\n\r\nBody."
+	tc.send("BDAT %d LAST", len(chunk2))
+	fmt.Fprint(tc.conn, chunk2)
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+
+	parsed := mail.ParseHeaders(sess.completed[0].headers)
+	if err := parsed.Validate(); err != nil {
+		t.Fatalf("expected BDAT session header block to parse and validate, got %v\nraw headers:\n%s", err, string(sess.completed[0].headers))
+	}
+	if got := parsed.Get("Subject"); got != "folded value" {
+		t.Fatalf("parsed Subject = %q, want %q", got, "folded value")
+	}
+	if got := parsed.Get("From"); got != "Sender <sender@example.com>" {
+		t.Fatalf("parsed From = %q", got)
+	}
+	if got := parsed.Get("Date"); got != "Thu, 12 Dec 2024 10:00:00 +0000" {
+		t.Fatalf("parsed Date = %q", got)
+	}
+	if parsed.Count("Received") != 1 {
+		t.Fatalf("parsed Received count = %d, want 1", parsed.Count("Received"))
+	}
+	if string(sess.completed[0].body) != "Body." {
+		t.Fatalf("expected BDAT body to remain separate, got %q", string(sess.completed[0].body))
+	}
+	if raw := string(sess.completed[0].headers); strings.Contains(raw, "\r\n\r\n") {
+		t.Fatalf("expected raw session headers to exclude blank-line separator, got:\n%s", raw)
 	}
 }
 
