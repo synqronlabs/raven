@@ -49,9 +49,8 @@ reading, timeouts, error codes) are handled by the framework. The implementer
 only writes the **business logic**: accept or reject senders, store or relay
 messages, look up credentials.
 
-Optional interfaces (`AuthSession`, `ChunkingSession`, `VRFYSession`,
-`EXPNSession`) let the backend opt into advanced features without cluttering the
-base interface.
+Optional interfaces (`AuthSession`, `VRFYSession`, `EXPNSession`) let the
+backend opt into advanced features without cluttering the base interface.
 
 ### 3. Pluggable DNS with DNSSEC Awareness
 

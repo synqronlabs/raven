@@ -30,8 +30,8 @@
 //	    return nil
 //	}
 //
-//	func (s *MySession) Data(r io.Reader) error {
-//	    // Process message from r
+//	func (s *MySession) Data(headers server.MessageHeaders, body io.Reader) error {
+//	    // Inspect headers and stream the message body.
 //	    return nil
 //	}
 //
@@ -84,12 +84,9 @@
 //
 // # CHUNKING (BDAT)
 //
-// To support the CHUNKING extension, implement the ChunkingSession interface:
-//
-//	func (s *MySession) Chunk(data []byte, last bool) error {
-//	    // Process chunk
-//	    return nil
-//	}
+// If CHUNKING is enabled, Raven handles BDAT internally and still delivers the
+// message through Session.Data(headers, body). Backend code does not need to
+// handle per-chunk mechanics.
 //
 // # Error Handling
 //

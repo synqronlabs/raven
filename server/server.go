@@ -85,7 +85,6 @@ type ServerConfig struct {
 	EnableDSN bool
 
 	// EnableCHUNKING advertises CHUNKING extension (RFC 3030).
-	// Backend must implement ChunkingSession.
 	EnableCHUNKING bool
 
 	// MaxReceivedHeaders is the maximum number of Received headers allowed

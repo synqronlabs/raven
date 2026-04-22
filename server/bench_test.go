@@ -31,11 +31,11 @@ func (*benchConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type benchSession struct{}
 
-func (*benchSession) Mail(string, *MailOptions) error { return nil }
-func (*benchSession) Rcpt(string, *RcptOptions) error { return nil }
-func (*benchSession) Data(io.Reader) error            { return nil }
-func (*benchSession) Reset()                          {}
-func (*benchSession) Logout() error                   { return nil }
+func (*benchSession) Mail(string, *MailOptions) error      { return nil }
+func (*benchSession) Rcpt(string, *RcptOptions) error      { return nil }
+func (*benchSession) Data(MessageHeaders, io.Reader) error { return nil }
+func (*benchSession) Reset()                               {}
+func (*benchSession) Logout() error                        { return nil }
 
 type benchAuthSession struct{ benchSession }
 

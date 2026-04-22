@@ -120,9 +120,9 @@ func (s *MySession) Rcpt(to string, opts *server.RcptOptions) error {
     return nil
 }
 
-func (s *MySession) Data(r io.Reader) error {
-    body, _ := io.ReadAll(r)
-    fmt.Printf("Message from %s to %v: %d bytes\n", s.from, s.to, len(body))
+func (s *MySession) Data(headers server.MessageHeaders, body io.Reader) error {
+    bodyBytes, _ := io.ReadAll(body)
+    fmt.Printf("Message from %s to %v: %d header bytes, %d body bytes\n", s.from, s.to, len(headers), len(bodyBytes))
     return nil
 }
 

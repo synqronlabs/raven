@@ -98,12 +98,16 @@ func (s *MXSession) Rcpt(to string, opts *server.RcptOptions) error {
 }
 
 // Data runs the full authentication pipeline and decides whether to accept.
-func (s *MXSession) Data(r io.Reader) error {
-	body, err := io.ReadAll(r)
+func (s *MXSession) Data(headers server.MessageHeaders, body io.Reader) error {
+	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
 		return err
 	}
-	log.Printf("Received %d bytes from %s for %v", len(body), s.from, s.to)
+	rawMessage := make([]byte, 0, len(headers)+2+len(bodyBytes))
+	rawMessage = append(rawMessage, headers...)
+	rawMessage = append(rawMessage, '\r', '\n')
+	rawMessage = append(rawMessage, bodyBytes...)
+	log.Printf("Received %d bytes from %s for %v", len(rawMessage), s.from, s.to)
 
 	ctx := s.conn.Context()
 
@@ -118,7 +122,7 @@ func (s *MXSession) Data(r io.Reader) error {
 		}
 		msg.AddRecipient(addr)
 	}
-	msg.Content.Body = body
+	msg.Content.Body = rawMessage
 
 	// --- SPF ---
 	mailFromDomain := domainOf(s.from)

@@ -34,7 +34,8 @@ func (b *testBackend) NewSession(c *server.Conn) (server.Session, error) {
 type testSession struct {
 	from       string
 	recipients []string
-	data       []byte
+	headers    server.MessageHeaders
+	body       []byte
 	t          *testing.T
 
 	// completed tracks completed transactions (from, to, data copied before reset)
@@ -48,7 +49,8 @@ type testSession struct {
 type testTransaction struct {
 	from       string
 	recipients []string
-	data       []byte
+	headers    server.MessageHeaders
+	body       []byte
 }
 
 func (s *testSession) Mail(from string, _ *server.MailOptions) error {
@@ -71,15 +73,17 @@ func (s *testSession) Rcpt(to string, _ *server.RcptOptions) error {
 	return nil
 }
 
-func (s *testSession) Data(r io.Reader) error {
+func (s *testSession) Data(headers server.MessageHeaders, body io.Reader) error {
 	var err error
-	s.data, err = io.ReadAll(r)
+	s.headers = append(s.headers[:0], headers...)
+	s.body, err = io.ReadAll(body)
 	if err == nil {
 		// Save completed transaction before Reset clears it
 		s.completed = append(s.completed, testTransaction{
 			from:       s.from,
 			recipients: append([]string(nil), s.recipients...),
-			data:       append([]byte(nil), s.data...),
+			headers:    append(server.MessageHeaders(nil), s.headers...),
+			body:       append([]byte(nil), s.body...),
 		})
 	}
 	return err
@@ -88,7 +92,8 @@ func (s *testSession) Data(r io.Reader) error {
 func (s *testSession) Reset() {
 	s.from = ""
 	s.recipients = nil
-	s.data = nil
+	s.headers = nil
+	s.body = nil
 }
 
 func (*testSession) Logout() error {
@@ -1092,7 +1097,7 @@ func TestServer_DotStuffing(t *testing.T) {
 	if len(s.completed) == 0 {
 		t.Fatal("no completed transaction")
 	}
-	body := string(s.completed[0].data)
+	body := string(s.completed[0].body)
 
 	// The received body should have dots un-stuffed
 	if !strings.Contains(body, ".Line starting with dot") {
@@ -1459,22 +1464,79 @@ func TestServer_ReceivedHeader(t *testing.T) {
 	if len(sess.completed) == 0 {
 		t.Fatal("no completed transactions")
 	}
-	data := string(sess.completed[0].data)
-	if !strings.HasPrefix(data, "Received: from client.test") {
-		t.Errorf("expected data to start with Received header, got:\n%s", data[:min(len(data), 200)])
+	headers := string(sess.completed[0].headers)
+	if !strings.HasPrefix(headers, "Received: from client.test") {
+		t.Errorf("expected headers to start with Received header, got:\n%s", headers[:min(len(headers), 200)])
 	}
-	if !strings.Contains(data, "by mx.example.com with ESMTP") {
-		t.Errorf("expected Received header to contain server domain and protocol, got:\n%s", data[:min(len(data), 200)])
+	if !strings.Contains(headers, "by mx.example.com with ESMTP") {
+		t.Errorf("expected Received header to contain server domain and protocol, got:\n%s", headers[:min(len(headers), 200)])
 	}
-	if !strings.Contains(data, " id ") {
-		t.Errorf("expected Received header to contain id clause, got:\n%s", data[:min(len(data), 200)])
+	if !strings.Contains(headers, " id ") {
+		t.Errorf("expected Received header to contain id clause, got:\n%s", headers[:min(len(headers), 200)])
+	}
+	if string(sess.completed[0].body) != "Body here.\r\n" {
+		t.Errorf("expected body to exclude headers, got %q", string(sess.completed[0].body))
+	}
+}
+
+func TestServer_FoldedHeaders(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		MaxReceivedHeaders: 3,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	tc.send("Received: from hop1\r\n\tby hop1.example.com\r\nSubject: folded\r\n value\r\n\r\nBody.\r\n.")
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+
+	headers := string(sess.completed[0].headers)
+	if !strings.Contains(headers, "Received: from hop1\r\n\tby hop1.example.com\r\n") {
+		t.Fatalf("expected folded Received header to be preserved, got:\n%s", headers)
+	}
+	if !strings.Contains(headers, "Subject: folded\r\n value\r\n") {
+		t.Fatalf("expected folded Subject header to be preserved, got:\n%s", headers)
+	}
+	if count := strings.Count(headers, "Received:"); count != 2 {
+		t.Fatalf("expected exactly 2 Received headers including Raven's, got %d in:\n%s", count, headers)
+	}
+	if string(sess.completed[0].body) != "Body.\r\n" {
+		t.Fatalf("expected DATA body to exclude folded headers, got %q", string(sess.completed[0].body))
 	}
 }
 
 // --- Loop Detection ---
 
 func TestServer_LoopDetection(t *testing.T) {
-	backend := &testBackend{}
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
 	ts := newTestServer(t, backend, server.ServerConfig{
 		MaxReceivedHeaders: 3,
 	})
@@ -1499,6 +1561,10 @@ func TestServer_LoopDetection(t *testing.T) {
 	// Send message with 2 existing Received headers (+ 1 prepended by server = 3 >= max 3)
 	tc.send("Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nSubject: loop test\r\n\r\nBody.\r\n.")
 	tc.expectCode(554)
+
+	if len(sess.completed) != 0 {
+		t.Fatalf("expected rejected message not to be completed, got %d completed transactions", len(sess.completed))
+	}
 }
 
 func TestServer_LoopDetection_BelowThreshold(t *testing.T) {
@@ -1530,19 +1596,8 @@ func TestServer_LoopDetection_BelowThreshold(t *testing.T) {
 
 // --- BDAT / CHUNKING ---
 
-// chunkingSession implements ChunkingSession for testing.
-type chunkingSession struct {
-	testSession
-	chunks [][]byte
-}
-
-func (s *chunkingSession) Chunk(data []byte, _ bool) error {
-	s.chunks = append(s.chunks, append([]byte(nil), data...))
-	return nil
-}
-
 func TestServer_BDAT_ReceivedHeader(t *testing.T) {
-	sess := &chunkingSession{}
+	sess := &testSession{}
 	backend := &testBackend{
 		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
@@ -1571,23 +1626,126 @@ func TestServer_BDAT_ReceivedHeader(t *testing.T) {
 	fmt.Fprint(tc.conn, msg)
 	tc.expectCode(250)
 
-	if len(sess.chunks) == 0 {
-		t.Fatal("no chunks received")
+	if len(sess.completed) == 0 {
+		t.Fatal("no completed transactions")
 	}
-	data := string(sess.chunks[0])
-	if !strings.HasPrefix(data, "Received: from client.test") {
-		t.Errorf("expected first chunk to start with Received header, got:\n%s", data[:min(len(data), 200)])
+	headers := string(sess.completed[0].headers)
+	if !strings.HasPrefix(headers, "Received: from client.test") {
+		t.Errorf("expected headers to start with Received header, got:\n%s", headers[:min(len(headers), 200)])
 	}
-	if !strings.Contains(data, "by mx.example.com with ESMTP") {
-		t.Errorf("expected Received header to contain domain and protocol, got:\n%s", data[:min(len(data), 200)])
+	if !strings.Contains(headers, "by mx.example.com with ESMTP") {
+		t.Errorf("expected Received header to contain domain and protocol, got:\n%s", headers[:min(len(headers), 200)])
 	}
-	if !strings.Contains(data, " id ") {
-		t.Errorf("expected Received header to contain id clause, got:\n%s", data[:min(len(data), 200)])
+	if !strings.Contains(headers, " id ") {
+		t.Errorf("expected Received header to contain id clause, got:\n%s", headers[:min(len(headers), 200)])
+	}
+	if string(sess.completed[0].body) != "Body here." {
+		t.Fatalf("expected BDAT body to exclude headers, got %q", string(sess.completed[0].body))
+	}
+}
+
+func TestServer_BDAT_FoldedHeadersAcrossChunks(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING:     true,
+		MaxReceivedHeaders: 3,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	chunk1 := "Received: from hop1\r\n\tby hop1.example.com\r\nSubject: folded\r\n va"
+	tc.send("BDAT %d", len(chunk1))
+	fmt.Fprint(tc.conn, chunk1)
+	tc.expectCode(250)
+
+	chunk2 := "lue\r\n\r\nBody."
+	tc.send("BDAT %d LAST", len(chunk2))
+	fmt.Fprint(tc.conn, chunk2)
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+
+	headers := string(sess.completed[0].headers)
+	if !strings.Contains(headers, "Received: from hop1\r\n\tby hop1.example.com\r\n") {
+		t.Fatalf("expected folded Received header to be preserved across BDAT chunks, got:\n%s", headers)
+	}
+	if !strings.Contains(headers, "Subject: folded\r\n value\r\n") {
+		t.Fatalf("expected folded Subject header to be preserved across BDAT chunks, got:\n%s", headers)
+	}
+	if count := strings.Count(headers, "Received:"); count != 2 {
+		t.Fatalf("expected exactly 2 Received headers including Raven's, got %d in:\n%s", count, headers)
+	}
+	if string(sess.completed[0].body) != "Body." {
+		t.Fatalf("expected BDAT body to exclude folded headers, got %q", string(sess.completed[0].body))
+	}
+}
+
+func TestServer_BDAT_MultipleChunks(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	chunk1 := "Subject: test\r\n\r\nBody "
+	tc.send("BDAT %d", len(chunk1))
+	fmt.Fprint(tc.conn, chunk1)
+	tc.expectCode(250)
+
+	if len(sess.completed) != 0 {
+		t.Fatal("expected message not to complete before BDAT LAST")
+	}
+
+	chunk2 := "here."
+	tc.send("BDAT %d LAST", len(chunk2))
+	fmt.Fprint(tc.conn, chunk2)
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+	if string(sess.completed[0].body) != "Body here." {
+		t.Fatalf("expected concatenated body, got %q", string(sess.completed[0].body))
 	}
 }
 
 func TestServer_BDAT_LoopDetection(t *testing.T) {
-	sess := &chunkingSession{}
+	sess := &testSession{}
 	backend := &testBackend{
 		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil
@@ -1616,10 +1774,14 @@ func TestServer_BDAT_LoopDetection(t *testing.T) {
 	tc.send("BDAT %d LAST", len(msg))
 	fmt.Fprint(tc.conn, msg)
 	tc.expectCode(554)
+
+	if len(sess.completed) != 0 {
+		t.Fatalf("expected rejecting looped BDAT message before session completion, got %d completed transactions", len(sess.completed))
+	}
 }
 
 func TestServer_BDAT_LoopDetection_BelowThreshold(t *testing.T) {
-	sess := &chunkingSession{}
+	sess := &testSession{}
 	backend := &testBackend{
 		sessionFactory: func(_ *server.Conn) (server.Session, error) {
 			return sess, nil

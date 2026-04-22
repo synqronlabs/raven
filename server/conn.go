@@ -80,8 +80,8 @@ type Conn struct {
 	// When true, non-ASCII characters are allowed in envelope addresses.
 	smtputf8 bool
 
-	// bdatScanner tracks Received header counting across BDAT chunks.
-	bdatScanner *bdatHeaderScanner
+	// bdatState tracks streaming state across BDAT chunks.
+	bdatState *bdatStreamState
 }
 
 // TLS returns the TLS connection state, or nil if not using TLS.
@@ -823,48 +823,93 @@ func (d *dataReader) drainData() {
 	}
 }
 
-// receivedCountReader wraps an io.Reader and counts Received headers as data flows through.
-// It only counts headers (stops counting at the first blank line, which separates headers from body).
-type receivedCountReader struct {
-	r         io.Reader
-	count     int
-	inHeaders bool
-	lineBuf   []byte
-}
+const bdatReadBufferSize = 32 * 1024
 
-func newReceivedCountReader(r io.Reader) *receivedCountReader {
-	return &receivedCountReader{r: r, inHeaders: true}
-}
+var (
+	receivedHeaderName        = []byte("Received:")
+	messageHeaderSeparator    = []byte("\r\n\r\n")
+	errMessageBodyNotConsumed = errors.New("session returned before consuming the message body")
+	errTransactionAborted     = errors.New("message transaction aborted")
+)
 
-func (r *receivedCountReader) Read(p []byte) (int, error) {
-	n, err := r.r.Read(p)
-	if n > 0 && r.inHeaders {
-		r.scanHeaders(p[:n])
+func readMessageHeaders(r io.Reader, prepended MessageHeaders, maxReceived int) (MessageHeaders, *bufio.Reader, error) {
+	br := bufio.NewReader(r)
+	headers := make(MessageHeaders, 0, len(prepended)+512)
+	headers = append(headers, prepended...)
+
+	receivedCount := 0
+	if len(prepended) > 0 {
+		receivedCount = 1
+		if maxReceived > 0 && receivedCount >= maxReceived {
+			return nil, br, errTooManyHops
+		}
 	}
-	return n, err
+
+	for {
+		line, err := br.ReadSlice('\n')
+		if err != nil {
+			switch {
+			case errors.Is(err, io.EOF):
+				if len(line) > 0 {
+					headers = append(headers, line...)
+					if isReceivedHeaderLine(line) {
+						receivedCount++
+						if maxReceived > 0 && receivedCount >= maxReceived {
+							return nil, br, errTooManyHops
+						}
+					}
+				}
+				return headers, br, nil
+			case errors.Is(err, bufio.ErrBufferFull):
+				return nil, br, fmt.Errorf("reading message headers: %w", err)
+			default:
+				return nil, br, err
+			}
+		}
+
+		if len(line) == 2 && line[0] == '\r' && line[1] == '\n' {
+			return headers, br, nil
+		}
+
+		headers = append(headers, line...)
+		if isReceivedHeaderLine(line) {
+			receivedCount++
+			if maxReceived > 0 && receivedCount >= maxReceived {
+				return nil, br, errTooManyHops
+			}
+		}
+	}
 }
 
-func (r *receivedCountReader) scanHeaders(data []byte) {
-	r.lineBuf = append(r.lineBuf, data...)
-	for {
-		idx := bytes.Index(r.lineBuf, []byte("\r\n"))
+func isReceivedHeaderLine(line []byte) bool {
+	if len(line) == 0 {
+		return false
+	}
+	if line[0] == ' ' || line[0] == '\t' {
+		return false
+	}
+	return len(line) >= len(receivedHeaderName) && bytes.EqualFold(line[:len(receivedHeaderName)], receivedHeaderName)
+}
+
+func countReceivedHeaders(headers MessageHeaders) int {
+	count := 0
+	remaining := headers
+	for len(remaining) > 0 {
+		idx := bytes.Index(remaining, []byte("\r\n"))
 		if idx == -1 {
+			if isReceivedHeaderLine(remaining) {
+				count++
+			}
 			break
 		}
-		line := r.lineBuf[:idx]
-		r.lineBuf = r.lineBuf[idx+2:]
 
-		// Empty line = end of headers
-		if len(line) == 0 {
-			r.inHeaders = false
-			return
+		line := remaining[:idx+2]
+		if isReceivedHeaderLine(line) {
+			count++
 		}
-
-		// Only count lines that start with "Received:" (not folded continuation lines)
-		if len(line) >= 9 && strings.EqualFold(string(line[:9]), "received:") {
-			r.count++
-		}
+		remaining = remaining[idx+2:]
 	}
+	return count
 }
 
 // generateQueueID returns a random hex string for use as a queue/transaction ID.
@@ -876,38 +921,164 @@ func generateQueueID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// bdatHeaderScanner counts Received headers across BDAT chunks.
-type bdatHeaderScanner struct {
-	count     int
-	inHeaders bool
-	lineBuf   []byte
+type bdatStreamState struct {
+	receivedHeader MessageHeaders
+	clientHeaders  MessageHeaders
+	bytesRead      int64
+	headersDone    bool
+	bodyReader     *io.PipeReader
+	bodyWriter     *io.PipeWriter
+	sessionDone    chan error
+	sessionErr     error
+	sessionReady   bool
 }
 
-func newBdatHeaderScanner() *bdatHeaderScanner {
-	return &bdatHeaderScanner{inHeaders: true}
-}
-
-func (s *bdatHeaderScanner) scan(data []byte) {
-	if !s.inHeaders {
-		return
+func newBdatStreamState(receivedHeader MessageHeaders) *bdatStreamState {
+	return &bdatStreamState{
+		receivedHeader: append(MessageHeaders(nil), receivedHeader...),
+		clientHeaders:  make(MessageHeaders, 0, 512),
 	}
-	s.lineBuf = append(s.lineBuf, data...)
-	for {
-		idx := bytes.Index(s.lineBuf, []byte("\r\n"))
-		if idx == -1 {
-			break
-		}
-		line := s.lineBuf[:idx]
-		s.lineBuf = s.lineBuf[idx+2:]
+}
 
-		if len(line) == 0 {
-			s.inHeaders = false
-			return
-		}
+func (s *bdatStreamState) appendChunk(c *Conn, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
 
-		if len(line) >= 9 && strings.EqualFold(string(line[:9]), "received:") {
-			s.count++
+	s.bytesRead += int64(len(data))
+	if c.server.config.MaxMessageBytes > 0 && s.bytesRead > c.server.config.MaxMessageBytes {
+		return ErrMessageTooLarge
+	}
+
+	if s.headersDone {
+		return s.writeBody(data)
+	}
+
+	s.clientHeaders = append(s.clientHeaders, data...)
+	idx := bytes.Index(s.clientHeaders, messageHeaderSeparator)
+	if idx == -1 {
+		return nil
+	}
+
+	bodyStart := idx + len(messageHeaderSeparator)
+	bodyPrefix := s.clientHeaders[bodyStart:]
+	s.clientHeaders = s.clientHeaders[:idx+2]
+	s.headersDone = true
+
+	if err := s.startSession(c); err != nil {
+		return err
+	}
+	return s.writeBody(bodyPrefix)
+}
+
+func (s *bdatStreamState) startSession(c *Conn) error {
+	if s.bodyWriter != nil {
+		return nil
+	}
+
+	headers := make(MessageHeaders, 0, len(s.receivedHeader)+len(s.clientHeaders))
+	headers = append(headers, s.receivedHeader...)
+	headers = append(headers, s.clientHeaders...)
+	if c.server.config.MaxReceivedHeaders > 0 && countReceivedHeaders(headers) >= c.server.config.MaxReceivedHeaders {
+		return errTooManyHops
+	}
+
+	bodyReader, bodyWriter := io.Pipe()
+	done := make(chan error, 1)
+	s.bodyReader = bodyReader
+	s.bodyWriter = bodyWriter
+	s.sessionDone = done
+
+	go func(headers MessageHeaders, reader *io.PipeReader, done chan<- error) {
+		err := c.session.Data(headers, reader)
+		if err != nil {
+			_ = reader.CloseWithError(err)
+		} else {
+			_ = reader.Close()
 		}
+		done <- err
+	}(headers, bodyReader, done)
+
+	return nil
+}
+
+func (s *bdatStreamState) writeBody(data []byte) error {
+	if len(data) == 0 {
+		return s.ensureSessionActive()
+	}
+
+	for len(data) > 0 {
+		n, err := s.bodyWriter.Write(data)
+		data = data[n:]
+		if err != nil {
+			if finished, sessionErr := s.pollSession(); finished {
+				if sessionErr != nil {
+					return sessionErr
+				}
+				return errMessageBodyNotConsumed
+			}
+			return fmt.Errorf("streaming BDAT body: %w", err)
+		}
+	}
+
+	return s.ensureSessionActive()
+}
+
+func (s *bdatStreamState) ensureSessionActive() error {
+	if finished, sessionErr := s.pollSession(); finished {
+		if sessionErr != nil {
+			return sessionErr
+		}
+		return errMessageBodyNotConsumed
+	}
+	return nil
+}
+
+func (s *bdatStreamState) pollSession() (bool, error) {
+	if s.sessionReady {
+		return true, s.sessionErr
+	}
+	if s.sessionDone == nil {
+		return false, nil
+	}
+
+	select {
+	case err := <-s.sessionDone:
+		s.sessionErr = err
+		s.sessionReady = true
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+func (s *bdatStreamState) finish(c *Conn) error {
+	if !s.headersDone {
+		s.headersDone = true
+		if err := s.startSession(c); err != nil {
+			return err
+		}
+	}
+
+	if s.bodyWriter != nil {
+		_ = s.bodyWriter.Close()
+	}
+
+	if s.sessionReady {
+		return s.sessionErr
+	}
+	if s.sessionDone == nil {
+		return nil
+	}
+
+	s.sessionErr = <-s.sessionDone
+	s.sessionReady = true
+	return s.sessionErr
+}
+
+func (s *bdatStreamState) abort(err error) {
+	if s.bodyWriter != nil {
+		_ = s.bodyWriter.CloseWithError(err)
 	}
 }
 
@@ -1004,17 +1175,24 @@ func (c *Conn) handleDATA() error {
 	// Create data reader with line validation and dot-unstuffing
 	dataRdr := newDataReader(c.reader, enforce7Bit, c.server.config.MaxMessageBytes)
 
-	// Wrap with loop detection reader that counts existing Received headers
-	loopRdr := newReceivedCountReader(dataRdr)
-
-	// Build the Received header from connection metadata (RFC 5321 §4.4)
-	receivedHeader := c.buildReceivedHeader()
-
-	// Prepend Received header before the message data
-	reader := io.MultiReader(strings.NewReader(receivedHeader), loopRdr)
+	// Parse the header block up front so the session receives headers and a
+	// streaming body reader, and reject loops before user code sees the message.
+	headers, bodyRdr, err := readMessageHeaders(
+		dataRdr,
+		MessageHeaders(c.buildReceivedHeader()),
+		c.server.config.MaxReceivedHeaders,
+	)
+	if err != nil {
+		if !dataRdr.done {
+			dataRdr.drainData()
+		}
+		c.writeError(err)
+		c.resetTransaction()
+		return nil
+	}
 
 	// Call session
-	if err := c.session.Data(reader); err != nil {
+	if err := c.session.Data(headers, bodyRdr); err != nil {
 		// Drain remaining data if not already done
 		if !dataRdr.done {
 			dataRdr.drainData()
@@ -1027,14 +1205,6 @@ func (c *Conn) handleDATA() error {
 	// Check if data reader encountered an error
 	if dataRdr.err != nil {
 		c.writeError(dataRdr.err)
-		c.resetTransaction()
-		return nil
-	}
-
-	// Check for mail loop (RFC 5321 §6.3)
-	// +1 for the Received header we just prepended
-	if loopRdr.count+1 >= c.server.config.MaxReceivedHeaders {
-		c.writeError(errTooManyHops)
 		c.resetTransaction()
 		return nil
 	}
@@ -1052,12 +1222,6 @@ func (c *Conn) handleBDAT(args string) error {
 	}
 
 	if !c.server.config.EnableCHUNKING {
-		c.writeError(errChunkingNotSupported)
-		return nil
-	}
-
-	chunkSess, ok := c.session.(ChunkingSession)
-	if !ok {
 		c.writeError(errChunkingNotSupported)
 		return nil
 	}
@@ -1082,49 +1246,57 @@ func (c *Conn) handleBDAT(args string) error {
 		return fmt.Errorf("setting BDAT read deadline: %w", err)
 	}
 
-	// Read chunk data
-	data := make([]byte, size)
-	if _, err := io.ReadFull(c.reader, data); err != nil {
-		c.writeError(errChunkReadFailed)
-		return nil
+	if c.bdatState == nil {
+		c.bdatState = newBdatStreamState(MessageHeaders(c.buildReceivedHeader()))
 	}
 
-	// On first BDAT chunk, prepend Received header (RFC 5321 §4.4)
-	if c.bdatScanner == nil {
-		c.bdatScanner = newBdatHeaderScanner()
-		receivedHeader := []byte(c.buildReceivedHeader())
-		data = append(receivedHeader, data...)
-	}
-
-	// Scan chunk for Received headers (loop detection)
-	c.bdatScanner.scan(data)
-
-	// Call session
-	if err := chunkSess.Chunk(data, isLast); err != nil {
-		c.writeError(err)
-		if isLast {
-			c.resetTransaction()
+	limited := &io.LimitedReader{R: c.reader, N: size}
+	buf := make([]byte, bdatReadBufferSize)
+	for limited.N > 0 {
+		n, err := limited.Read(buf)
+		if n > 0 {
+			if appendErr := c.bdatState.appendChunk(c, buf[:n]); appendErr != nil {
+				_, _ = io.Copy(io.Discard, limited)
+				c.bdatState.abort(appendErr)
+				c.writeError(appendErr)
+				c.resetTransaction()
+				return nil
+			}
 		}
-		return nil
-	}
-
-	if isLast {
-		// Check for mail loop (RFC 5321 §6.3)
-		// +1 for the Received header we prepended
-		if c.bdatScanner.count+1 >= c.server.config.MaxReceivedHeaders {
-			c.writeError(errTooManyHops)
+		if err != nil {
+			if errors.Is(err, io.EOF) && limited.N == 0 {
+				break
+			}
+			c.bdatState.abort(errChunkReadFailed)
+			c.writeError(errChunkReadFailed)
 			c.resetTransaction()
 			return nil
 		}
-		c.writeResponse(250, "2.0.0 OK")
-		c.resetTransaction()
-	} else {
+	}
+
+	if !isLast {
+		if err := c.bdatState.ensureSessionActive(); err != nil {
+			c.bdatState.abort(err)
+			c.writeError(err)
+			c.resetTransaction()
+			return nil
+		}
 		c.writeResponse(250, fmt.Sprintf("2.0.0 %d bytes received", size))
 		c.mu.Lock()
 		c.state = StateData
 		c.mu.Unlock()
+		return nil
 	}
 
+	if err := c.bdatState.finish(c); err != nil {
+		c.bdatState.abort(err)
+		c.writeError(err)
+		c.resetTransaction()
+		return nil
+	}
+
+	c.writeResponse(250, "2.0.0 OK")
+	c.resetTransaction()
 	return nil
 }
 
@@ -1206,6 +1378,10 @@ func (c *Conn) handleQUIT() error {
 
 // resetTransaction resets the current mail transaction.
 func (c *Conn) resetTransaction() {
+	if c.bdatState != nil {
+		c.bdatState.abort(errTransactionAborted)
+	}
+
 	if c.session != nil {
 		c.session.Reset()
 	}
@@ -1217,7 +1393,7 @@ func (c *Conn) resetTransaction() {
 	c.recipientCount = 0
 	c.bodyType = ""
 	c.smtputf8 = false
-	c.bdatScanner = nil
+	c.bdatState = nil
 	c.mu.Unlock()
 }
 

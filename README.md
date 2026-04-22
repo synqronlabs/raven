@@ -69,11 +69,11 @@ func (b *Backend) NewSession(c *server.Conn) (server.Session, error) {
 
 type Session struct{}
 
-func (s *Session) Mail(from string, opts *server.MailOptions) error { return nil }
-func (s *Session) Rcpt(to string, opts *server.RcptOptions) error    { return nil }
-func (s *Session) Data(r io.Reader) error                            { return nil }
-func (s *Session) Reset()                                             {}
-func (s *Session) Logout() error                                      { return nil }
+func (s *Session) Mail(from string, opts *server.MailOptions) error           { return nil }
+func (s *Session) Rcpt(to string, opts *server.RcptOptions) error             { return nil }
+func (s *Session) Data(headers server.MessageHeaders, body io.Reader) error { return nil }
+func (s *Session) Reset()                                                   {}
+func (s *Session) Logout() error                                            { return nil }
 
 srv := server.NewServer(&Backend{}, server.ServerConfig{
     Domain: "mx.example.com",

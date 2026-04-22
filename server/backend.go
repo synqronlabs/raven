@@ -8,6 +8,11 @@ import (
 	"github.com/synqronlabs/raven/sasl"
 )
 
+// MessageHeaders contains the raw RFC 5322 header block for an incoming
+// message. Each header field is terminated by CRLF. The blank line separator
+// between headers and body is not included.
+type MessageHeaders []byte
+
 // Backend is the interface for SMTP server backends.
 // It acts as a factory that creates a new Session for each connection.
 type Backend interface {
@@ -38,9 +43,11 @@ type Session interface {
 	Rcpt(to string, opts *RcptOptions) error
 
 	// Data is called for the DATA command. The reader r contains the message
-	// content and MUST be fully consumed before Data returns.
+	// body and MUST be fully consumed before Data returns. The headers contain
+	// the raw RFC 5322 header block, including the Received header prepended by
+	// the server.
 	// After Data returns successfully, the message should be queued for delivery.
-	Data(r io.Reader) error
+	Data(headers MessageHeaders, body io.Reader) error
 
 	// Reset is called for the RSET command or when a new MAIL command is
 	// received (implicit reset). It discards the current message transaction.
@@ -76,17 +83,6 @@ type AuthSession interface {
 	// sasl.NewPlainServer and sasl.NewLoginServer populate Conn.AuthIdentity()
 	// automatically on successful authentication.
 	Auth(mech string) (sasl.Server, error)
-}
-
-// ChunkingSession is an optional interface that Sessions can implement
-// to support the CHUNKING extension (RFC 3030) for BDAT commands.
-type ChunkingSession interface {
-	Session
-
-	// Chunk is called for each BDAT chunk.
-	// The data contains the chunk bytes, and last indicates if this is
-	// the final chunk (BDAT LAST).
-	Chunk(data []byte, last bool) error
 }
 
 // VRFYSession is an optional interface that Sessions can implement

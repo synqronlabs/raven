@@ -152,7 +152,7 @@ type Backend interface {
 type Session interface {
     Mail(from string, opts *MailOptions) error
     Rcpt(to string, opts *RcptOptions) error
-    Data(r io.Reader) error
+  Data(headers MessageHeaders, body io.Reader) error
     Reset()
     Logout() error
 }
@@ -167,12 +167,12 @@ Optional interfaces extend the base:
 | Interface          | Enables          | Trigger      |
 |--------------------|------------------|--------------|
 | `AuthSession`      | SMTP AUTH        | AUTH command  |
-| `ChunkingSession`  | BDAT (RFC 3030)  | BDAT command  |
 | `VRFYSession`      | VRFY             | VRFY command  |
 | `EXPNSession`      | EXPN             | EXPN command  |
 
 `ServerConfig` controls the domain, listen address, TLS, timeouts, size limits,
-and extension flags (SMTPUTF8, DSN, REQUIRETLS, CHUNKING, BINARYMIME).
+and extension flags (SMTPUTF8, DSN, REQUIRETLS, CHUNKING, BINARYMIME). When
+CHUNKING is enabled, Raven still delivers the message through `Session.Data`.
 
 ### spf — Sender Policy Framework
 

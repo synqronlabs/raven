@@ -147,12 +147,16 @@ func (s *MSASession) Rcpt(to string, opts *server.RcptOptions) error {
 }
 
 // Data receives the message, DKIM-signs it, and optionally relays downstream.
-func (s *MSASession) Data(r io.Reader) error {
-	body, err := io.ReadAll(r)
+func (s *MSASession) Data(headers server.MessageHeaders, body io.Reader) error {
+	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
 		return err
 	}
-	log.Printf("Received %d bytes from %s for %v", len(body), s.from, s.to)
+	rawMessage := make([]byte, 0, len(headers)+2+len(bodyBytes))
+	rawMessage = append(rawMessage, headers...)
+	rawMessage = append(rawMessage, '\r', '\n')
+	rawMessage = append(rawMessage, bodyBytes...)
+	log.Printf("Received %d bytes from %s for %v", len(rawMessage), s.from, s.to)
 
 	// Build a Mail object for signing / relaying.
 	msg := ravenmail.NewMail()
@@ -168,7 +172,7 @@ func (s *MSASession) Data(r io.Reader) error {
 		}
 		msg.AddRecipient(addr)
 	}
-	msg.Content.Body = body
+	msg.Content.Body = rawMessage
 
 	// DKIM-sign if a key was provided.
 	if s.backend.privKey != nil {

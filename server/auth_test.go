@@ -18,11 +18,11 @@ type verifierAuthSession struct {
 	verified bool
 }
 
-func (s *verifierAuthSession) Mail(string, *server.MailOptions) error { return nil }
-func (s *verifierAuthSession) Rcpt(string, *server.RcptOptions) error { return nil }
-func (s *verifierAuthSession) Data(io.Reader) error                   { return nil }
-func (s *verifierAuthSession) Reset()                                 {}
-func (s *verifierAuthSession) Logout() error                          { return nil }
+func (s *verifierAuthSession) Mail(string, *server.MailOptions) error      { return nil }
+func (s *verifierAuthSession) Rcpt(string, *server.RcptOptions) error      { return nil }
+func (s *verifierAuthSession) Data(server.MessageHeaders, io.Reader) error { return nil }
+func (s *verifierAuthSession) Reset()                                      {}
+func (s *verifierAuthSession) Logout() error                               { return nil }
 
 func (*verifierAuthSession) AuthMechanisms() []string { return []string{"PLAIN"} }
 
@@ -45,11 +45,11 @@ type manualIdentitySession struct {
 	conn *server.Conn
 }
 
-func (s *manualIdentitySession) Mail(string, *server.MailOptions) error { return nil }
-func (s *manualIdentitySession) Rcpt(string, *server.RcptOptions) error { return nil }
-func (s *manualIdentitySession) Data(io.Reader) error                   { return nil }
-func (s *manualIdentitySession) Reset()                                 {}
-func (s *manualIdentitySession) Logout() error                          { return nil }
+func (s *manualIdentitySession) Mail(string, *server.MailOptions) error      { return nil }
+func (s *manualIdentitySession) Rcpt(string, *server.RcptOptions) error      { return nil }
+func (s *manualIdentitySession) Data(server.MessageHeaders, io.Reader) error { return nil }
+func (s *manualIdentitySession) Reset()                                      {}
+func (s *manualIdentitySession) Logout() error                               { return nil }
 
 func (*manualIdentitySession) AuthMechanisms() []string { return []string{"PLAIN"} }
 
@@ -76,11 +76,11 @@ func (s *manualIdentityServer) Next([]byte) ([]byte, bool, error) {
 
 type longAuthSession struct{}
 
-func (*longAuthSession) Mail(string, *server.MailOptions) error { return nil }
-func (*longAuthSession) Rcpt(string, *server.RcptOptions) error { return nil }
-func (*longAuthSession) Data(io.Reader) error                   { return nil }
-func (*longAuthSession) Reset()                                 {}
-func (*longAuthSession) Logout() error                          { return nil }
+func (*longAuthSession) Mail(string, *server.MailOptions) error      { return nil }
+func (*longAuthSession) Rcpt(string, *server.RcptOptions) error      { return nil }
+func (*longAuthSession) Data(server.MessageHeaders, io.Reader) error { return nil }
+func (*longAuthSession) Reset()                                      {}
+func (*longAuthSession) Logout() error                               { return nil }
 
 func (*longAuthSession) AuthMechanisms() []string { return []string{"LONG"} }
 
