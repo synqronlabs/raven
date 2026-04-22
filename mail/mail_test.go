@@ -1558,6 +1558,51 @@ func TestParseHeaders_BlockWithoutSeparator(t *testing.T) {
 	}
 }
 
+func TestHeaders_ToRaw_RoundTrip(t *testing.T) {
+	headers := Headers{
+		{Name: "Subject", Value: "This is a long subject that should fold cleanly when serialized back to RFC 5322 format for transport"},
+		{Name: "From", Value: "Sender <sender@example.com>"},
+		{Name: "X-Tag", Value: "alpha"},
+	}
+
+	raw := headers.ToRaw()
+	if !bytes.HasSuffix(raw, []byte("\r\n")) {
+		t.Fatalf("ToRaw() = %q, want trailing CRLF", raw)
+	}
+	if bytes.HasSuffix(raw, []byte("\r\n\r\n")) {
+		t.Fatalf("ToRaw() = %q, should not include header/body separator", raw)
+	}
+
+	parsed := ParseHeaders(raw)
+	if len(parsed) != len(headers) {
+		t.Fatalf("len(ParseHeaders(ToRaw())) = %d, want %d", len(parsed), len(headers))
+	}
+	for i := range headers {
+		if parsed[i] != headers[i] {
+			t.Fatalf("header %d = %#v, want %#v", i, parsed[i], headers[i])
+		}
+	}
+}
+
+func TestHeaders_ToRaw_ComposesWithContentToRaw(t *testing.T) {
+	headers := Headers{
+		{Name: "Subject", Value: "Test"},
+		{Name: "From", Value: "Sender <sender@example.com>"},
+	}
+	content := Content{
+		Headers: headers,
+		Body:    []byte("body"),
+	}
+
+	got := append([]byte(nil), headers.ToRaw()...)
+	got = append(got, '\r', '\n')
+	got = append(got, content.Body...)
+
+	if want := content.ToRaw(); !bytes.Equal(got, want) {
+		t.Fatalf("serialized content = %q, want %q", got, want)
+	}
+}
+
 func TestParseHeaders_BlockWithoutSeparator_BareLF(t *testing.T) {
 	headers := ParseHeaders([]byte("Subject: folded\n value\nFrom: Sender <sender@example.com>\n"))
 	if headers.Get("Subject") != "folded value" {

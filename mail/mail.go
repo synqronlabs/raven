@@ -165,6 +165,29 @@ func ParseHeaders(data []byte) Headers {
 	return headers
 }
 
+// ToRaw serializes Headers into a raw RFC 5322 header block.
+//
+// Header values are folded with FoldHeader and terminated with CRLF. The
+// returned bytes include only the header block and do not append the blank line
+// that separates headers from the message body.
+func (h Headers) ToRaw() []byte {
+	if len(h) == 0 {
+		return nil
+	}
+
+	estimatedSize := 0
+	for _, header := range h {
+		estimatedSize += len(header.Name) + 2 + len(header.Value) + 10
+	}
+
+	raw := make([]byte, 0, estimatedSize)
+	for _, header := range h {
+		raw = append(raw, FoldHeader(header.Name, header.Value)...)
+	}
+
+	return raw
+}
+
 // Get returns the first header value with the given name (case-insensitive).
 func (h *Headers) Get(name string) string {
 	if h == nil {
