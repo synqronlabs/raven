@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+
+	ravenmail "github.com/synqronlabs/raven/mail"
 )
 
 // BodyType specifies the encoding type of the message body (RFC 6152).
@@ -31,6 +33,17 @@ const (
 	DSNNotifyDelay   DSNNotify = "DELAY"
 )
 
+// DeliveryByMode controls how a DELIVERYBY deadline is enforced (RFC 2852).
+type DeliveryByMode = ravenmail.DeliveryByMode
+
+const (
+	DeliveryByModeNotify = ravenmail.DeliveryByModeNotify
+	DeliveryByModeReturn = ravenmail.DeliveryByModeReturn
+)
+
+// DeliveryBy requests RFC 2852 delivery-by handling for the current transaction.
+type DeliveryBy = ravenmail.DeliveryBy
+
 // MailOptions contains parameters for the MAIL FROM command.
 type MailOptions struct {
 	// Body specifies the body type: 7BIT, 8BITMIME, or BINARYMIME.
@@ -45,6 +58,9 @@ type MailOptions struct {
 
 	// UTF8 indicates the message contains UTF-8 content (SMTPUTF8 extension).
 	UTF8 bool
+
+	// DeliveryBy requests delivery within a bounded time window (DELIVERBY extension).
+	DeliveryBy *DeliveryBy
 
 	// Return specifies what to return in DSN failure reports (DSN extension).
 	Return DSNReturn

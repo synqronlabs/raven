@@ -345,6 +345,29 @@ func (b *MailBuilder) RequireTLS() *MailBuilder {
 	return b
 }
 
+// DeliveryBy requests RFC 2852 delivery-by handling for the envelope.
+func (b *MailBuilder) DeliveryBy(seconds int64, mode DeliveryByMode, trace bool) *MailBuilder {
+	normalizedMode := DeliveryByMode(strings.ToUpper(string(mode)))
+	switch normalizedMode {
+	case DeliveryByModeNotify, DeliveryByModeReturn:
+	default:
+		b.errors = append(b.errors, fmt.Errorf("invalid DELIVERYBY mode %q", mode))
+		return b
+	}
+
+	if normalizedMode == DeliveryByModeReturn && seconds <= 0 {
+		b.errors = append(b.errors, fmt.Errorf("DELIVERYBY mode %s requires seconds > 0", normalizedMode))
+		return b
+	}
+
+	b.mail.Envelope.DeliveryBy = &DeliveryBy{
+		Seconds: seconds,
+		Mode:    normalizedMode,
+		Trace:   trace,
+	}
+	return b
+}
+
 // TLSOptional adds the "TLS-Required: No" header field to the message (RFC 8689).
 // This indicates that the sender requests recipient-side TLS policy mechanisms
 // (such as MTA-STS and DANE) be ignored, prioritizing delivery over TLS.

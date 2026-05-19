@@ -26,6 +26,7 @@ var (
 	ErrTLSNotSupported        = errors.New("smtp: STARTTLS not supported by server")
 	ErrUnexpectedResponse     = errors.New("smtp: unexpected server response")
 	ErrRequireTLSNotSupported = errors.New("smtp: REQUIRETLS not supported by server")
+	ErrDeliveryByNotSupported = errors.New("smtp: DELIVERBY not supported by server")
 )
 
 // ClientConfig holds configuration for the SMTP client.

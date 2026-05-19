@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -135,6 +136,8 @@ type basicSMTPHandler struct {
 	dataResponseMsg  string
 	authMechanisms   string
 	rejectAuth       bool
+	mu               sync.Mutex
+	mailFromLine     string
 }
 
 func (h *basicSMTPHandler) handle(conn net.Conn) {
@@ -163,6 +166,9 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "MAIL FROM:"):
+			h.mu.Lock()
+			h.mailFromLine = line
+			h.mu.Unlock()
 			mustWriteString(w, "250 2.1.0 Ok\r\n")
 			mustFlush(w)
 
@@ -507,6 +513,7 @@ func TestParseExtensions(t *testing.T) {
 		"DSN",
 		"CHUNKING",
 		"BINARYMIME",
+		"DELIVERBY 300",
 	}
 
 	c.parseExtensions(lines)
@@ -522,6 +529,7 @@ func TestParseExtensions(t *testing.T) {
 		ravenmail.ExtDSN:                 "",
 		ravenmail.ExtChunking:            "",
 		ravenmail.ExtBinaryMIME:          "",
+		ravenmail.ExtDeliverBy:           "300",
 	}
 
 	for ext, wantParam := range checks {
@@ -661,6 +669,7 @@ func TestClient_Capabilities(t *testing.T) {
 			ravenmail.ExtChunking:            "",
 			ravenmail.ExtBinaryMIME:          "",
 			ravenmail.ExtEnhancedStatusCodes: "",
+			ravenmail.ExtDeliverBy:           "300",
 		},
 	}
 
@@ -691,6 +700,12 @@ func TestClient_Capabilities(t *testing.T) {
 	}
 	if !caps.EnhancedStatusCodes {
 		t.Error("expected EnhancedStatusCodes")
+	}
+	if !caps.DeliveryBy {
+		t.Error("expected DeliveryBy")
+	}
+	if caps.DeliveryByMinSeconds != 300 {
+		t.Errorf("DeliveryByMinSeconds = %d, want 300", caps.DeliveryByMinSeconds)
 	}
 	if caps.MaxSize != 52428800 {
 		t.Errorf("MaxSize = %d, want 52428800", caps.MaxSize)
@@ -2325,6 +2340,102 @@ func TestClient_Send_RequireTLS_NotSupported(t *testing.T) {
 	_, err := c.Send(mail)
 	if err == nil {
 		t.Fatal("expected error when REQUIRETLS not supported")
+	}
+}
+
+func TestClient_Send_DeliveryBy(t *testing.T) {
+	h := &basicSMTPHandler{
+		extensions: []string{"DELIVERBY 120"},
+	}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Test").
+		TextBody("body").
+		DeliveryBy(300, ravenmail.DeliveryByModeReturn, true).
+		MustBuild()
+
+	if _, err := c.Send(mail); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !strings.Contains(h.mailFromLine, "BY=300;RT") {
+		t.Fatalf("expected MAIL FROM to contain DELIVERYBY, got %q", h.mailFromLine)
+	}
+}
+
+func TestClient_Send_DeliveryBy_NotSupported(t *testing.T) {
+	h := &basicSMTPHandler{}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Test").
+		TextBody("body").
+		DeliveryBy(300, ravenmail.DeliveryByModeReturn, false).
+		MustBuild()
+
+	_, err := c.Send(mail)
+	if !errors.Is(err, ErrDeliveryByNotSupported) {
+		t.Fatalf("expected ErrDeliveryByNotSupported, got %v", err)
+	}
+}
+
+func TestClient_Send_DeliveryBy_BelowServerMinimum(t *testing.T) {
+	h := &basicSMTPHandler{
+		extensions: []string{"DELIVERBY 600"},
+	}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Test").
+		TextBody("body").
+		DeliveryBy(300, ravenmail.DeliveryByModeReturn, false).
+		MustBuild()
+
+	_, err := c.Send(mail)
+	if err == nil || !strings.Contains(err.Error(), "below server minimum") {
+		t.Fatalf("expected DELIVERYBY minimum error, got %v", err)
 	}
 }
 

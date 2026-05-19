@@ -231,6 +231,45 @@ func TestMailBuilder_RequireTLS(t *testing.T) {
 	}
 }
 
+func TestMailBuilder_DeliveryBy(t *testing.T) {
+	mail, err := NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Test DELIVERYBY").
+		TextBody("Deadline-bound delivery").
+		DeliveryBy(300, DeliveryByModeReturn, true).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	if mail.Envelope.DeliveryBy == nil {
+		t.Fatal("expected DeliveryBy to be set")
+	}
+	if mail.Envelope.DeliveryBy.Seconds != 300 {
+		t.Errorf("DeliveryBy.Seconds = %d, want 300", mail.Envelope.DeliveryBy.Seconds)
+	}
+	if mail.Envelope.DeliveryBy.Mode != DeliveryByModeReturn {
+		t.Errorf("DeliveryBy.Mode = %q, want %q", mail.Envelope.DeliveryBy.Mode, DeliveryByModeReturn)
+	}
+	if !mail.Envelope.DeliveryBy.Trace {
+		t.Error("expected DeliveryBy.Trace to be true")
+	}
+}
+
+func TestMailBuilder_DeliveryBy_ReturnRequiresPositiveSeconds(t *testing.T) {
+	_, err := NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Test DELIVERYBY").
+		TextBody("Deadline-bound delivery").
+		DeliveryBy(0, DeliveryByModeReturn, false).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for non-positive DELIVERYBY mode R seconds")
+	}
+}
+
 func TestMailBuilder_TLSOptional(t *testing.T) {
 	mail, err := NewMailBuilder().
 		From("sender@example.com").

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -424,6 +425,15 @@ func (c *Conn) buildExtensions() []string {
 	// REQUIRETLS
 	if cfg.EnableREQUIRETLS && c.TLS() != nil {
 		exts = append(exts, "REQUIRETLS")
+	}
+
+	// DELIVERBY
+	if cfg.EnableDELIVERBY {
+		if cfg.DeliveryByMinSeconds > 0 {
+			exts = append(exts, fmt.Sprintf("DELIVERBY %d", cfg.DeliveryByMinSeconds))
+		} else {
+			exts = append(exts, "DELIVERBY")
+		}
 	}
 
 	// DSN
@@ -1486,6 +1496,25 @@ func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 			}
 			opts.UTF8 = true
 
+		case "BY":
+			if !c.server.config.EnableDELIVERBY {
+				return nil, &SMTPError{Code: 555, Message: "DELIVERBY not supported"}
+			}
+
+			deliveryBy, err := parseDeliveryByValue(value)
+			if err != nil {
+				return nil, err
+			}
+			if deliveryBy.Mode == DeliveryByModeReturn {
+				if deliveryBy.Seconds <= 0 {
+					return nil, &SMTPError{Code: 501, Message: "Invalid BY value"}
+				}
+				if min := c.server.config.DeliveryByMinSeconds; min > 0 && deliveryBy.Seconds < min {
+					return nil, &SMTPError{Code: 555, Message: "BY time less than server minimum"}
+				}
+			}
+			opts.DeliveryBy = deliveryBy
+
 		case "REQUIRETLS":
 			if !c.server.config.EnableREQUIRETLS || c.TLS() == nil {
 				return nil, &SMTPError{Code: 555, Message: "REQUIRETLS not supported"}
@@ -1525,6 +1554,40 @@ func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 	}
 
 	return opts, nil
+}
+
+func parseDeliveryByValue(value string) (*DeliveryBy, error) {
+	secondsPart, modePart, ok := strings.Cut(value, ";")
+	if !ok || secondsPart == "" || modePart == "" {
+		return nil, &SMTPError{Code: 501, Message: "Invalid BY value"}
+	}
+
+	seconds, err := strconv.ParseInt(secondsPart, 10, 64)
+	if err != nil {
+		return nil, &SMTPError{Code: 501, Message: "Invalid BY value"}
+	}
+
+	modePart = strings.ToUpper(modePart)
+	trace := strings.HasSuffix(modePart, "T")
+	if trace {
+		modePart = strings.TrimSuffix(modePart, "T")
+	}
+
+	var mode DeliveryByMode
+	switch modePart {
+	case string(DeliveryByModeNotify):
+		mode = DeliveryByModeNotify
+	case string(DeliveryByModeReturn):
+		mode = DeliveryByModeReturn
+	default:
+		return nil, &SMTPError{Code: 501, Message: "Invalid BY value"}
+	}
+
+	return &DeliveryBy{
+		Seconds: seconds,
+		Mode:    mode,
+		Trace:   trace,
+	}, nil
 }
 
 // parseRcptOptions parses RCPT TO parameters.

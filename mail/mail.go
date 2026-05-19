@@ -114,6 +114,25 @@ type DSNRecipientParams struct {
 	ORcpt  string   `json:"orcpt,omitempty"`  // Original recipient
 }
 
+// DeliveryByMode controls how the server handles messages that miss the
+// requested delivery deadline (RFC 2852).
+type DeliveryByMode string
+
+const (
+	// DeliveryByModeNotify requests a delayed notification if the deadline passes.
+	DeliveryByModeNotify DeliveryByMode = "N"
+
+	// DeliveryByModeReturn requests the message be returned if the deadline passes.
+	DeliveryByModeReturn DeliveryByMode = "R"
+)
+
+// DeliveryBy requests delivery within a bounded time window (RFC 2852).
+type DeliveryBy struct {
+	Seconds int64          `json:"seconds"`
+	Mode    DeliveryByMode `json:"mode"`
+	Trace   bool           `json:"trace,omitempty"`
+}
+
 // Envelope represents the SMTP envelope.
 // The envelope is transmitted via MAIL FROM and RCPT TO commands.
 type Envelope struct {
@@ -123,6 +142,7 @@ type Envelope struct {
 	Size            int64              `json:"size,omitempty"`
 	SMTPUTF8        bool               `json:"smtputf8,omitempty"`
 	RequireTLS      bool               `json:"requiretls,omitempty"`
+	DeliveryBy      *DeliveryBy        `json:"delivery_by,omitempty"`
 	EnvID           string             `json:"env_id,omitempty"`
 	DSNParams       *DSNEnvelopeParams `json:"dsn_params,omitempty"`
 	Auth            string             `json:"auth,omitempty"`
@@ -1595,4 +1615,5 @@ const (
 	ExtBinaryMIME          Extension = "BINARYMIME"
 	ExtEnhancedStatusCodes Extension = "ENHANCEDSTATUSCODES"
 	ExtRequireTLS          Extension = "REQUIRETLS"
+	ExtDeliverBy           Extension = "DELIVERBY"
 )

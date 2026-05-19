@@ -255,6 +255,25 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 		}
 	}
 
+	// DELIVERBY parameter (RFC 2852)
+	if mail.Envelope.DeliveryBy != nil {
+		if _, ok := c.extensions[ravenmail.ExtDeliverBy]; !ok {
+			return ErrDeliveryByNotSupported
+		}
+
+		value, err := formatDeliveryBy(mail.Envelope.DeliveryBy)
+		if err != nil {
+			return err
+		}
+		if mail.Envelope.DeliveryBy.Mode == ravenmail.DeliveryByModeReturn {
+			minSeconds, err := parseDeliveryByMinimum(c.extensions[ravenmail.ExtDeliverBy])
+			if err == nil && minSeconds > 0 && mail.Envelope.DeliveryBy.Seconds < minSeconds {
+				return fmt.Errorf("smtp: DELIVERYBY BY time %d is below server minimum %d", mail.Envelope.DeliveryBy.Seconds, minSeconds)
+			}
+		}
+		params = append(params, "BY="+value)
+	}
+
 	// AUTH parameter
 	if mail.Envelope.Auth != "" {
 		params = append(params, fmt.Sprintf("AUTH=<%s>", mail.Envelope.Auth))
@@ -277,6 +296,9 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 
 	// Custom extension parameters
 	for name, value := range mail.Envelope.ExtensionParams {
+		if strings.EqualFold(name, "BY") && mail.Envelope.DeliveryBy != nil {
+			continue
+		}
 		if value != "" {
 			params = append(params, fmt.Sprintf("%s=%s", name, value))
 		} else {
@@ -304,6 +326,42 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 	}
 
 	return nil
+}
+
+func formatDeliveryBy(deliveryBy *ravenmail.DeliveryBy) (string, error) {
+	if deliveryBy == nil {
+		return "", errors.New("smtp: DELIVERYBY configuration is nil")
+	}
+
+	mode := ravenmail.DeliveryByMode(strings.ToUpper(string(deliveryBy.Mode)))
+	switch mode {
+	case ravenmail.DeliveryByModeNotify:
+	case ravenmail.DeliveryByModeReturn:
+		if deliveryBy.Seconds <= 0 {
+			return "", errors.New("smtp: DELIVERYBY mode R requires seconds > 0")
+		}
+	default:
+		return "", fmt.Errorf("smtp: invalid DELIVERYBY mode %q", deliveryBy.Mode)
+	}
+
+	value := fmt.Sprintf("%d;%s", deliveryBy.Seconds, mode)
+	if deliveryBy.Trace {
+		value += "T"
+	}
+	return value, nil
+}
+
+func parseDeliveryByMinimum(param string) (int64, error) {
+	param = strings.TrimSpace(param)
+	if param == "" {
+		return 0, nil
+	}
+
+	minSeconds, err := strconv.ParseInt(param, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("smtp: invalid DELIVERBY minimum %q: %w", param, err)
+	}
+	return minSeconds, nil
 }
 
 // bestEffortRSET attempts to reset the current transaction state.

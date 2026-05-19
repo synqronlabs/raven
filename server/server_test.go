@@ -34,6 +34,7 @@ func (b *testBackend) NewSession(c *server.Conn) (server.Session, error) {
 // testSession is a simple Session for testing.
 type testSession struct {
 	from       string
+	mailOpts   *server.MailOptions
 	recipients []string
 	headers    server.MessageHeaders
 	body       []byte
@@ -54,13 +55,31 @@ type testTransaction struct {
 	body       []byte
 }
 
-func (s *testSession) Mail(from string, _ *server.MailOptions) error {
+func cloneMailOptions(opts *server.MailOptions) *server.MailOptions {
+	if opts == nil {
+		return nil
+	}
+
+	cloned := *opts
+	if opts.Auth != nil {
+		auth := *opts.Auth
+		cloned.Auth = &auth
+	}
+	if opts.DeliveryBy != nil {
+		deliveryBy := *opts.DeliveryBy
+		cloned.DeliveryBy = &deliveryBy
+	}
+	return &cloned
+}
+
+func (s *testSession) Mail(from string, opts *server.MailOptions) error {
 	if s.rejectMail != nil {
 		if err := s.rejectMail(from); err != nil {
 			return err
 		}
 	}
 	s.from = from
+	s.mailOpts = cloneMailOptions(opts)
 	return nil
 }
 
@@ -92,6 +111,7 @@ func (s *testSession) Data(headers server.MessageHeaders, body io.Reader) error 
 
 func (s *testSession) Reset() {
 	s.from = ""
+	s.mailOpts = nil
 	s.recipients = nil
 	s.headers = nil
 	s.body = nil
@@ -301,6 +321,24 @@ func TestServer_EHLO(t *testing.T) {
 	}
 }
 
+func TestServer_EHLO_AdvertisesDELIVERBY(t *testing.T) {
+	backend := &testBackend{}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableDELIVERBY:      true,
+		DeliveryByMinSeconds: 300,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	lines := tc.expectMultilineCode(250)
+	if !strings.Contains(strings.Join(lines, " "), "DELIVERBY 300") {
+		t.Fatalf("expected EHLO to advertise DELIVERBY 300, got %v", lines)
+	}
+}
+
 func TestServer_EHLO_RequiresHostname(t *testing.T) {
 	backend := &testBackend{}
 	ts := newTestServer(t, backend, server.ServerConfig{})
@@ -383,6 +421,86 @@ func TestServer_UnknownCommand(t *testing.T) {
 // =============================================================================
 // Mail Transaction Tests
 // =============================================================================
+
+func TestServer_MAIL_DELIVERBY(t *testing.T) {
+	sessions := make([]*testSession, 0, 1)
+	var mu sync.Mutex
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			s := &testSession{}
+			mu.Lock()
+			sessions = append(sessions, s)
+			mu.Unlock()
+			return s, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableDELIVERBY: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> BY=60;RT")
+	tc.expectCode(250)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].mailOpts == nil || sessions[0].mailOpts.DeliveryBy == nil {
+		t.Fatal("expected DeliveryBy options to be captured")
+	}
+	if got := sessions[0].mailOpts.DeliveryBy.Seconds; got != 60 {
+		t.Fatalf("DeliveryBy.Seconds = %d, want 60", got)
+	}
+	if got := sessions[0].mailOpts.DeliveryBy.Mode; got != server.DeliveryByModeReturn {
+		t.Fatalf("DeliveryBy.Mode = %q, want %q", got, server.DeliveryByModeReturn)
+	}
+	if !sessions[0].mailOpts.DeliveryBy.Trace {
+		t.Fatal("expected DeliveryBy.Trace to be true")
+	}
+}
+
+func TestServer_MAIL_DELIVERBYRejectsNonPositiveReturn(t *testing.T) {
+	backend := &testBackend{}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableDELIVERBY: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> BY=0;R")
+	tc.expectCode(501)
+}
+
+func TestServer_MAIL_DELIVERBYRejectsBelowMinimum(t *testing.T) {
+	backend := &testBackend{}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableDELIVERBY:      true,
+		DeliveryByMinSeconds: 120,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> BY=60;R")
+	tc.expectCode(555)
+}
 
 func TestServer_BasicMailTransaction(t *testing.T) {
 	sessions := make([]*testSession, 0)

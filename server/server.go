@@ -77,6 +77,13 @@ type ServerConfig struct {
 	// Only effective when TLSConfig is set.
 	EnableREQUIRETLS bool
 
+	// EnableDELIVERBY advertises DELIVERBY extension (RFC 2852).
+	EnableDELIVERBY bool
+
+	// DeliveryByMinSeconds is the minimum BY time accepted for DELIVERBY mode R.
+	// Values <= 0 omit the advertised minimum.
+	DeliveryByMinSeconds int64
+
 	// EnableBINARYMIME advertises BINARYMIME extension (RFC 3030).
 	// Requires EnableCHUNKING.
 	EnableBINARYMIME bool

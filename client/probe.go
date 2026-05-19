@@ -10,20 +10,22 @@ import (
 
 // ServerCapabilities represents SMTP server capabilities.
 type ServerCapabilities struct {
-	IsESMTP             bool
-	Greeting            string
-	Hostname            string
-	Extensions          map[ravenmail.Extension]string
-	TLS                 bool
-	Auth                []string
-	MaxSize             int64
-	Pipelining          bool
-	EightBitMIME        bool
-	SMTPUTF8            bool
-	DSN                 bool
-	Chunking            bool
-	BinaryMIME          bool
-	EnhancedStatusCodes bool
+	IsESMTP              bool
+	Greeting             string
+	Hostname             string
+	Extensions           map[ravenmail.Extension]string
+	TLS                  bool
+	Auth                 []string
+	MaxSize              int64
+	Pipelining           bool
+	EightBitMIME         bool
+	SMTPUTF8             bool
+	DSN                  bool
+	Chunking             bool
+	BinaryMIME           bool
+	EnhancedStatusCodes  bool
+	DeliveryBy           bool
+	DeliveryByMinSeconds int64
 }
 
 // HasExtension checks if a specific extension is supported.
@@ -146,6 +148,13 @@ func (c *Client) Capabilities() *ServerCapabilities {
 			caps.BinaryMIME = true
 		case ravenmail.ExtEnhancedStatusCodes:
 			caps.EnhancedStatusCodes = true
+		case ravenmail.ExtDeliverBy:
+			caps.DeliveryBy = true
+			if param != "" {
+				if minSeconds, err := parseDeliveryByMinimum(param); err == nil {
+					caps.DeliveryByMinSeconds = minSeconds
+				}
+			}
 		}
 	}
 

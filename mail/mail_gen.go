@@ -688,6 +688,219 @@ func (z *DSNRecipientParams) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *DeliveryBy) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "Seconds":
+			z.Seconds, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "Seconds")
+				return
+			}
+		case "Mode":
+			{
+				var zb0002 string
+				zb0002, err = dc.ReadString()
+				if err != nil {
+					err = msgp.WrapError(err, "Mode")
+					return
+				}
+				z.Mode = DeliveryByMode(zb0002)
+			}
+		case "Trace":
+			z.Trace, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "Trace")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z DeliveryBy) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 3
+	// write "Seconds"
+	err = en.Append(0x83, 0xa7, 0x53, 0x65, 0x63, 0x6f, 0x6e, 0x64, 0x73)
+	if err != nil {
+		return
+	}
+	err = en.WriteInt64(z.Seconds)
+	if err != nil {
+		err = msgp.WrapError(err, "Seconds")
+		return
+	}
+	// write "Mode"
+	err = en.Append(0xa4, 0x4d, 0x6f, 0x64, 0x65)
+	if err != nil {
+		return
+	}
+	err = en.WriteString(string(z.Mode))
+	if err != nil {
+		err = msgp.WrapError(err, "Mode")
+		return
+	}
+	// write "Trace"
+	err = en.Append(0xa5, 0x54, 0x72, 0x61, 0x63, 0x65)
+	if err != nil {
+		return
+	}
+	err = en.WriteBool(z.Trace)
+	if err != nil {
+		err = msgp.WrapError(err, "Trace")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z DeliveryBy) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 3
+	// string "Seconds"
+	o = append(o, 0x83, 0xa7, 0x53, 0x65, 0x63, 0x6f, 0x6e, 0x64, 0x73)
+	o = msgp.AppendInt64(o, z.Seconds)
+	// string "Mode"
+	o = append(o, 0xa4, 0x4d, 0x6f, 0x64, 0x65)
+	o = msgp.AppendString(o, string(z.Mode))
+	// string "Trace"
+	o = append(o, 0xa5, 0x54, 0x72, 0x61, 0x63, 0x65)
+	o = msgp.AppendBool(o, z.Trace)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *DeliveryBy) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "Seconds":
+			z.Seconds, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Seconds")
+				return
+			}
+		case "Mode":
+			{
+				var zb0002 string
+				zb0002, bts, err = msgp.ReadStringBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Mode")
+					return
+				}
+				z.Mode = DeliveryByMode(zb0002)
+			}
+		case "Trace":
+			z.Trace, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Trace")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z DeliveryBy) Msgsize() (s int) {
+	s = 1 + 8 + msgp.Int64Size + 5 + msgp.StringPrefixSize + len(string(z.Mode)) + 6 + msgp.BoolSize
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *DeliveryByMode) DecodeMsg(dc *msgp.Reader) (err error) {
+	{
+		var zb0001 string
+		zb0001, err = dc.ReadString()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		(*z) = DeliveryByMode(zb0001)
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z DeliveryByMode) EncodeMsg(en *msgp.Writer) (err error) {
+	err = en.WriteString(string(z))
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z DeliveryByMode) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	o = msgp.AppendString(o, string(z))
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *DeliveryByMode) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	{
+		var zb0001 string
+		zb0001, bts, err = msgp.ReadStringBytes(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		(*z) = DeliveryByMode(zb0001)
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z DeliveryByMode) Msgsize() (s int) {
+	s = msgp.StringPrefixSize + len(string(z))
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *Envelope) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field
@@ -757,6 +970,24 @@ func (z *Envelope) DecodeMsg(dc *msgp.Reader) (err error) {
 			if err != nil {
 				err = msgp.WrapError(err, "RequireTLS")
 				return
+			}
+		case "DeliveryBy":
+			if dc.IsNil() {
+				err = dc.ReadNil()
+				if err != nil {
+					err = msgp.WrapError(err, "DeliveryBy")
+					return
+				}
+				z.DeliveryBy = nil
+			} else {
+				if z.DeliveryBy == nil {
+					z.DeliveryBy = new(DeliveryBy)
+				}
+				err = z.DeliveryBy.DecodeMsg(dc)
+				if err != nil {
+					err = msgp.WrapError(err, "DeliveryBy")
+					return
+				}
 			}
 		case "EnvID":
 			z.EnvID, err = dc.ReadString()
@@ -852,9 +1083,9 @@ func (z *Envelope) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *Envelope) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 10
+	// map header, size 11
 	// write "From"
-	err = en.Append(0x8a, 0xa4, 0x46, 0x72, 0x6f, 0x6d)
+	err = en.Append(0x8b, 0xa4, 0x46, 0x72, 0x6f, 0x6d)
 	if err != nil {
 		return
 	}
@@ -919,6 +1150,23 @@ func (z *Envelope) EncodeMsg(en *msgp.Writer) (err error) {
 	if err != nil {
 		err = msgp.WrapError(err, "RequireTLS")
 		return
+	}
+	// write "DeliveryBy"
+	err = en.Append(0xaa, 0x44, 0x65, 0x6c, 0x69, 0x76, 0x65, 0x72, 0x79, 0x42, 0x79)
+	if err != nil {
+		return
+	}
+	if z.DeliveryBy == nil {
+		err = en.WriteNil()
+		if err != nil {
+			return
+		}
+	} else {
+		err = z.DeliveryBy.EncodeMsg(en)
+		if err != nil {
+			err = msgp.WrapError(err, "DeliveryBy")
+			return
+		}
 	}
 	// write "EnvID"
 	err = en.Append(0xa5, 0x45, 0x6e, 0x76, 0x49, 0x44)
@@ -991,9 +1239,9 @@ func (z *Envelope) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *Envelope) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 10
+	// map header, size 11
 	// string "From"
-	o = append(o, 0x8a, 0xa4, 0x46, 0x72, 0x6f, 0x6d)
+	o = append(o, 0x8b, 0xa4, 0x46, 0x72, 0x6f, 0x6d)
 	o, err = z.From.MarshalMsg(o)
 	if err != nil {
 		err = msgp.WrapError(err, "From")
@@ -1021,6 +1269,17 @@ func (z *Envelope) MarshalMsg(b []byte) (o []byte, err error) {
 	// string "RequireTLS"
 	o = append(o, 0xaa, 0x52, 0x65, 0x71, 0x75, 0x69, 0x72, 0x65, 0x54, 0x4c, 0x53)
 	o = msgp.AppendBool(o, z.RequireTLS)
+	// string "DeliveryBy"
+	o = append(o, 0xaa, 0x44, 0x65, 0x6c, 0x69, 0x76, 0x65, 0x72, 0x79, 0x42, 0x79)
+	if z.DeliveryBy == nil {
+		o = msgp.AppendNil(o)
+	} else {
+		o, err = z.DeliveryBy.MarshalMsg(o)
+		if err != nil {
+			err = msgp.WrapError(err, "DeliveryBy")
+			return
+		}
+	}
 	// string "EnvID"
 	o = append(o, 0xa5, 0x45, 0x6e, 0x76, 0x49, 0x44)
 	o = msgp.AppendString(o, z.EnvID)
@@ -1117,6 +1376,23 @@ func (z *Envelope) UnmarshalMsg(bts []byte) (o []byte, err error) {
 			if err != nil {
 				err = msgp.WrapError(err, "RequireTLS")
 				return
+			}
+		case "DeliveryBy":
+			if msgp.IsNil(bts) {
+				bts, err = msgp.ReadNilBytes(bts)
+				if err != nil {
+					return
+				}
+				z.DeliveryBy = nil
+			} else {
+				if z.DeliveryBy == nil {
+					z.DeliveryBy = new(DeliveryBy)
+				}
+				bts, err = z.DeliveryBy.UnmarshalMsg(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "DeliveryBy")
+					return
+				}
 			}
 		case "EnvID":
 			z.EnvID, bts, err = msgp.ReadStringBytes(bts)
@@ -1216,7 +1492,13 @@ func (z *Envelope) Msgsize() (s int) {
 	for za0001 := range z.To {
 		s += z.To[za0001].Msgsize()
 	}
-	s += 9 + msgp.StringPrefixSize + len(string(z.BodyType)) + 5 + msgp.Int64Size + 9 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.EnvID) + 10
+	s += 9 + msgp.StringPrefixSize + len(string(z.BodyType)) + 5 + msgp.Int64Size + 9 + msgp.BoolSize + 11 + msgp.BoolSize + 11
+	if z.DeliveryBy == nil {
+		s += msgp.NilSize
+	} else {
+		s += z.DeliveryBy.Msgsize()
+	}
+	s += 6 + msgp.StringPrefixSize + len(z.EnvID) + 10
 	if z.DSNParams == nil {
 		s += msgp.NilSize
 	} else {
