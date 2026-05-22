@@ -93,6 +93,33 @@ if err != nil {
 fmt.Printf("Message ID: %s\n", res.MessageID)
 ```
 
+### 4. Stream a raw .eml file
+
+Use `SendRaw` when the message already exists as RFC 5322 bytes and you want
+to avoid parsing or buffering it in memory. The SMTP envelope is supplied
+separately because it is not part of the `.eml` file.
+
+```go
+f, err := os.Open("message.eml")
+if err != nil {
+    log.Fatal(err)
+}
+defer f.Close()
+
+env := mail.Envelope{
+    From: mail.Path{Mailbox: mail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+    To: []mail.Recipient{
+        {Address: mail.Path{Mailbox: mail.MailboxAddress{LocalPart: "recipient", Domain: "example.net"}}},
+    },
+}
+
+res, err := c.SendRaw(env, f)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Message ID: %s\n", res.MessageID)
+```
+
 ## Running an SMTP Server
 
 ### 1. Implement Backend and Session

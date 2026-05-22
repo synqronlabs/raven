@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -134,6 +135,27 @@ func (d *Dialer) DialAndSend(mail *ravenmail.Mail) (*SendResult, error) {
 	return result, nil
 }
 
+// DialAndSendRaw connects, streams a raw RFC 5322 message, and disconnects.
+func (d *Dialer) DialAndSendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult, error) {
+	client, err := d.Dial()
+	if err != nil {
+		return nil, fmt.Errorf("dialing before raw send: %w", err)
+	}
+
+	result, err := client.SendRaw(envelope, data)
+	quitErr := client.Quit()
+	if err != nil {
+		if quitErr != nil {
+			return result, fmt.Errorf("sending raw mail in dial-and-send flow: %w", errors.Join(err, fmt.Errorf("closing SMTP session: %w", quitErr)))
+		}
+		return result, fmt.Errorf("sending raw mail in dial-and-send flow: %w", err)
+	}
+	if quitErr != nil {
+		return result, fmt.Errorf("closing SMTP session after raw send: %w", quitErr)
+	}
+	return result, nil
+}
+
 // DialAndSendMultiple sends multiple messages in a single connection.
 func (d *Dialer) DialAndSendMultiple(mails []*ravenmail.Mail) ([]*SendResult, error) {
 	client, err := d.Dial()
@@ -151,6 +173,27 @@ func (d *Dialer) DialAndSendMultiple(mails []*ravenmail.Mail) ([]*SendResult, er
 	}
 	if quitErr != nil {
 		return results, fmt.Errorf("closing SMTP session after multi-send: %w", quitErr)
+	}
+	return results, nil
+}
+
+// DialAndSendRawMultiple streams multiple raw messages in a single connection.
+func (d *Dialer) DialAndSendRawMultiple(messages []RawMessage) ([]*SendResult, error) {
+	client, err := d.Dial()
+	if err != nil {
+		return nil, fmt.Errorf("dialing before raw multi-send: %w", err)
+	}
+
+	results, err := client.SendRawMultiple(messages)
+	quitErr := client.Quit()
+	if err != nil {
+		if quitErr != nil {
+			return results, fmt.Errorf("sending multiple raw mails in one session: %w", errors.Join(err, fmt.Errorf("closing SMTP session: %w", quitErr)))
+		}
+		return results, fmt.Errorf("sending multiple raw mails in one session: %w", err)
+	}
+	if quitErr != nil {
+		return results, fmt.Errorf("closing SMTP session after raw multi-send: %w", quitErr)
 	}
 	return results, nil
 }
@@ -241,6 +284,23 @@ func (p *Pool) Send(mail *ravenmail.Mail) (*SendResult, error) {
 	}
 
 	// Return connection to pool
+	p.Put(client)
+	return result, nil
+}
+
+// SendRaw streams a raw RFC 5322 message using a pooled connection.
+func (p *Pool) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult, error) {
+	client, err := p.Get()
+	if err != nil {
+		return nil, fmt.Errorf("getting SMTP client from pool: %w", err)
+	}
+
+	result, err := client.SendRaw(envelope, data)
+	if err != nil {
+		client.Close()
+		return result, fmt.Errorf("sending raw mail with pooled client: %w", err)
+	}
+
 	p.Put(client)
 	return result, nil
 }

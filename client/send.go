@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -142,6 +141,66 @@ type SendOptions struct {
 	RequireAllRecipients bool
 }
 
+// RawMessage contains a raw RFC 5322 message stream and the SMTP envelope
+// used to deliver it.
+type RawMessage struct {
+	Envelope ravenmail.Envelope
+	Data     io.Reader
+}
+
+// SendRaw streams a raw RFC 5322 message to the server.
+//
+// The caller supplies the SMTP envelope separately from the message stream.
+// Data is streamed directly through DATA with SMTP dot-stuffing; it is not
+// parsed, validated, or buffered in memory.
+func (c *Client) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult, error) {
+	return c.SendRawWithOptions(envelope, data, SendOptions{})
+}
+
+// SendRawWithOptions streams a raw RFC 5322 message with custom send options.
+func (c *Client) SendRawWithOptions(envelope ravenmail.Envelope, data io.Reader, opts SendOptions) (*SendResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return nil, ErrNoConnection
+	}
+
+	if data == nil {
+		return nil, errors.New("smtp: raw message data is nil")
+	}
+
+	result, acceptedCount, err := c.sendEnvelope(envelope, opts)
+	if err != nil {
+		return result, err
+	}
+	if acceptedCount == 0 {
+		c.bestEffortRSET()
+		return result, fmt.Errorf("%w: all recipients rejected", ErrTransactionFailed)
+	}
+
+	useBDAT := opts.PreferBDAT && c.extensions[ravenmail.ExtChunking] != ""
+	if useBDAT {
+		chunkSize := opts.ChunkSize
+		if chunkSize <= 0 {
+			chunkSize = 64 * 1024
+		}
+		if err := c.sendStreamWithBDAT(data, chunkSize); err != nil {
+			return result, fmt.Errorf("sending raw message body with BDAT chunks: %w", err)
+		}
+	} else {
+		resp, err := c.sendStreamWithDATA(data)
+		if err != nil {
+			return result, fmt.Errorf("sending raw message body with DATA: %w", err)
+		}
+		result.Response = resp
+		result.MessageID = extractMessageID(resp.Message)
+	}
+
+	result.Success = true
+	return result, nil
+}
+
 // SendWithOptions sends mail with custom options.
 func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendResult, error) {
 	c.mu.Lock()
@@ -155,28 +214,10 @@ func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendR
 		return nil, ErrNoRecipients
 	}
 
-	result := &SendResult{
-		RecipientResults: make([]RecipientResult, 0, len(mail.Envelope.To)),
+	result, acceptedCount, err := c.sendEnvelope(mail.Envelope, opts)
+	if err != nil {
+		return result, err
 	}
-
-	// Send MAIL FROM
-	if err := c.sendMailFrom(mail); err != nil {
-		return nil, fmt.Errorf("sending MAIL FROM command: %w", err)
-	}
-
-	// Send RCPT TO
-	acceptedCount := 0
-	for _, rcpt := range mail.Envelope.To {
-		rcptResult := c.sendRcptTo(rcpt)
-		result.RecipientResults = append(result.RecipientResults, rcptResult)
-		if rcptResult.Accepted {
-			acceptedCount++
-		} else if opts.RequireAllRecipients {
-			c.bestEffortRSET()
-			return result, fmt.Errorf("%w: recipient %s rejected", ErrTransactionFailed, rcpt.Address.Mailbox.String())
-		}
-	}
-
 	if acceptedCount == 0 {
 		c.bestEffortRSET()
 		return result, fmt.Errorf("%w: all recipients rejected", ErrTransactionFailed)
@@ -210,16 +251,48 @@ func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendR
 
 // sendMailFrom sends the MAIL FROM command with appropriate extension parameters.
 func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
+	return c.sendMailFromEnvelope(mail.Envelope)
+}
+
+func (c *Client) sendEnvelope(envelope ravenmail.Envelope, opts SendOptions) (*SendResult, int, error) {
+	if len(envelope.To) == 0 {
+		return nil, 0, ErrNoRecipients
+	}
+
+	result := &SendResult{
+		RecipientResults: make([]RecipientResult, 0, len(envelope.To)),
+	}
+
+	if err := c.sendMailFromEnvelope(envelope); err != nil {
+		return nil, 0, fmt.Errorf("sending MAIL FROM command: %w", err)
+	}
+
+	acceptedCount := 0
+	for _, rcpt := range envelope.To {
+		rcptResult := c.sendRcptTo(rcpt)
+		result.RecipientResults = append(result.RecipientResults, rcptResult)
+		if rcptResult.Accepted {
+			acceptedCount++
+		} else if opts.RequireAllRecipients {
+			c.bestEffortRSET()
+			return result, acceptedCount, fmt.Errorf("%w: recipient %s rejected", ErrTransactionFailed, rcpt.Address.Mailbox.String())
+		}
+	}
+
+	return result, acceptedCount, nil
+}
+
+func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 	var params []string
 
 	// SIZE parameter
-	if _, ok := c.extensions[ravenmail.ExtSize]; ok && mail.Envelope.Size > 0 {
-		params = append(params, fmt.Sprintf("SIZE=%d", mail.Envelope.Size))
+	if _, ok := c.extensions[ravenmail.ExtSize]; ok && envelope.Size > 0 {
+		params = append(params, fmt.Sprintf("SIZE=%d", envelope.Size))
 	}
 
 	// BODY parameter (8BITMIME/BINARYMIME)
-	if mail.Envelope.BodyType != "" {
-		switch mail.Envelope.BodyType {
+	if envelope.BodyType != "" {
+		switch envelope.BodyType {
 		case ravenmail.BodyType8BitMIME:
 			if _, ok := c.extensions[ravenmail.Ext8BitMIME]; ok {
 				params = append(params, "BODY=8BITMIME")
@@ -232,7 +305,7 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 	}
 
 	// SMTPUTF8 parameter
-	if mail.Envelope.SMTPUTF8 {
+	if envelope.SMTPUTF8 {
 		if _, ok := c.extensions[ravenmail.ExtSMTPUTF8]; ok {
 			params = append(params, "SMTPUTF8")
 		}
@@ -242,7 +315,7 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 	// The REQUIRETLS option MUST only be specified when:
 	// - The session is using TLS
 	// - The server advertises REQUIRETLS in EHLO
-	if mail.Envelope.RequireTLS {
+	if envelope.RequireTLS {
 		if _, ok := c.extensions[ravenmail.ExtRequireTLS]; ok {
 			params = append(params, "REQUIRETLS")
 		} else {
@@ -256,47 +329,47 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 	}
 
 	// DELIVERBY parameter (RFC 2852)
-	if mail.Envelope.DeliveryBy != nil {
+	if envelope.DeliveryBy != nil {
 		if _, ok := c.extensions[ravenmail.ExtDeliverBy]; !ok {
 			return ErrDeliveryByNotSupported
 		}
 
-		value, err := formatDeliveryBy(mail.Envelope.DeliveryBy)
+		value, err := formatDeliveryBy(envelope.DeliveryBy)
 		if err != nil {
 			return err
 		}
-		if mail.Envelope.DeliveryBy.Mode == ravenmail.DeliveryByModeReturn {
+		if envelope.DeliveryBy.Mode == ravenmail.DeliveryByModeReturn {
 			minSeconds, err := parseDeliveryByMinimum(c.extensions[ravenmail.ExtDeliverBy])
-			if err == nil && minSeconds > 0 && mail.Envelope.DeliveryBy.Seconds < minSeconds {
-				return fmt.Errorf("smtp: DELIVERYBY BY time %d is below server minimum %d", mail.Envelope.DeliveryBy.Seconds, minSeconds)
+			if err == nil && minSeconds > 0 && envelope.DeliveryBy.Seconds < minSeconds {
+				return fmt.Errorf("smtp: DELIVERYBY BY time %d is below server minimum %d", envelope.DeliveryBy.Seconds, minSeconds)
 			}
 		}
 		params = append(params, "BY="+value)
 	}
 
 	// AUTH parameter
-	if mail.Envelope.Auth != "" {
-		params = append(params, fmt.Sprintf("AUTH=<%s>", mail.Envelope.Auth))
+	if envelope.Auth != "" {
+		params = append(params, fmt.Sprintf("AUTH=<%s>", envelope.Auth))
 	}
 
 	// DSN parameters (envelope-level)
-	if mail.Envelope.DSNParams != nil {
+	if envelope.DSNParams != nil {
 		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
-			if mail.Envelope.DSNParams.RET != "" {
-				params = append(params, fmt.Sprintf("RET=%s", mail.Envelope.DSNParams.RET))
+			if envelope.DSNParams.RET != "" {
+				params = append(params, fmt.Sprintf("RET=%s", envelope.DSNParams.RET))
 			}
 		}
 	}
 
-	if mail.Envelope.EnvID != "" {
+	if envelope.EnvID != "" {
 		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
-			params = append(params, fmt.Sprintf("ENVID=%s", mail.Envelope.EnvID))
+			params = append(params, fmt.Sprintf("ENVID=%s", envelope.EnvID))
 		}
 	}
 
 	// Custom extension parameters
-	for name, value := range mail.Envelope.ExtensionParams {
-		if strings.EqualFold(name, "BY") && mail.Envelope.DeliveryBy != nil {
+	for name, value := range envelope.ExtensionParams {
+		if strings.EqualFold(name, "BY") && envelope.DeliveryBy != nil {
 			continue
 		}
 		if value != "" {
@@ -307,7 +380,7 @@ func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
 	}
 
 	// Build command
-	cmd := "MAIL FROM:" + mail.Envelope.From.String()
+	cmd := "MAIL FROM:" + envelope.From.String()
 	if len(params) > 0 {
 		cmd += " " + strings.Join(params, " ")
 	}
@@ -481,6 +554,48 @@ func (c *Client) sendWithDATA(data []byte) (*ClientResponse, error) {
 	return resp, nil
 }
 
+func (c *Client) sendStreamWithDATA(r io.Reader) (*ClientResponse, error) {
+	if err := c.writeCommand("DATA"); err != nil {
+		return nil, fmt.Errorf("writing DATA command: %w", err)
+	}
+
+	resp, err := c.readResponse()
+	if err != nil {
+		return nil, fmt.Errorf("reading DATA stream intermediate response: %w", err)
+	}
+
+	if !resp.IsIntermediate() {
+		return nil, fmt.Errorf("%w: expected 354, got %d", ErrDataFailed, resp.Code)
+	}
+
+	if c.config.WriteTimeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout)); err != nil {
+			return nil, fmt.Errorf("setting write deadline for DATA stream payload: %w", err)
+		}
+	}
+
+	if err := c.streamWithDotStuffing(r); err != nil {
+		return nil, fmt.Errorf("streaming DATA payload: %w", err)
+	}
+
+	if _, err := c.writer.WriteString(".\r\n"); err != nil {
+		return nil, fmt.Errorf("writing DATA stream terminator: %w", err)
+	}
+
+	if err := c.writer.Flush(); err != nil {
+		return nil, fmt.Errorf("flushing DATA stream payload: %w", err)
+	}
+
+	finalResp, err := c.readResponse()
+	if err != nil {
+		return nil, fmt.Errorf("reading DATA stream final response: %w", err)
+	}
+	if !finalResp.IsSuccess() {
+		return finalResp, finalResp.Error()
+	}
+	return finalResp, nil
+}
+
 // sendWithBDAT sends message content using BDAT command (single chunk).
 func (c *Client) sendWithBDAT(data []byte) error {
 	return c.sendWithBDATChunked(data, len(data))
@@ -532,6 +647,66 @@ func (c *Client) sendWithBDATChunked(data []byte, chunkSize int) error {
 	}
 
 	return nil
+}
+
+func (c *Client) sendStreamWithBDAT(r io.Reader, chunkSize int) error {
+	if chunkSize <= 0 {
+		return errors.New("smtp: BDAT chunk size must be positive")
+	}
+
+	buf := make([]byte, chunkSize)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if c.config.WriteTimeout > 0 {
+				if err := c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout)); err != nil {
+					return fmt.Errorf("setting write deadline for BDAT stream chunk: %w", err)
+				}
+			}
+
+			isLast := readErr == io.EOF
+			cmd := fmt.Sprintf("BDAT %d", n)
+			if isLast {
+				cmd += " LAST"
+			}
+			if err := c.writeCommand("%s", cmd); err != nil {
+				return fmt.Errorf("writing BDAT stream command: %w", err)
+			}
+			if _, err := c.writer.Write(buf[:n]); err != nil {
+				return fmt.Errorf("writing BDAT stream chunk (%d bytes): %w", n, err)
+			}
+			if err := c.writer.Flush(); err != nil {
+				return fmt.Errorf("flushing BDAT stream chunk (%d bytes): %w", n, err)
+			}
+			resp, err := c.readResponse()
+			if err != nil {
+				return fmt.Errorf("reading BDAT stream response: %w", err)
+			}
+			if !resp.IsSuccess() {
+				return resp.Error()
+			}
+			if isLast {
+				return nil
+			}
+		}
+
+		if readErr == io.EOF {
+			if err := c.writeCommand("BDAT 0 LAST"); err != nil {
+				return fmt.Errorf("writing empty BDAT LAST command: %w", err)
+			}
+			resp, err := c.readResponse()
+			if err != nil {
+				return fmt.Errorf("reading empty BDAT LAST response: %w", err)
+			}
+			if !resp.IsSuccess() {
+				return resp.Error()
+			}
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("reading stream source data: %w", readErr)
+		}
+	}
 }
 
 // dotStuff performs SMTP dot-stuffing on the message data.
@@ -675,6 +850,33 @@ func (c *Client) SendMultiple(mails []*ravenmail.Mail) ([]*SendResult, error) {
 	return results, nil
 }
 
+// SendRawMultiple streams multiple raw messages in a single SMTP connection.
+// Each message is sent as an independent transaction.
+func (c *Client) SendRawMultiple(messages []RawMessage) ([]*SendResult, error) {
+	results := make([]*SendResult, 0, len(messages))
+
+	for _, msg := range messages {
+		result, err := c.SendRaw(msg.Envelope, msg.Data)
+		if err != nil {
+			if resetErr := c.Reset(); resetErr != nil {
+				if closeErr := c.Close(); closeErr != nil {
+					_ = closeErr
+				}
+			}
+			if result == nil {
+				result = &SendResult{Success: false}
+			} else {
+				result.Success = false
+			}
+			results = append(results, result)
+			continue
+		}
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
 // RawCommand sends a raw SMTP command and returns the response.
 // This is for advanced use cases where you need to send custom commands.
 func (c *Client) RawCommand(command string) (*ClientResponse, error) {
@@ -773,62 +975,34 @@ func (c *Client) StreamData(r io.Reader) (*ClientResponse, error) {
 		return nil, ErrNoConnection
 	}
 
-	// Send DATA command
-	if err := c.writeCommand("DATA"); err != nil {
-		return nil, fmt.Errorf("writing DATA command for stream: %w", err)
-	}
-
-	resp, err := c.readResponse()
-	if err != nil {
-		return nil, fmt.Errorf("reading DATA stream intermediate response: %w", err)
-	}
-
-	if !resp.IsIntermediate() {
-		return nil, fmt.Errorf("%w: expected 354, got %d", ErrDataFailed, resp.Code)
-	}
-
-	// Stream data with dot-stuffing
-	if err := c.streamWithDotStuffing(r); err != nil {
-		return nil, fmt.Errorf("streaming DATA payload: %w", err)
-	}
-
-	// Send terminating sequence
-	if _, err := c.writer.WriteString(".\r\n"); err != nil {
-		return nil, fmt.Errorf("writing DATA stream terminator: %w", err)
-	}
-
-	if err := c.writer.Flush(); err != nil {
-		return nil, fmt.Errorf("flushing DATA stream payload: %w", err)
-	}
-
-	finalResp, err := c.readResponse()
-	if err != nil {
-		return nil, fmt.Errorf("reading DATA stream final response: %w", err)
-	}
-	return finalResp, nil
+	return c.sendStreamWithDATA(r)
 }
 
 // streamWithDotStuffing streams data while performing dot-stuffing.
 func (c *Client) streamWithDotStuffing(r io.Reader) error {
-	buf := make([]byte, 4096)
+	buf := make([]byte, 32*1024)
+	out := make([]byte, 0, len(buf)+512)
 	atLineStart := true
+	var last byte
+	wrote := false
 
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			data := buf[:n]
 
-			// Process and write with dot-stuffing
-			var out bytes.Buffer
+			out = out[:0]
 			for _, b := range data {
 				if atLineStart && b == '.' {
-					out.WriteByte('.')
+					out = append(out, '.')
 				}
-				out.WriteByte(b)
+				out = append(out, b)
 				atLineStart = (b == '\n')
+				last = b
+				wrote = true
 			}
 
-			if _, err := c.writer.Write(out.Bytes()); err != nil {
+			if _, err := c.writer.Write(out); err != nil {
 				return fmt.Errorf("writing streamed DATA chunk: %w", err)
 			}
 		}
@@ -842,7 +1016,7 @@ func (c *Client) streamWithDotStuffing(r io.Reader) error {
 	}
 
 	// Ensure data ends with CRLF
-	if !atLineStart {
+	if wrote && last != '\n' {
 		if _, err := c.writer.WriteString("\r\n"); err != nil {
 			return fmt.Errorf("writing trailing CRLF for streamed DATA payload: %w", err)
 		}

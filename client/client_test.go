@@ -2197,6 +2197,215 @@ func TestClient_StreamData_NoConnection(t *testing.T) {
 	}
 }
 
+func TestClient_SendRaw_StreamsEMLData(t *testing.T) {
+	var gotMailFrom string
+	var gotRcptTo string
+	var gotDataLines []string
+
+	srv := newMockSMTPServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+
+		smtpGreeting(w)
+		for {
+			line, err := readLine(r)
+			if err != nil {
+				return
+			}
+			cmd := strings.ToUpper(line)
+			switch {
+			case strings.HasPrefix(cmd, "EHLO"):
+				smtpEHLO(w, []string{"SIZE 102400", "8BITMIME"})
+			case strings.HasPrefix(cmd, "MAIL FROM:"):
+				gotMailFrom = line
+				mustWriteString(w, "250 2.1.0 Ok\r\n")
+				mustFlush(w)
+			case strings.HasPrefix(cmd, "RCPT TO:"):
+				gotRcptTo = line
+				mustWriteString(w, "250 2.1.5 Ok\r\n")
+				mustFlush(w)
+			case cmd == "DATA":
+				mustWriteString(w, "354 Start mail input\r\n")
+				mustFlush(w)
+				for {
+					dataLine, err := readLine(r)
+					if err != nil {
+						return
+					}
+					if dataLine == "." {
+						break
+					}
+					gotDataLines = append(gotDataLines, dataLine)
+				}
+				mustWriteString(w, "250 2.0.0 Ok: queued as RAW123\r\n")
+				mustFlush(w)
+			case cmd == "QUIT":
+				mustWriteString(w, "221 2.0.0 Bye\r\n")
+				mustFlush(w)
+				return
+			default:
+				mustWriteString(w, "250 2.0.0 Ok\r\n")
+				mustFlush(w)
+			}
+		}
+	})
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost"})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	envelope := ravenmail.Envelope{
+		From: ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+		To: []ravenmail.Recipient{
+			{Address: ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "rcpt", Domain: "example.net"}}},
+		},
+		Size:     128,
+		BodyType: ravenmail.BodyType8BitMIME,
+	}
+	raw := "From: sender@example.com\r\nTo: rcpt@example.net\r\nSubject: Raw\r\n\r\n.line\r\nbody without final newline"
+
+	result, err := c.SendRaw(envelope, strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("SendRaw: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+	if result.MessageID != "RAW123" {
+		t.Fatalf("MessageID = %q, want RAW123", result.MessageID)
+	}
+	if gotMailFrom != "MAIL FROM:<sender@example.com> SIZE=128 BODY=8BITMIME" {
+		t.Fatalf("MAIL FROM = %q", gotMailFrom)
+	}
+	if gotRcptTo != "RCPT TO:<rcpt@example.net>" {
+		t.Fatalf("RCPT TO = %q", gotRcptTo)
+	}
+
+	wantDataLines := []string{
+		"From: sender@example.com",
+		"To: rcpt@example.net",
+		"Subject: Raw",
+		"",
+		"..line",
+		"body without final newline",
+	}
+	if strings.Join(gotDataLines, "\n") != strings.Join(wantDataLines, "\n") {
+		t.Fatalf("DATA lines = %#v, want %#v", gotDataLines, wantDataLines)
+	}
+}
+
+func TestClient_SendRawMultiple_ReusesConnection(t *testing.T) {
+	var mu sync.Mutex
+	connCount := 0
+	dataCount := 0
+
+	srv := newMockSMTPServer(t, func(conn net.Conn) {
+		mu.Lock()
+		connCount++
+		mu.Unlock()
+
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+
+		smtpGreeting(w)
+		for {
+			line, err := readLine(r)
+			if err != nil {
+				return
+			}
+			cmd := strings.ToUpper(line)
+			switch {
+			case strings.HasPrefix(cmd, "EHLO"):
+				smtpEHLO(w, nil)
+			case strings.HasPrefix(cmd, "MAIL FROM:"):
+				mustWriteString(w, "250 2.1.0 Ok\r\n")
+				mustFlush(w)
+			case strings.HasPrefix(cmd, "RCPT TO:"):
+				mustWriteString(w, "250 2.1.5 Ok\r\n")
+				mustFlush(w)
+			case cmd == "DATA":
+				mustWriteString(w, "354 Start mail input\r\n")
+				mustFlush(w)
+				for {
+					dataLine, err := readLine(r)
+					if err != nil {
+						return
+					}
+					if dataLine == "." {
+						break
+					}
+				}
+				mu.Lock()
+				dataCount++
+				queued := dataCount
+				mu.Unlock()
+				mustWriteString(w, fmt.Sprintf("250 2.0.0 Ok: queued as RAW%d\r\n", queued))
+				mustFlush(w)
+			case cmd == "RSET":
+				mustWriteString(w, "250 2.0.0 Ok\r\n")
+				mustFlush(w)
+			case cmd == "QUIT":
+				mustWriteString(w, "221 2.0.0 Bye\r\n")
+				mustFlush(w)
+				return
+			default:
+				mustWriteString(w, "250 2.0.0 Ok\r\n")
+				mustFlush(w)
+			}
+		}
+	})
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost"})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	envelope := ravenmail.Envelope{
+		From: ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+		To: []ravenmail.Recipient{
+			{Address: ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "rcpt", Domain: "example.net"}}},
+		},
+	}
+	messages := []RawMessage{
+		{Envelope: envelope, Data: strings.NewReader("Subject: One\r\n\r\none\r\n")},
+		{Envelope: envelope, Data: strings.NewReader("Subject: Two\r\n\r\ntwo\r\n")},
+	}
+
+	results, err := c.SendRawMultiple(messages)
+	if err != nil {
+		t.Fatalf("SendRawMultiple: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for i, result := range results {
+		if !result.Success {
+			t.Fatalf("result %d: expected success", i)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if connCount != 1 {
+		t.Fatalf("connCount = %d, want 1", connCount)
+	}
+	if dataCount != 2 {
+		t.Fatalf("dataCount = %d, want 2", dataCount)
+	}
+}
+
 // --- Send with BDAT ---
 
 func TestClient_Send_WithBDAT(t *testing.T) {

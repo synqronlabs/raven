@@ -131,14 +131,19 @@ Two-level API:
    - `Dial()` → `*Client` (handles EHLO, STARTTLS, AUTH automatically).
    - `DialAndSend(mail)` — one-shot: connect, send, quit.
    - `DialAndSendMultiple(mails)` — batch reuse.
+   - `DialAndSendRaw(envelope, reader)` — one-shot raw `.eml` streaming.
+   - `DialAndSendRawMultiple(messages)` — raw batch reuse.
 
 2. **`Client`** — low-level, protocol commands:
-   - `Hello()`, `StartTLS()`, `Auth()`, `Send()`, `Quit()`.
+   - `Hello()`, `StartTLS()`, `Auth()`, `Send()`, `SendRaw()`, `Quit()`.
+   - `SendRawMultiple()` streams several raw messages over one connection.
    - `HasExtension()` for capability probing.
    - `Verify()`, `Expand()` for VRFY/EXPN.
 
 `SendResult` contains per-recipient acceptance and the server-assigned message
-ID. `ServerCapabilities` gives EHLO extension information.
+ID. Raw send APIs take an SMTP envelope plus an `io.Reader`; message bytes are
+sent through DATA with dot-stuffing, or BDAT when requested and CHUNKING is
+available. `ServerCapabilities` gives EHLO extension information.
 
 ### server — SMTP Server
 

@@ -58,6 +58,29 @@ if err != nil {
 _ = result
 ```
 
+For prebuilt RFC 5322 messages, stream a raw `.eml` with a caller-supplied
+SMTP envelope:
+
+```go
+f, err := os.Open("message.eml")
+if err != nil {
+    panic(err)
+}
+defer f.Close()
+
+env := mail.Envelope{
+    From: mail.Path{Mailbox: mail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+    To: []mail.Recipient{
+        {Address: mail.Path{Mailbox: mail.MailboxAddress{LocalPart: "recipient", Domain: "example.net"}}},
+    },
+}
+
+result, err = c.SendRaw(env, f)
+if err != nil {
+    panic(err)
+}
+```
+
 ### Run an SMTP server
 
 ```go
