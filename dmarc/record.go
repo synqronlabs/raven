@@ -129,11 +129,11 @@ func (r *Record) String() string {
 	write(r.ASPF != AlignRelaxed, "aspf", string(r.ASPF))
 	write(r.AggregateReportingInterval != 86400, "ri", fmt.Sprintf("%d", r.AggregateReportingInterval))
 
-	if len(r.FailureReportingOptions) > 0 && !(len(r.FailureReportingOptions) == 1 && r.FailureReportingOptions[0] == "0") {
+	if len(r.FailureReportingOptions) > 0 && (len(r.FailureReportingOptions) != 1 || r.FailureReportingOptions[0] != "0") {
 		write(true, "fo", strings.Join(r.FailureReportingOptions, ":"))
 	}
 
-	if len(r.ReportingFormat) > 0 && !(len(r.ReportingFormat) == 1 && r.ReportingFormat[0] == "afrf") {
+	if len(r.ReportingFormat) > 0 && (len(r.ReportingFormat) != 1 || r.ReportingFormat[0] != "afrf") {
 		write(true, "rf", strings.Join(r.ReportingFormat, ":"))
 	}
 

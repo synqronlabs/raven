@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"maps"
 	"testing"
 	"time"
 
@@ -56,9 +57,7 @@ func cloneBenchmarkARCMail(src *ravenmail.Mail) *ravenmail.Mail {
 	cloned.Envelope.To = append([]ravenmail.Recipient(nil), src.Envelope.To...)
 	if src.Envelope.ExtensionParams != nil {
 		cloned.Envelope.ExtensionParams = make(map[string]string, len(src.Envelope.ExtensionParams))
-		for key, value := range src.Envelope.ExtensionParams {
-			cloned.Envelope.ExtensionParams[key] = value
-		}
+		maps.Copy(cloned.Envelope.ExtensionParams, src.Envelope.ExtensionParams)
 	}
 	cloned.Content = src.Content
 	cloned.Content.Headers = append(ravenmail.Headers(nil), src.Content.Headers...)

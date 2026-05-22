@@ -364,7 +364,7 @@ func validateDomainLabel(label string) error {
 	// Must be alphanumeric or hyphen
 	for i := 0; i < len(label); i++ {
 		c := label[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 			return ErrInvalidDomain
 		}
 	}
@@ -458,8 +458,8 @@ func isValidIPv6(s string) bool {
 	}
 
 	// Split and validate each group
-	parts := strings.Split(s, ":")
-	for _, part := range parts {
+	parts := strings.SplitSeq(s, ":")
+	for part := range parts {
 		if part == "" {
 			continue // Empty from ::
 		}
@@ -468,7 +468,7 @@ func isValidIPv6(s string) bool {
 		}
 		for i := 0; i < len(part); i++ {
 			c := part[i]
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 				return false
 			}
 		}

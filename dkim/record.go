@@ -115,7 +115,7 @@ func (r *Record) ToTXT() (string, error) {
 	}
 
 	// Services (optional)
-	if len(r.Services) > 0 && !(len(r.Services) == 1 && r.Services[0] == "*") {
+	if len(r.Services) > 0 && (len(r.Services) != 1 || r.Services[0] != "*") {
 		parts = append(parts, "s="+strings.Join(r.Services, ":"))
 	}
 
@@ -179,20 +179,20 @@ func ParseRecord(txt string) (*Record, bool, error) {
 	isDKIM := false
 
 	// Parse tag=value pairs
-	parts := strings.Split(txt, ";")
-	for _, part := range parts {
+	parts := strings.SplitSeq(txt, ";")
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 
-		idx := strings.Index(part, "=")
-		if idx == -1 {
+		before, after, ok := strings.Cut(part, "=")
+		if !ok {
 			continue
 		}
 
-		tag := strings.TrimSpace(part[:idx])
-		value := strings.TrimSpace(part[idx+1:])
+		tag := strings.TrimSpace(before)
+		value := strings.TrimSpace(after)
 
 		// Check for duplicate tags
 		if seen[tag] {

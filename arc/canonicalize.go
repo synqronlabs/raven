@@ -189,13 +189,13 @@ func compressWhitespace(line []byte) []byte {
 // canonicalizeHeaderRelaxed returns the header in relaxed canonicalization.
 func canonicalizeHeaderRelaxed(header []byte) (string, error) {
 	// Find header name and value
-	idx := bytes.Index(header, []byte(":"))
-	if idx == -1 {
+	before, after, ok := bytes.Cut(header, []byte(":"))
+	if !ok {
 		return "", ErrSyntax
 	}
 
-	name := strings.ToLower(strings.TrimRight(string(header[:idx]), " \t"))
-	value := string(header[idx+1:])
+	name := strings.ToLower(strings.TrimRight(string(before), " \t"))
+	value := string(after)
 
 	// Remove trailing CRLF from value
 	value = strings.TrimRight(value, "\r\n")

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -504,7 +505,7 @@ func parseDKIMRecord(txt string) (*DKIMRecord, error) {
 	}
 
 	if h, ok := tags["h"]; ok {
-		for _, alg := range strings.Split(h, ":") {
+		for alg := range strings.SplitSeq(h, ":") {
 			alg = strings.ToLower(strings.TrimSpace(alg))
 			if alg != "" {
 				record.Hashes = append(record.Hashes, alg)
@@ -614,12 +615,7 @@ func recordAllowsHash(record *DKIMRecord, hashAlg string) bool {
 	if len(record.Hashes) == 0 {
 		return true
 	}
-	for _, allowed := range record.Hashes {
-		if allowed == hashAlg {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(record.Hashes, hashAlg)
 }
 
 func keyMatchesAlgorithm(keyType, signAlg string) bool {
@@ -725,11 +721,11 @@ func readHeaderLine(r *bufio.Reader) ([]byte, error) {
 
 // extractHeaderValue extracts the value from a raw header (after the colon).
 func extractHeaderValue(raw []byte) string {
-	colonIdx := bytes.IndexByte(raw, ':')
-	if colonIdx == -1 {
+	_, after, ok := bytes.Cut(raw, []byte{':'})
+	if !ok {
 		return ""
 	}
-	value := string(raw[colonIdx+1:])
+	value := string(after)
 	// Remove trailing CRLF
 	value = strings.TrimRight(value, "\r\n")
 	return value

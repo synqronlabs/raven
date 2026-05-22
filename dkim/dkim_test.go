@@ -770,8 +770,8 @@ func TestSignMultipleBodyHashCaching(t *testing.T) {
 
 	// Parse signatures and collect body hashes
 	bodyHashes := make(map[string]string) // selector -> body hash
-	headers := strings.Split(sigHeaders, "DKIM-Signature:")
-	for _, h := range headers {
+	headers := strings.SplitSeq(sigHeaders, "DKIM-Signature:")
+	for h := range headers {
 		if strings.TrimSpace(h) == "" {
 			continue
 		}

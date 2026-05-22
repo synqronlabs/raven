@@ -537,7 +537,7 @@ func TestSignerBranchCoverage(t *testing.T) {
 	}
 
 	badRSAKey := *rsaKey
-	badRSAKey.PublicKey.N = nil
+	badRSAKey.N = nil
 	badSigner := *customSigner
 	badSigner.PrivateKey = &badRSAKey
 	if _, err := badSigner.Sign(message); err == nil || !strings.Contains(err.Error(), "signing") {
@@ -586,7 +586,7 @@ func TestSignerBranchCoverage(t *testing.T) {
 	}
 
 	badDirectRSAKey := *rsaKey
-	badDirectRSAKey.PublicKey.N = nil
+	badDirectRSAKey.N = nil
 	badDirectSigner := *directCustomSigner
 	badDirectSigner.PrivateKey = &badDirectRSAKey
 	if _, err := badDirectSigner.signWithCachedBodyHash(headers, body, map[bodyHashKey][]byte{}); err == nil || !strings.Contains(err.Error(), "signing") {

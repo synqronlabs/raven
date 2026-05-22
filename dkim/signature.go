@@ -161,7 +161,7 @@ func (s *Signature) Header(includeSignature bool) (string, error) {
 	}
 
 	// Query methods (only if not default dns/txt)
-	if len(s.QueryMethods) > 0 && !(len(s.QueryMethods) == 1 && strings.EqualFold(s.QueryMethods[0], "dns/txt")) {
+	if len(s.QueryMethods) > 0 && (len(s.QueryMethods) != 1 || !strings.EqualFold(s.QueryMethods[0], "dns/txt")) {
 		w.addf(" ", "q=%s;", strings.Join(s.QueryMethods, ":"))
 	}
 
@@ -352,13 +352,13 @@ func ParseSignature(header string) (*Signature, []byte, error) {
 			continue
 		}
 
-		idx := strings.Index(part, "=")
-		if idx == -1 {
+		before, after, ok := strings.Cut(part, "=")
+		if !ok {
 			continue
 		}
 
-		tag := strings.TrimSpace(part[:idx])
-		tagValue := strings.TrimSpace(part[idx+1:])
+		tag := strings.TrimSpace(before)
+		tagValue := strings.TrimSpace(after)
 
 		// Check for duplicate tags
 		if seen[tag] {

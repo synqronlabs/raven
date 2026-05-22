@@ -18,13 +18,13 @@ import (
 //   - Remove trailing WSP from header value
 func canonicalizeHeaderRelaxed(header string) (string, error) {
 	// Find header name and value
-	idx := strings.Index(header, ":")
-	if idx == -1 {
+	before, after, ok := strings.Cut(header, ":")
+	if !ok {
 		return "", ErrHeaderMalformed
 	}
 
-	name := strings.ToLower(strings.TrimRight(header[:idx], " \t"))
-	value := header[idx+1:]
+	name := strings.ToLower(strings.TrimRight(before, " \t"))
+	value := after
 
 	// Unfold (remove CRLF followed by WSP)
 	value = strings.ReplaceAll(value, "\r\n\t", " ")
@@ -353,14 +353,14 @@ func parseHeaders(br *bufio.Reader) ([]headerData, int, error) {
 		}
 
 		// Parse new header
-		colonIdx := bytes.IndexByte(line, ':')
-		if colonIdx == -1 {
+		before, after, ok := bytes.Cut(line, []byte{':'})
+		if !ok {
 			return nil, 0, ErrHeaderMalformed
 		}
 
-		currentKey = strings.TrimRight(string(line[:colonIdx]), " \t")
+		currentKey = strings.TrimRight(string(before), " \t")
 		currentLKey = strings.ToLower(currentKey)
-		currentValue = bytes.Clone(line[colonIdx+1:])
+		currentValue = bytes.Clone(after)
 		currentRaw = bytes.Clone(line)
 
 		// Validate header name

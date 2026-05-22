@@ -393,33 +393,33 @@ func (p *parser) xtakelist(l ...string) string {
 
 // xtakefn1 takes one or more characters matching fn.
 func (p *parser) xtakefn1(fn func(rune, int) bool) string {
-	r := ""
+	var r strings.Builder
 	for i, c := range p.s[p.o:] {
 		if !fn(c, i) {
 			break
 		}
-		r += string(c)
+		r.WriteString(string(c))
 	}
-	if r == "" {
+	if r.String() == "" {
 		p.xerrorf("need at least 1 character")
 	}
-	p.o += len(r)
-	return r
+	p.o += len(r.String())
+	return r.String()
 }
 
 // digits parses zero or more digits.
 func (p *parser) digits() string {
-	r := ""
+	var r strings.Builder
 	for !p.empty() {
 		b := p.peekchar()
 		if b >= '0' && b <= '9' {
-			r += string(b)
+			r.WriteString(string(b))
 			p.o++
 		} else {
 			break
 		}
 	}
-	return r
+	return r.String()
 }
 
 func (p *parser) xnumber() (int, string) {
@@ -489,7 +489,7 @@ func (p *parser) xdomainSpec(includingSlash bool) string {
 
 // xmacroString parses a macro-string.
 func (p *parser) xmacroString(includingSlash bool) string {
-	r := ""
+	var r strings.Builder
 	for !p.empty() {
 		w := p.takelist("%{", "%%", "%_", "%-")
 		if w == "" {
@@ -497,20 +497,20 @@ func (p *parser) xmacroString(includingSlash bool) string {
 			if !p.empty() {
 				b := p.peekchar()
 				if b > ' ' && b < 0x7f && b != '%' && (includingSlash || b != '/') {
-					r += string(b)
+					r.WriteString(string(b))
 					p.o++
 					continue
 				}
 			}
 			break
 		}
-		r += w
+		r.WriteString(w)
 		if w != "%{" {
 			continue
 		}
 
 		// Parse macro letter
-		r += p.xtakelist("s", "l", "o", "d", "i", "p", "h", "c", "r", "t", "v")
+		r.WriteString(p.xtakelist("s", "l", "o", "d", "i", "p", "h", "c", "r", "t", "v"))
 
 		// Optional digits (transformer)
 		digits := p.digits()
@@ -523,11 +523,11 @@ func (p *parser) xmacroString(includingSlash bool) string {
 				p.xerrorf("zero labels not allowed")
 			}
 		}
-		r += digits
+		r.WriteString(digits)
 
 		// Optional reverse
 		if p.take("r") {
-			r += "r"
+			r.WriteString("r")
 		}
 
 		// Optional delimiters
@@ -536,13 +536,13 @@ func (p *parser) xmacroString(includingSlash bool) string {
 			if delimiter == "" {
 				break
 			}
-			r += delimiter
+			r.WriteString(delimiter)
 		}
 
 		// Closing brace
-		r += p.xtake("}")
+		r.WriteString(p.xtake("}"))
 	}
-	return r
+	return r.String()
 }
 
 func (p *parser) xip4address() (net.IP, string) {

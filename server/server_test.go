@@ -184,7 +184,7 @@ func (ts *testServer) dial() *testClient {
 
 func (ts *testServer) close() {
 	ts.cancel()
-	ts.listener.Close()
+	_ = ts.listener.Close()
 }
 
 // testClient is a helper for raw SMTP protocol testing.
@@ -199,6 +199,12 @@ func (c *testClient) send(format string, args ...any) {
 	_, err := fmt.Fprintf(c.conn, "%s\r\n", cmd)
 	if err != nil {
 		c.t.Fatalf("send failed: %v", err)
+	}
+}
+
+func (c *testClient) writeRaw(s string) {
+	if _, err := fmt.Fprint(c.conn, s); err != nil {
+		c.t.Fatalf("write raw failed: %v", err)
 	}
 }
 
@@ -243,7 +249,7 @@ func (c *testClient) expectMultilineCode(code int) []string {
 }
 
 func (c *testClient) close() {
-	c.conn.Close()
+	_ = c.conn.Close()
 }
 
 // =============================================================================
@@ -261,7 +267,7 @@ func TestServer_Greeting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadString('\n')
@@ -758,7 +764,7 @@ func TestServer_MaxMessageBytes(t *testing.T) {
 	// Each line is ~80 chars, need >1024 total
 	tc.send("Subject: Large message test")
 	tc.send("")
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		tc.send("%s", strings.Repeat("X", 70)) // 20 * 72 (incl CRLF) = 1440 bytes
 	}
 	tc.send(".")
@@ -836,7 +842,7 @@ func TestServer_MaxRecipients(t *testing.T) {
 	tc.expectCode(250)
 
 	// Add max recipients
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		tc.send("RCPT TO:<recipient%d@example.com>", i)
 		tc.expectCode(250)
 	}
@@ -1073,9 +1079,9 @@ func TestServer_Pipelining(t *testing.T) {
 	}
 
 	// Send pipelined commands (all at once)
-	fmt.Fprintf(tc.conn, "MAIL FROM:<sender@example.com>\r\n")
-	fmt.Fprintf(tc.conn, "RCPT TO:<recipient@example.com>\r\n")
-	fmt.Fprintf(tc.conn, "DATA\r\n")
+	tc.writeRaw("MAIL FROM:<sender@example.com>\r\n")
+	tc.writeRaw("RCPT TO:<recipient@example.com>\r\n")
+	tc.writeRaw("DATA\r\n")
 
 	tc.expectCode(250) // MAIL FROM
 	tc.expectCode(250) // RCPT TO
@@ -1100,7 +1106,7 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 	var wg sync.WaitGroup
 	const numConnections = 5
 
-	for i := 0; i < numConnections; i++ {
+	for i := range numConnections {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -1110,9 +1116,16 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 				t.Errorf("connection %d failed to dial: %v", id, err)
 				return
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 
 			reader := bufio.NewReader(conn)
+			write := func(format string, args ...any) bool {
+				if _, err := fmt.Fprintf(conn, format, args...); err != nil {
+					t.Errorf("connection %d: write failed: %v", id, err)
+					return false
+				}
+				return true
+			}
 
 			// Read greeting
 			line, _ := reader.ReadString('\n')
@@ -1122,7 +1135,9 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 			}
 
 			// Send EHLO
-			fmt.Fprintf(conn, "EHLO client%d.example.com\r\n", id)
+			if !write("EHLO client%d.example.com\r\n", id) {
+				return
+			}
 			for {
 				line, _ = reader.ReadString('\n')
 				if strings.HasPrefix(line, "250 ") {
@@ -1135,21 +1150,27 @@ func TestServer_ConcurrentConnections(t *testing.T) {
 			}
 
 			// Send mail transaction
-			fmt.Fprintf(conn, "MAIL FROM:<sender%d@example.com>\r\n", id)
+			if !write("MAIL FROM:<sender%d@example.com>\r\n", id) {
+				return
+			}
 			line, _ = reader.ReadString('\n')
 			if !strings.HasPrefix(line, "250") {
 				t.Errorf("connection %d: MAIL FROM failed: %s", id, line)
 				return
 			}
 
-			fmt.Fprintf(conn, "RCPT TO:<recipient@example.com>\r\n")
+			if !write("RCPT TO:<recipient@example.com>\r\n") {
+				return
+			}
 			line, _ = reader.ReadString('\n')
 			if !strings.HasPrefix(line, "250") {
 				t.Errorf("connection %d: RCPT TO failed: %s", id, line)
 				return
 			}
 
-			fmt.Fprintf(conn, "QUIT\r\n")
+			if !write("QUIT\r\n") {
+				return
+			}
 			line, _ = reader.ReadString('\n')
 			if !strings.HasPrefix(line, "221") {
 				t.Errorf("connection %d: QUIT failed: %s", id, line)
@@ -1798,7 +1819,7 @@ func TestServer_BDAT_ReceivedHeader(t *testing.T) {
 
 	msg := "Subject: test\r\n\r\nBody here."
 	tc.send("BDAT %d LAST", len(msg))
-	fmt.Fprint(tc.conn, msg)
+	tc.writeRaw(msg)
 	tc.expectCode(250)
 
 	if len(sess.completed) == 0 {
@@ -1846,12 +1867,12 @@ func TestServer_BDAT_FoldedHeadersAcrossChunks(t *testing.T) {
 
 	chunk1 := "Received: from hop1\r\n\tby hop1.example.com\r\nSubject: folded\r\n va"
 	tc.send("BDAT %d", len(chunk1))
-	fmt.Fprint(tc.conn, chunk1)
+	tc.writeRaw(chunk1)
 	tc.expectCode(250)
 
 	chunk2 := "lue\r\n\r\nBody."
 	tc.send("BDAT %d LAST", len(chunk2))
-	fmt.Fprint(tc.conn, chunk2)
+	tc.writeRaw(chunk2)
 	tc.expectCode(250)
 
 	if len(sess.completed) != 1 {
@@ -1899,12 +1920,12 @@ func TestServer_BDAT_SessionHeaders_ParseAndValidateWithMailPackage(t *testing.T
 
 	chunk1 := "From: Sender <sender@example.com>\r\nDate: Thu, 12 Dec 2024 10:00:00 +0000\r\nSubject: folded\r\n va"
 	tc.send("BDAT %d", len(chunk1))
-	fmt.Fprint(tc.conn, chunk1)
+	tc.writeRaw(chunk1)
 	tc.expectCode(250)
 
 	chunk2 := "lue\r\n\r\nBody."
 	tc.send("BDAT %d LAST", len(chunk2))
-	fmt.Fprint(tc.conn, chunk2)
+	tc.writeRaw(chunk2)
 	tc.expectCode(250)
 
 	if len(sess.completed) != 1 {
@@ -1961,7 +1982,7 @@ func TestServer_BDAT_MultipleChunks(t *testing.T) {
 
 	chunk1 := "Subject: test\r\n\r\nBody "
 	tc.send("BDAT %d", len(chunk1))
-	fmt.Fprint(tc.conn, chunk1)
+	tc.writeRaw(chunk1)
 	tc.expectCode(250)
 
 	if len(sess.completed) != 0 {
@@ -1970,7 +1991,7 @@ func TestServer_BDAT_MultipleChunks(t *testing.T) {
 
 	chunk2 := "here."
 	tc.send("BDAT %d LAST", len(chunk2))
-	fmt.Fprint(tc.conn, chunk2)
+	tc.writeRaw(chunk2)
 	tc.expectCode(250)
 
 	if len(sess.completed) != 1 {
@@ -2009,7 +2030,7 @@ func TestServer_BDAT_LoopDetection(t *testing.T) {
 	// 2 existing Received headers in data + 1 prepended = 3 >= max 3 → reject
 	msg := "Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nSubject: test\r\n\r\nBody."
 	tc.send("BDAT %d LAST", len(msg))
-	fmt.Fprint(tc.conn, msg)
+	tc.writeRaw(msg)
 	tc.expectCode(554)
 
 	if len(sess.completed) != 0 {
@@ -2044,6 +2065,6 @@ func TestServer_BDAT_LoopDetection_BelowThreshold(t *testing.T) {
 
 	msg := "Received: from hop1 by hop1.example.com\r\nSubject: ok\r\n\r\nBody."
 	tc.send("BDAT %d LAST", len(msg))
-	fmt.Fprint(tc.conn, msg)
+	tc.writeRaw(msg)
 	tc.expectCode(250)
 }

@@ -250,7 +250,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Close all listeners
 	s.mu.Lock()
 	for _, l := range s.listeners {
-		l.Close()
+		_ = l.Close()
 	}
 	s.mu.Unlock()
 
@@ -264,7 +264,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			// Force close remaining connections
 			s.mu.Lock()
 			for c := range s.conns {
-				c.Close()
+				_ = c.Close()
 			}
 			s.mu.Unlock()
 			return fmt.Errorf("waiting for graceful SMTP shutdown: %w", ctx.Err())
@@ -295,7 +295,7 @@ func (s *Server) handleConn(ctx context.Context, netConn net.Conn) {
 		delete(s.conns, c)
 		s.mu.Unlock()
 		s.connCount.Add(-1)
-		c.Close()
+		_ = c.Close()
 	}()
 
 	// Serve the connection

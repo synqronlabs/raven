@@ -194,11 +194,11 @@ func encodeHeaderValue(s string) string {
 	// Check if quoting is needed
 	needsQuote := false
 	for _, c := range s {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-			c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' ||
-			c == '*' || c == '+' || c == '-' || c == '/' || c == '=' || c == '?' ||
-			c == '^' || c == '_' || c == '`' || c == '{' || c == '|' || c == '}' || c == '~' ||
-			c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') &&
+			c != '!' && c != '#' && c != '$' && c != '%' && c != '&' && c != '\'' &&
+			c != '*' && c != '+' && c != '-' && c != '/' && c != '=' && c != '?' &&
+			c != '^' && c != '_' && c != '`' && c != '{' && c != '|' && c != '}' && c != '~' &&
+			c != '.' {
 			needsQuote = true
 			break
 		}
@@ -828,16 +828,16 @@ func expandDomainSpec(ctx context.Context, resolver Resolver, spec string, args 
 		}
 
 		// Parse optional transformer
-		digits := ""
+		var digits strings.Builder
 		for i < n && spec[i] >= '0' && spec[i] <= '9' {
-			digits += string(spec[i])
+			digits.WriteString(string(spec[i]))
 			i++
 		}
 		nlabels := -1
-		if digits != "" {
-			nv, err := strconv.Atoi(digits)
+		if digits.String() != "" {
+			nv, err := strconv.Atoi(digits.String())
 			if err != nil {
-				return "", authentic, fmt.Errorf("%w: invalid digits %q", ErrMacroSyntax, digits)
+				return "", authentic, fmt.Errorf("%w: invalid digits %q", ErrMacroSyntax, digits.String())
 			}
 			if nv == 0 {
 				return "", authentic, fmt.Errorf("%w: zero labels not allowed", ErrMacroSyntax)

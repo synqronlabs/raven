@@ -55,24 +55,24 @@ func (s *ServerCapabilities) String() string {
 	var sb strings.Builder
 
 	sb.WriteString("Server Capabilities:\n")
-	sb.WriteString(fmt.Sprintf("  ESMTP: %v\n", s.IsESMTP))
-	sb.WriteString(fmt.Sprintf("  Hostname: %s\n", s.Hostname))
+	_, _ = fmt.Fprintf(&sb, "  ESMTP: %v\n", s.IsESMTP)
+	_, _ = fmt.Fprintf(&sb, "  Hostname: %s\n", s.Hostname)
 
 	if s.MaxSize > 0 {
-		sb.WriteString(fmt.Sprintf("  Max Size: %d bytes\n", s.MaxSize))
+		_, _ = fmt.Fprintf(&sb, "  Max Size: %d bytes\n", s.MaxSize)
 	}
 
 	sb.WriteString("  Extensions:\n")
 	for ext, param := range s.Extensions {
 		if param != "" {
-			sb.WriteString(fmt.Sprintf("    - %s %s\n", ext, param))
+			_, _ = fmt.Fprintf(&sb, "    - %s %s\n", ext, param)
 		} else {
-			sb.WriteString(fmt.Sprintf("    - %s\n", ext))
+			_, _ = fmt.Fprintf(&sb, "    - %s\n", ext)
 		}
 	}
 
 	if len(s.Auth) > 0 {
-		sb.WriteString(fmt.Sprintf("  Auth Mechanisms: %s\n", strings.Join(s.Auth, ", ")))
+		_, _ = fmt.Fprintf(&sb, "  Auth Mechanisms: %s\n", strings.Join(s.Auth, ", "))
 	}
 
 	return sb.String()
@@ -173,7 +173,7 @@ func ProbeWithConfig(address string, config *ClientConfig) (*ServerCapabilities,
 	if err := client.Dial(address); err != nil {
 		return nil, fmt.Errorf("dialing SMTP server %s for probe: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(); err != nil {
 		return nil, fmt.Errorf("sending EHLO/HELO during probe: %w", err)
@@ -194,7 +194,7 @@ func ProbeTLSWithConfig(address string, config *ClientConfig) (*ServerCapabiliti
 	if err := client.DialTLS(address); err != nil {
 		return nil, fmt.Errorf("dialing SMTP server %s with implicit TLS for probe: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(); err != nil {
 		return nil, fmt.Errorf("sending EHLO/HELO during TLS probe: %w", err)
@@ -217,7 +217,7 @@ func ProbeWithSTARTTLSConfig(address string, config *ClientConfig) (*ServerCapab
 	if err := client.Dial(address); err != nil {
 		return nil, fmt.Errorf("dialing SMTP server %s for STARTTLS probe: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// First EHLO to check for STARTTLS
 	if err := client.Hello(); err != nil {

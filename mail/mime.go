@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	stdmime "mime"
 	"mime/multipart"
 	"net/textproto"
@@ -366,17 +367,13 @@ func (p *MIMEPart) effectiveContentTypeHeader() (string, bool, error) {
 			if mediaType == "" {
 				mediaType = parsedType
 			}
-			for key, value := range parsedParams {
-				params[key] = value
-			}
+			maps.Copy(params, parsedParams)
 		}
 	}
 	if p.ContentType != "" {
 		if parsedType, parsedParams, err := stdmime.ParseMediaType(p.ContentType); err == nil && strings.Contains(parsedType, "/") {
 			mediaType = parsedType
-			for key, value := range parsedParams {
-				params[key] = value
-			}
+			maps.Copy(params, parsedParams)
 		}
 	}
 

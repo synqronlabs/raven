@@ -917,40 +917,40 @@ func TestFoldHeader_PreservesContent(t *testing.T) {
 	unfolded = unfolded[:len(unfolded)-2]
 	// Unfold by replacing CRLF+space with single space
 	for {
-		newUnfolded := ""
+		var newUnfolded strings.Builder
 		i := 0
 		for i < len(unfolded) {
 			if i+2 < len(unfolded) && unfolded[i] == '\r' && unfolded[i+1] == '\n' && (unfolded[i+2] == ' ' || unfolded[i+2] == '\t') {
-				newUnfolded += " "
+				newUnfolded.WriteString(" ")
 				i += 3
 			} else {
-				newUnfolded += string(unfolded[i])
+				newUnfolded.WriteString(string(unfolded[i]))
 				i++
 			}
 		}
-		if newUnfolded == unfolded {
+		if newUnfolded.String() == unfolded {
 			break
 		}
-		unfolded = newUnfolded
+		unfolded = newUnfolded.String()
 	}
 
 	// The unfolded value should match original (possibly with whitespace normalization)
 	// Since we collapse consecutive spaces at fold points, compare normalized versions
 	normalizeSpaces := func(s string) string {
-		result := ""
+		var result strings.Builder
 		prevSpace := false
 		for _, c := range s {
 			if c == ' ' || c == '\t' {
 				if !prevSpace {
-					result += " "
+					result.WriteString(" ")
 					prevSpace = true
 				}
 			} else {
-				result += string(c)
+				result.WriteString(string(c))
 				prevSpace = false
 			}
 		}
-		return result
+		return result.String()
 	}
 
 	if normalizeSpaces(unfolded) != normalizeSpaces(value) {

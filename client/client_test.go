@@ -35,9 +35,7 @@ func newMockSMTPServer(t *testing.T, handler func(conn net.Conn)) *mockSMTPServe
 		t.Fatalf("listen: %v", err)
 	}
 	s := &mockSMTPServer{listener: l, handler: handler}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
@@ -50,11 +48,11 @@ func newMockSMTPServer(t *testing.T, handler func(conn net.Conn)) *mockSMTPServe
 				continue
 			}
 			s.wg.Go(func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				handler(conn)
 			})
 		}
-	}()
+	})
 	return s
 }
 
@@ -66,7 +64,7 @@ func (s *mockSMTPServer) close() {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
-	s.listener.Close()
+	_ = s.listener.Close()
 	s.wg.Wait()
 }
 
@@ -875,7 +873,7 @@ func TestClient_Dial_And_Hello(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -955,7 +953,7 @@ func TestClient_Hello_FallbackToHELO(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -975,7 +973,7 @@ func TestClient_Greeting_AfterDial(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	greeting := c.Greeting()
 	if greeting == "" {
@@ -1012,7 +1010,7 @@ func TestClient_Auth_PLAIN(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1039,7 +1037,7 @@ func TestClient_Auth_LOGIN(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1062,7 +1060,7 @@ func TestClient_Auth_Rejected(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1105,7 +1103,7 @@ func TestClient_Auth_ExtensionNotSupported(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1129,7 +1127,7 @@ func TestClient_Auth_NoSupportedMechanism(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1153,7 +1151,7 @@ func TestClient_AuthWithMechanism(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1205,7 +1203,7 @@ func TestClient_Reset(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1232,7 +1230,7 @@ func TestClient_Noop(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1313,7 +1311,7 @@ func TestClient_Send_Success(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1365,7 +1363,7 @@ func TestClient_Send_NoRecipients(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	mail := ravenmail.NewMail()
 	mail.Envelope.From = ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}}
@@ -1389,7 +1387,7 @@ func TestClient_Send_AllRecipientsRejected(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1421,7 +1419,7 @@ func TestClient_Send_PartialRecipientRejection(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1473,7 +1471,7 @@ func TestClient_SendWithOptions_RequireAllRecipients(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1513,7 +1511,7 @@ func TestClient_SendWithOptions_NoRecipients(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	mail := ravenmail.NewMail()
 	mail.Envelope.From = ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "s", Domain: "e.com"}}
@@ -1535,7 +1533,7 @@ func TestClient_Verify(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1567,7 +1565,7 @@ func TestClient_Expand(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1601,7 +1599,7 @@ func TestClient_RawCommand(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1635,7 +1633,7 @@ func TestClient_PipelineCommands(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1672,7 +1670,7 @@ func TestClient_PipelineCommands_NoPipeliningSupport(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1704,7 +1702,7 @@ func TestClient_StartTLS_AlreadyTLS(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	c.isTLS = true
 	err := c.StartTLS()
@@ -1722,7 +1720,7 @@ func TestClient_StartTLS_NotSupported(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -1774,7 +1772,7 @@ func TestPool_Close(t *testing.T) {
 func TestPool_Get_ClosedPool(t *testing.T) {
 	d := NewDialer("localhost", 25)
 	p := NewPool(d, 5)
-	p.Close()
+	_ = p.Close()
 	_, err := p.Get()
 	if err != ErrClientClosed {
 		t.Errorf("expected ErrClientClosed, got %v", err)
@@ -1790,7 +1788,7 @@ func TestPool_Put_ClosedPool(t *testing.T) {
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 5)
-	p.Close()
+	_ = p.Close()
 
 	// Create a client directly
 	c := NewClient(DefaultClientConfig())
@@ -1835,7 +1833,7 @@ func TestDialer_Dial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if !client.IsESMTP() {
 		t.Error("expected ESMTP")
@@ -1855,7 +1853,7 @@ func TestDialer_Dial_WithLocalName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 }
 
 func TestDialer_DialAndSend(t *testing.T) {
@@ -1936,7 +1934,7 @@ func TestDialer_Dial_WithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial with auth: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if !client.IsAuthenticated() {
 		t.Error("expected authenticated")
@@ -1961,7 +1959,7 @@ func TestClient_DebugOutput(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2150,7 +2148,7 @@ func TestClient_SendMultiple(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2255,7 +2253,7 @@ func TestClient_SendRaw_StreamsEMLData(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2367,7 +2365,7 @@ func TestClient_SendRawMultiple_ReusesConnection(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
 	}
@@ -2417,7 +2415,7 @@ func TestClient_Send_WithBDAT(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2451,7 +2449,7 @@ func TestClient_SendWithOptions_BDAT_DefaultChunkSize(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2490,7 +2488,7 @@ func TestDialer_StartTLS_NotAvailable_NotRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 }
 
 func TestDialer_StartTLS_NotAvailable_Required(t *testing.T) {
@@ -2532,7 +2530,7 @@ func TestClient_Send_RequireTLS_NotSupported(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2563,7 +2561,7 @@ func TestClient_Send_DeliveryBy(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2597,7 +2595,7 @@ func TestClient_Send_DeliveryBy_NotSupported(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2628,7 +2626,7 @@ func TestClient_Send_DeliveryBy_BelowServerMinimum(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2853,7 +2851,7 @@ func TestClient_Dial_WithLocalAddr(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial with LocalAddr: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 }
 
 func TestClient_Dial_InvalidLocalAddr(t *testing.T) {
@@ -2914,7 +2912,7 @@ func TestClient_Send_WithTimeouts(t *testing.T) {
 	if err := c.Dial(srv.addr()); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(); err != nil {
 		t.Fatalf("Hello: %v", err)
@@ -2947,7 +2945,7 @@ func TestPool_SendAndReturn(t *testing.T) {
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 2)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	mail := ravenmail.NewMailBuilder().
 		From("sender@example.com").
@@ -2974,7 +2972,7 @@ func TestPool_GetAndPut(t *testing.T) {
 
 	d := NewDialer(host, port)
 	p := NewPool(d, 2)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Get a connection
 	client, err := p.Get()
@@ -2990,7 +2988,7 @@ func TestPool_GetAndPut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pool.Get (reuse): %v", err)
 	}
-	defer client2.Close()
+	defer func() { _ = client2.Close() }()
 }
 
 // --- Tests migrated from original client_test.go ---

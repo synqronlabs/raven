@@ -472,22 +472,22 @@ func parseTags(value string) (map[string]string, error) {
 	tags := make(map[string]string)
 
 	// Split by semicolons
-	parts := strings.Split(value, ";")
-	for _, part := range parts {
+	parts := strings.SplitSeq(value, ";")
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 
 		// Find equals sign
-		idx := strings.Index(part, "=")
-		if idx == -1 {
+		before, after, ok := strings.Cut(part, "=")
+		if !ok {
 			// Tag without value - skip
 			continue
 		}
 
-		name := strings.TrimSpace(part[:idx])
-		val := strings.TrimSpace(part[idx+1:])
+		name := strings.TrimSpace(before)
+		val := strings.TrimSpace(after)
 
 		if name == "" {
 			continue

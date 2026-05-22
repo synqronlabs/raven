@@ -228,7 +228,7 @@ func (c *Conn) readLine() (string, error) {
 	}
 
 	if c.server.config.Debug != nil {
-		fmt.Fprintf(c.server.config.Debug, "C: %s\n", line)
+		_, _ = fmt.Fprintf(c.server.config.Debug, "C: %s\n", line)
 	}
 
 	return line, nil
@@ -242,7 +242,7 @@ func (c *Conn) readLineASCII() (string, error) {
 	}
 
 	if c.server.config.Debug != nil {
-		fmt.Fprintf(c.server.config.Debug, "C: %s\n", line)
+		_, _ = fmt.Fprintf(c.server.config.Debug, "C: %s\n", line)
 	}
 
 	return line, nil
@@ -302,7 +302,7 @@ func (c *Conn) writeResponseMulti(code int, messages []string) {
 		}
 
 		if c.server.config.Debug != nil {
-			fmt.Fprintf(c.server.config.Debug, "S: %s", line)
+			_, _ = fmt.Fprintf(c.server.config.Debug, "S: %s", line)
 		}
 	}
 
@@ -1468,7 +1468,7 @@ func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 		return opts, nil
 	}
 
-	for _, param := range strings.Fields(params) {
+	for param := range strings.FieldsSeq(params) {
 		key, value, _ := strings.Cut(param, "=")
 		key = strings.ToUpper(key)
 
@@ -1598,7 +1598,7 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 		return opts, nil
 	}
 
-	for _, param := range strings.Fields(params) {
+	for param := range strings.FieldsSeq(params) {
 		key, value, _ := strings.Cut(param, "=")
 		key = strings.ToUpper(key)
 
@@ -1607,7 +1607,7 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 			if !c.server.config.EnableDSN {
 				return nil, &SMTPError{Code: 555, Message: "DSN not supported"}
 			}
-			for _, n := range strings.Split(value, ",") {
+			for n := range strings.SplitSeq(value, ",") {
 				switch strings.ToUpper(n) {
 				case "NEVER":
 					opts.Notify = append(opts.Notify, DSNNotifyNever)

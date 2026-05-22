@@ -213,13 +213,13 @@ func (c *Client) DialContext(ctx context.Context, address string) error {
 	// Read server greeting
 	resp, err := c.readResponse()
 	if err != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return fmt.Errorf("failed to read greeting: %w", err)
 	}
 
 	if !resp.IsSuccess() {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return resp.Error()
 	}
@@ -300,13 +300,13 @@ func (c *Client) DialTLSContext(ctx context.Context, address string) error {
 	// Read server greeting
 	resp, err := c.readResponse()
 	if err != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return fmt.Errorf("failed to read greeting: %w", err)
 	}
 
 	if !resp.IsSuccess() {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return resp.Error()
 	}
@@ -702,7 +702,7 @@ func (c *Client) writeCommand(format string, args ...any) error {
 	cmd := fmt.Sprintf(format, args...)
 
 	if c.config.Debug && c.config.DebugWriter != nil {
-		fmt.Fprintf(c.config.DebugWriter, "C: %s\n", cmd)
+		_, _ = fmt.Fprintf(c.config.DebugWriter, "C: %s\n", cmd)
 	}
 
 	if c.config.WriteTimeout > 0 {
@@ -742,7 +742,7 @@ func (c *Client) readResponse() (*ClientResponse, error) {
 		line = strings.TrimRight(line, "\r\n")
 
 		if c.config.Debug && c.config.DebugWriter != nil {
-			fmt.Fprintf(c.config.DebugWriter, "S: %s\n", line)
+			_, _ = fmt.Fprintf(c.config.DebugWriter, "S: %s\n", line)
 		}
 
 		if len(line) < 4 {

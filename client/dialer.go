@@ -81,7 +81,7 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 
 	// EHLO
 	if err := client.Hello(); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("initializing SMTP session with EHLO/HELO: %w", err)
 	}
 
@@ -89,16 +89,16 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 	if d.StartTLS && !d.SSL {
 		if client.HasExtension(ravenmail.ExtSTARTTLS) {
 			if err := client.StartTLS(); err != nil {
-				client.Close()
+				_ = client.Close()
 				return nil, fmt.Errorf("upgrading SMTP session with STARTTLS: %w", err)
 			}
 			// EHLO again after STARTTLS
 			if err := client.Hello(); err != nil {
-				client.Close()
+				_ = client.Close()
 				return nil, fmt.Errorf("re-initializing SMTP session after STARTTLS: %w", err)
 			}
 		} else if d.RequireTLS {
-			client.Close()
+			_ = client.Close()
 			return nil, ErrTLSNotSupported
 		}
 	}
@@ -106,7 +106,7 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 	// Authenticate if credentials provided
 	if d.Auth != nil {
 		if err := client.Auth(); err != nil {
-			client.Close()
+			_ = client.Close()
 			return nil, fmt.Errorf("authenticating SMTP session: %w", err)
 		}
 	}
@@ -236,7 +236,7 @@ func (p *Pool) Get() (*Client, error) {
 			return client, nil
 		}
 		// Connection is dead, close it and create new one
-		client.Close()
+		_ = client.Close()
 	default:
 		// No available connections
 	}
@@ -250,7 +250,7 @@ func (p *Pool) Put(client *Client) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		client.Close()
+		_ = client.Close()
 		return
 	}
 	p.mu.Unlock()
@@ -279,7 +279,7 @@ func (p *Pool) Send(mail *ravenmail.Mail) (*SendResult, error) {
 	result, err := client.Send(mail)
 	if err != nil {
 		// Error occurred, close this connection
-		client.Close()
+		_ = client.Close()
 		return result, fmt.Errorf("sending mail with pooled client: %w", err)
 	}
 
@@ -297,7 +297,7 @@ func (p *Pool) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult
 
 	result, err := client.SendRaw(envelope, data)
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return result, fmt.Errorf("sending raw mail with pooled client: %w", err)
 	}
 
@@ -360,7 +360,7 @@ func QuickSend(address string, auth *ClientAuth, from string, to []string, subje
 	if err := client.Dial(address); err != nil {
 		return fmt.Errorf("dialing SMTP server %s: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(); err != nil {
 		return fmt.Errorf("initializing SMTP session with EHLO/HELO: %w", err)
@@ -417,7 +417,7 @@ func QuickSendTLS(address string, auth *ClientAuth, from string, to []string, su
 	if err := client.DialTLS(address); err != nil {
 		return fmt.Errorf("dialing SMTP server %s with implicit TLS: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(); err != nil {
 		return fmt.Errorf("initializing SMTP session with EHLO/HELO: %w", err)
@@ -450,7 +450,7 @@ func QuickSendMail(address string, auth *ClientAuth, mail *ravenmail.Mail) error
 	if err := client.Dial(address); err != nil {
 		return fmt.Errorf("dialing SMTP server %s: %w", address, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.Hello(); err != nil {
 		return fmt.Errorf("initializing SMTP session with EHLO/HELO: %w", err)
