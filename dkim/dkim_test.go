@@ -1,6 +1,7 @@
 package dkim
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -713,6 +714,87 @@ func TestSignMultiple(t *testing.T) {
 
 	if parsedCount != 3 {
 		t.Errorf("expected to parse 3 signatures, got %d", parsedCount)
+	}
+}
+
+func TestSignReaderMatchesBufferedSign(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	message := []byte("From: sender@example.com\r\n" +
+		"To: recipient@example.org\r\n" +
+		"Subject: Streaming DKIM\r\n" +
+		"Date: Thu, 18 Dec 2025 12:00:00 +0000\r\n" +
+		"\r\n" +
+		"Line with trailing whitespace   \r\n" +
+		"\tTabbed content\r\n" +
+		"\r\n")
+
+	originalNow := timeNow
+	timeNow = func() time.Time { return time.Unix(12345, 0) }
+	defer func() { timeNow = originalNow }()
+
+	for _, bodyCanon := range []Canonicalization{CanonRelaxed, CanonSimple} {
+		signer := &Signer{
+			Domain:                 "example.com",
+			Selector:               string(bodyCanon),
+			PrivateKey:             rsaKey,
+			Headers:                []string{"From", "To", "Subject", "Date"},
+			HeaderCanonicalization: CanonRelaxed,
+			BodyCanonicalization:   bodyCanon,
+			OversignHeaders:        true,
+		}
+
+		buffered, err := signer.Sign(message)
+		if err != nil {
+			t.Fatalf("Sign(%s): %v", bodyCanon, err)
+		}
+		streamed, err := signer.SignReader(bytes.NewReader(message), int64(len(message)))
+		if err != nil {
+			t.Fatalf("SignReader(%s): %v", bodyCanon, err)
+		}
+		if streamed != buffered {
+			t.Fatalf("SignReader(%s) mismatch:\nstreamed=%s\nbuffered=%s", bodyCanon, streamed, buffered)
+		}
+	}
+}
+
+func TestSignMultipleReaderMatchesBufferedSignMultiple(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey RSA: %v", err)
+	}
+	_, ed25519Key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey Ed25519: %v", err)
+	}
+
+	message := []byte("From: sender@example.com\r\n" +
+		"To: recipient@example.org\r\n" +
+		"Subject: Streaming Multiple DKIM\r\n" +
+		"\r\n" +
+		"Body without final newline")
+	signers := []Signer{
+		{Domain: "example.com", Selector: "rsa", PrivateKey: rsaKey, BodyCanonicalization: CanonRelaxed},
+		{Domain: "example.com", Selector: "ed25519", PrivateKey: ed25519Key, BodyCanonicalization: CanonSimple},
+	}
+
+	originalNow := timeNow
+	timeNow = func() time.Time { return time.Unix(67890, 0) }
+	defer func() { timeNow = originalNow }()
+
+	buffered, err := SignMultiple(message, signers)
+	if err != nil {
+		t.Fatalf("SignMultiple: %v", err)
+	}
+	streamed, err := SignMultipleReader(bytes.NewReader(message), int64(len(message)), signers)
+	if err != nil {
+		t.Fatalf("SignMultipleReader: %v", err)
+	}
+	if streamed != buffered {
+		t.Fatalf("SignMultipleReader mismatch:\nstreamed=%s\nbuffered=%s", streamed, buffered)
 	}
 }
 

@@ -1,6 +1,7 @@
 package arc
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -572,6 +573,44 @@ func TestSealAndVerify(t *testing.T) {
 
 	if len(verifyResult.Sets) != 1 {
 		t.Errorf("Sets = %d, want 1", len(verifyResult.Sets))
+	}
+}
+
+func TestSealReaderMatchesBufferedSeal(t *testing.T) {
+	privateKey, _ := generateTestKey(t)
+	message := []byte("From: sender@example.com\r\n" +
+		"To: recipient@example.org\r\n" +
+		"Subject: Streaming ARC\r\n" +
+		"Date: Thu, 19 Dec 2024 10:00:00 +0000\r\n" +
+		"Message-ID: <stream@example.com>\r\n" +
+		"\r\n" +
+		"Line with trailing spaces   \r\n" +
+		"\r\n")
+	fixedTime := time.Unix(1734607200, 0)
+	sealer := &Sealer{
+		Domain:                 "example.com",
+		Selector:               "arc",
+		PrivateKey:             privateKey,
+		Headers:                []string{"From", "To", "Subject", "Date", "Message-ID"},
+		HeaderCanonicalization: CanonRelaxed,
+		BodyCanonicalization:   CanonRelaxed,
+		Clock:                  func() time.Time { return fixedTime },
+	}
+
+	buffered, err := sealer.Seal(message, "example.com", "spf=pass; dkim=pass", ChainValidationNone)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	streamed, err := sealer.SealReader(bytes.NewReader(message), int64(len(message)), "example.com", "spf=pass; dkim=pass", ChainValidationNone)
+	if err != nil {
+		t.Fatalf("SealReader: %v", err)
+	}
+
+	if streamed.AuthenticationResults != buffered.AuthenticationResults ||
+		streamed.MessageSignature != buffered.MessageSignature ||
+		streamed.Seal != buffered.Seal ||
+		streamed.Instance != buffered.Instance {
+		t.Fatalf("SealReader mismatch:\nstreamed=%#v\nbuffered=%#v", streamed, buffered)
 	}
 }
 

@@ -7,7 +7,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -81,11 +83,24 @@ type SealResult struct {
 //
 // Returns the three ARC headers that should be prepended to the message.
 func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValidation ChainValidationStatus) (*SealResult, error) {
+	return s.SealReader(bytes.NewReader(message), int64(len(message)), authServID, authResults, chainValidation)
+}
+
+// SealReader creates a new ARC set for a complete RFC 5322 message from a
+// seekable reader. Message headers are parsed into memory, but the body is
+// canonicalized from the reader without materializing it.
+func (s *Sealer) SealReader(message io.ReaderAt, size int64, authServID, authResults string, chainValidation ChainValidationStatus) (*SealResult, error) {
+	if message == nil {
+		return nil, errors.New("arc: message reader is nil")
+	}
 	// Parse existing ARC headers to determine instance number
-	br := bufio.NewReader(bytes.NewReader(message))
+	br := bufio.NewReader(&atReader{r: message, offset: 0})
 	headers, bodyOffset, err := parseHeaders(br)
 	if err != nil {
 		return nil, fmt.Errorf("parsing message: %w", err)
+	}
+	if size < int64(bodyOffset) {
+		return nil, fmt.Errorf("arc: message size %d is smaller than body offset %d", size, bodyOffset)
 	}
 
 	// Determine instance number
@@ -197,9 +212,8 @@ func (s *Sealer) Seal(message []byte, authServID, authResults string, chainValid
 	ms.SignedHeaders = finalSignedHeaders
 
 	// Compute body hash
-	body := message[bodyOffset:]
 	bodyHasher := hashFunc.New()
-	bodyHash, err := computeBodyHash(bodyHasher, bodyCanon, bytes.NewReader(body), -1)
+	bodyHash, err := computeBodyHash(bodyHasher, bodyCanon, io.NewSectionReader(message, int64(bodyOffset), size-int64(bodyOffset)), -1)
 	if err != nil {
 		return nil, fmt.Errorf("computing body hash: %w", err)
 	}

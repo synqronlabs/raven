@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,22 @@ func TestMailBuilder_Basic(t *testing.T) {
 
 	if mail.Content.Headers.Get("Subject") != "Test Subject" {
 		t.Errorf("Expected subject 'Test Subject', got %q", mail.Content.Headers.Get("Subject"))
+	}
+}
+
+func TestNewHeaderPrependedReader(t *testing.T) {
+	headers := "DKIM-Signature: test\r\nARC-Seal: test\r\n"
+	body := "From: sender@example.com\r\n\r\nbody\r\n"
+
+	got, err := io.ReadAll(NewHeaderPrependedReader(headers, strings.NewReader(body)))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(got) != headers+body {
+		t.Fatalf("prepended reader output = %q, want %q", string(got), headers+body)
+	}
+	if size := PrependedSize(headers, int64(len(body))); size != int64(len(headers)+len(body)) {
+		t.Fatalf("PrependedSize = %d, want %d", size, len(headers)+len(body))
 	}
 }
 

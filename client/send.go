@@ -316,6 +316,13 @@ func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 	// - The session is using TLS
 	// - The server advertises REQUIRETLS in EHLO
 	if envelope.RequireTLS {
+		if !c.isTLS {
+			return &SMTPError{
+				Code:         550,
+				EnhancedCode: escRequireTLSRequired,
+				Message:      "REQUIRETLS requires an active TLS session",
+			}
+		}
 		if _, ok := c.extensions[ravenmail.ExtRequireTLS]; ok {
 			params = append(params, "REQUIRETLS")
 		} else {

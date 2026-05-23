@@ -2550,6 +2550,28 @@ func TestClient_Send_RequireTLS_NotSupported(t *testing.T) {
 	}
 }
 
+func TestClient_SendMailFromEnvelope_RequireTLSRequiresActiveTLS(t *testing.T) {
+	c := NewClient(&ClientConfig{LocalName: "localhost"})
+	c.extensions[ravenmail.ExtRequireTLS] = ""
+
+	envelope := ravenmail.Envelope{
+		From:       ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+		RequireTLS: true,
+	}
+
+	err := c.sendMailFromEnvelope(envelope)
+	var smtpErr *SMTPError
+	if !errors.As(err, &smtpErr) {
+		t.Fatalf("expected SMTPError, got %T: %v", err, err)
+	}
+	if smtpErr.EnhancedCode != escRequireTLSRequired {
+		t.Fatalf("EnhancedCode = %q, want %q", smtpErr.EnhancedCode, escRequireTLSRequired)
+	}
+	if !strings.Contains(smtpErr.Message, "active TLS") {
+		t.Fatalf("expected active TLS error, got %q", smtpErr.Message)
+	}
+}
+
 func TestClient_Send_DeliveryBy(t *testing.T) {
 	h := &basicSMTPHandler{
 		extensions: []string{"DELIVERBY 120"},

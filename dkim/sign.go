@@ -1,10 +1,14 @@
 package dkim
 
 import (
+	"bufio"
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -55,134 +59,31 @@ type Signer struct {
 // Sign signs the message and returns the DKIM-Signature header.
 // The message should be the complete RFC 5322 message (headers + body).
 func (s *Signer) Sign(message []byte) (string, error) {
-	// Parse headers
-	headers, bodyOffset, err := parseMessageHeaders(message)
+	return s.SignReader(bytes.NewReader(message), int64(len(message)))
+}
+
+// SignReader signs a complete RFC 5322 message from a seekable reader and
+// returns the DKIM-Signature header. Message headers are parsed into memory, but
+// the body is canonicalized from the reader without materializing it.
+func (s *Signer) SignReader(message io.ReaderAt, size int64) (string, error) {
+	if message == nil {
+		return "", errors.New("dkim: message reader is nil")
+	}
+	headers, bodyOffset, err := parseReaderHeaders(message)
 	if err != nil {
 		return "", fmt.Errorf("parsing message headers: %w", err)
 	}
-
-	// Verify exactly one From header exists (RFC 6376 requirement)
-	fromCount := 0
-	for _, h := range headers {
-		if h.lkey == "from" {
-			fromCount++
-		}
+	if err := validateSingleFrom(headers); err != nil {
+		return "", err
 	}
-	if fromCount == 0 {
-		return "", ErrFromRequired
-	}
-	if fromCount > 1 {
-		return "", fmt.Errorf("%w: message has %d From headers, need exactly 1", ErrFromRequired, fromCount)
+	if size < int64(bodyOffset) {
+		return "", fmt.Errorf("dkim: message size %d is smaller than body offset %d", size, bodyOffset)
 	}
 
-	// Build the signature
-	sig := NewSignature()
-	sig.Version = 1
-	sig.Domain = s.Domain
-	sig.Selector = s.Selector
-
-	// Determine algorithm
-	alg, hashAlg, err := s.getAlgorithm()
-	if err != nil {
-		return "", fmt.Errorf("determining signing algorithm: %w", err)
+	bodyReader := func() io.Reader {
+		return io.NewSectionReader(message, int64(bodyOffset), size-int64(bodyOffset))
 	}
-	sig.Algorithm = string(alg)
-
-	// Set canonicalization
-	headerCanon := s.HeaderCanonicalization
-	if headerCanon == "" {
-		headerCanon = CanonRelaxed
-	}
-	bodyCanon := s.BodyCanonicalization
-	if bodyCanon == "" {
-		bodyCanon = CanonRelaxed
-	}
-	sig.Canonicalization = string(headerCanon) + "/" + string(bodyCanon)
-
-	// Set signed headers
-	signedHeaders := s.Headers
-	if len(signedHeaders) == 0 {
-		signedHeaders = DefaultSignedHeaders
-	}
-
-	// Ensure "from" is included
-	hasFromInSigned := false
-	for _, h := range signedHeaders {
-		if strings.EqualFold(h, "from") {
-			hasFromInSigned = true
-			break
-		}
-	}
-	if !hasFromInSigned {
-		signedHeaders = append([]string{"From"}, signedHeaders...)
-	}
-
-	// Filter to only headers present in the message
-	presentHeaders := make(map[string]int)
-	for _, h := range headers {
-		presentHeaders[h.lkey]++
-	}
-
-	var finalSignedHeaders []string
-	for _, h := range signedHeaders {
-		lh := strings.ToLower(h)
-		if presentHeaders[lh] > 0 {
-			finalSignedHeaders = append(finalSignedHeaders, h)
-		}
-	}
-
-	// Oversign headers (add each header name one more time to prevent additions)
-	if s.OversignHeaders {
-		headerCounts := make(map[string]int)
-		for _, h := range finalSignedHeaders {
-			headerCounts[strings.ToLower(h)]++
-		}
-		for _, h := range finalSignedHeaders {
-			lh := strings.ToLower(h)
-			count := presentHeaders[lh]
-			for headerCounts[lh] < count+1 {
-				finalSignedHeaders = append(finalSignedHeaders, h)
-				headerCounts[lh]++
-			}
-		}
-	}
-
-	sig.SignedHeaders = finalSignedHeaders
-
-	// Set identity
-	if s.Identity != "" {
-		sig.Identity = s.Identity
-	}
-
-	// Set timestamp
-	sig.SignTime = timeNow().Unix()
-
-	// Set expiration
-	if s.Expiration > 0 {
-		sig.ExpireTime = sig.SignTime + int64(s.Expiration.Seconds())
-	}
-
-	// getAlgorithm() guarantees a supported hash and the signer builds its own
-	// DKIM-Signature header, so these helper calls cannot fail on this path.
-	h, _ := getHash(hashAlg)
-	body := message[bodyOffset:]
-	bodyHash, _ := computeBodyHash(h.New(), bodyCanon, body)
-	sig.BodyHash = bodyHash
-
-	sigHeader, _ := sig.Header(false)
-
-	dataHash, _ := computeDataHash(h.New(), headerCanon, headers, finalSignedHeaders, []byte(sigHeader))
-
-	// Sign the hash
-	signature, err := signWithKey(s.PrivateKey, h, dataHash)
-	if err != nil {
-		return "", fmt.Errorf("signing: %w", err)
-	}
-	sig.Signature = signature
-
-	finalHeader, _ := sig.Header(true)
-
-	return finalHeader + "\r\n", nil
+	return s.signWithCachedBodyHashReader(headers, bodyReader, make(map[bodyHashKey][]byte))
 }
 
 // getAlgorithm determines the signing algorithm based on the private key type.
@@ -223,41 +124,46 @@ type bodyHashKey struct {
 // This function caches body hashes to avoid recomputation when multiple
 // signers use the same canonicalization and hash algorithm.
 func SignMultiple(message []byte, signers []Signer) (string, error) {
+	return SignMultipleReader(bytes.NewReader(message), int64(len(message)), signers)
+}
+
+// SignMultipleReader signs a complete RFC 5322 message from a seekable reader
+// with multiple selectors. Body hashes are cached by canonicalization and hash
+// algorithm, and each uncached body pass reads from message without buffering it.
+func SignMultipleReader(message io.ReaderAt, size int64, signers []Signer) (string, error) {
 	if len(signers) == 0 {
 		return "", nil
 	}
+	if message == nil {
+		return "", errors.New("dkim: message reader is nil")
+	}
 
 	// Parse message once for all signers
-	headers, bodyOffset, err := parseMessageHeaders(message)
+	headers, bodyOffset, err := parseReaderHeaders(message)
 	if err != nil {
 		return "", fmt.Errorf("parsing message headers: %w", err)
 	}
+	if size < int64(bodyOffset) {
+		return "", fmt.Errorf("dkim: message size %d is smaller than body offset %d", size, bodyOffset)
+	}
 
 	// Verify exactly one From header exists
-	fromCount := 0
-	for _, h := range headers {
-		if h.lkey == "from" {
-			fromCount++
-		}
+	if err := validateSingleFrom(headers); err != nil {
+		return "", err
 	}
-	if fromCount == 0 {
-		return "", ErrFromRequired
-	}
-	if fromCount > 1 {
-		return "", fmt.Errorf("%w: message has %d From headers, need exactly 1", ErrFromRequired, fromCount)
-	}
-
-	body := message[bodyOffset:]
 
 	// Cache for body hashes to avoid recomputation
 	bodyHashes := make(map[bodyHashKey][]byte)
+	bodyReader := func() io.Reader {
+		return io.NewSectionReader(message, int64(bodyOffset), size-int64(bodyOffset))
+	}
 
 	var result strings.Builder
 
 	for i := range signers {
 		s := &signers[i]
 
-		sig, err := s.signWithCachedBodyHash(headers, body, bodyHashes)
+		sig, err := s.signWithCachedBodyHashReader(headers, bodyReader, bodyHashes)
 		if err != nil {
 			return "", fmt.Errorf("signer %d: %w", i, err)
 		}
@@ -267,8 +173,35 @@ func SignMultiple(message []byte, signers []Signer) (string, error) {
 	return result.String(), nil
 }
 
+func parseReaderHeaders(message io.ReaderAt) ([]headerData, int, error) {
+	br := bufio.NewReader(&atReader{r: message, offset: 0})
+	return parseHeaders(br)
+}
+
+func validateSingleFrom(headers []headerData) error {
+	fromCount := 0
+	for _, h := range headers {
+		if h.lkey == "from" {
+			fromCount++
+		}
+	}
+	if fromCount == 0 {
+		return ErrFromRequired
+	}
+	if fromCount > 1 {
+		return fmt.Errorf("%w: message has %d From headers, need exactly 1", ErrFromRequired, fromCount)
+	}
+	return nil
+}
+
 // signWithCachedBodyHash signs the message using cached body hashes.
 func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyHashes map[bodyHashKey][]byte) (string, error) {
+	return s.signWithCachedBodyHashReader(headers, func() io.Reader {
+		return bytes.NewReader(body)
+	}, bodyHashes)
+}
+
+func (s *Signer) signWithCachedBodyHashReader(headers []headerData, bodyReader func() io.Reader, bodyHashes map[bodyHashKey][]byte) (string, error) {
 	// Build the signature
 	sig := NewSignature()
 	sig.Version = 1
@@ -369,7 +302,10 @@ func (s *Signer) signWithCachedBodyHash(headers []headerData, body []byte, bodyH
 		// Use cached body hash
 		bodyHash = cached
 	} else {
-		bodyHash, _ = computeBodyHash(h.New(), bodyCanon, body)
+		bodyHash, err = computeBodyHashReader(h.New(), bodyCanon, bodyReader())
+		if err != nil {
+			return "", fmt.Errorf("computing body hash: %w", err)
+		}
 		bodyHashes[hk] = bodyHash
 	}
 	sig.BodyHash = bodyHash

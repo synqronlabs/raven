@@ -58,8 +58,10 @@ func computeBodyHash(h hash.Hash, canonicalization Canonicalization, body []byte
 
 // computeBodyHashReader calculates the hash of the message body from a reader.
 func computeBodyHashReader(h hash.Hash, canonicalization Canonicalization, body io.Reader) ([]byte, error) {
-	sum, _, err := computeBodyHashLimitedReader(h, canonicalization, body, -1)
-	return sum, err
+	if canonicalization == CanonSimple {
+		return writeBodyHashSimple(h, body)
+	}
+	return writeBodyHashRelaxed(h, body)
 }
 
 func computeBodyHashLimitedReader(h hash.Hash, canonicalization Canonicalization, body io.Reader, limit int64) ([]byte, int64, error) {
@@ -148,6 +150,48 @@ func canonicalizeBodySimple(body io.Reader) ([]byte, error) {
 	canonical.Write(crlf)
 
 	return canonical.Bytes(), nil
+}
+
+func writeBodyHashSimple(h hash.Hash, body io.Reader) ([]byte, error) {
+	br := bufio.NewReader(body)
+	var crlf = []byte("\r\n")
+	numTrailingCRLF := 0
+
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) == 0 && err == io.EOF {
+			break
+		}
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading body line for simple canonicalization: %w", err)
+		}
+
+		hasCRLF := bytes.HasSuffix(line, crlf)
+		if hasCRLF {
+			line = line[:len(line)-2]
+		}
+
+		if len(line) > 0 {
+			for i := 0; i < numTrailingCRLF; i++ {
+				if _, err := h.Write(crlf); err != nil {
+					return nil, fmt.Errorf("writing pending CRLF to simple body hash: %w", err)
+				}
+			}
+			numTrailingCRLF = 0
+			if _, err := h.Write(line); err != nil {
+				return nil, fmt.Errorf("writing canonicalized simple body line to hash: %w", err)
+			}
+		}
+
+		if hasCRLF {
+			numTrailingCRLF++
+		}
+	}
+
+	if _, err := h.Write(crlf); err != nil {
+		return nil, fmt.Errorf("writing final CRLF to simple body hash: %w", err)
+	}
+	return h.Sum(nil), nil
 }
 
 // bodyHashRelaxed computes the body hash using relaxed canonicalization.
@@ -243,6 +287,79 @@ func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
 	}
 
 	return canonical.Bytes(), nil
+}
+
+func writeBodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
+	br := bufio.NewReader(body)
+	var crlf = []byte("\r\n")
+	emptyLines := 0
+	bodyNonEmpty := false
+	lastLineHadCRLF := false
+
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) == 0 && err == io.EOF {
+			break
+		}
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading body line for relaxed canonicalization: %w", err)
+		}
+
+		bodyNonEmpty = true
+
+		hasCRLF := bytes.HasSuffix(line, crlf)
+		if hasCRLF {
+			line = line[:len(line)-2]
+		}
+
+		line = bytes.TrimRight(line, " \t")
+
+		var processed []byte
+		prevWS := false
+		for _, b := range line {
+			if b == ' ' || b == '\t' {
+				if !prevWS {
+					processed = append(processed, ' ')
+					prevWS = true
+				}
+			} else {
+				processed = append(processed, b)
+				prevWS = false
+			}
+		}
+
+		if len(processed) == 0 {
+			if hasCRLF {
+				emptyLines++
+			}
+			lastLineHadCRLF = hasCRLF
+			continue
+		}
+
+		for i := 0; i < emptyLines; i++ {
+			if _, err := h.Write(crlf); err != nil {
+				return nil, fmt.Errorf("writing pending CRLF to relaxed body hash: %w", err)
+			}
+		}
+		emptyLines = 0
+
+		if _, err := h.Write(processed); err != nil {
+			return nil, fmt.Errorf("writing canonicalized relaxed body line to hash: %w", err)
+		}
+		if hasCRLF {
+			if _, err := h.Write(crlf); err != nil {
+				return nil, fmt.Errorf("writing CRLF to relaxed body hash: %w", err)
+			}
+		}
+		lastLineHadCRLF = hasCRLF
+	}
+
+	if bodyNonEmpty && !lastLineHadCRLF && emptyLines == 0 {
+		if _, err := h.Write(crlf); err != nil {
+			return nil, fmt.Errorf("writing final CRLF to relaxed body hash: %w", err)
+		}
+	}
+	return h.Sum(nil), nil
 }
 
 // computeDataHash calculates the hash of the signed headers and signature header.
