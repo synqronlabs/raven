@@ -1226,8 +1226,12 @@ func (c *Conn) handleDATA() error {
 
 // handleBDAT handles the BDAT command (CHUNKING extension).
 func (c *Conn) handleBDAT(args string) error {
-	if c.state != StateMail && c.state != StateRcpt && c.state != StateData {
+	if c.state != StateRcpt && c.state != StateData {
 		c.writeError(errBadSequence)
+		return nil
+	}
+	if c.recipientCount == 0 {
+		c.writeError(errNoRecipients)
 		return nil
 	}
 
@@ -1238,18 +1242,28 @@ func (c *Conn) handleBDAT(args string) error {
 
 	// Parse BDAT <size> [LAST]
 	parts := strings.Fields(args)
-	if len(parts) == 0 {
+	if len(parts) < 1 || len(parts) > 2 {
+		c.writeError(errBdatSyntax)
+		return nil
+	}
+	if len(parts) == 2 && !strings.EqualFold(parts[1], "LAST") {
 		c.writeError(errBdatSyntax)
 		return nil
 	}
 
-	var size int64
-	if _, err := fmt.Sscanf(parts[0], "%d", &size); err != nil {
+	for _, ch := range parts[0] {
+		if ch < '0' || ch > '9' {
+			c.writeError(errInvalidChunkSize)
+			return nil
+		}
+	}
+	size, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
 		c.writeError(errInvalidChunkSize)
 		return nil
 	}
 
-	isLast := len(parts) > 1 && strings.EqualFold(parts[1], "LAST")
+	isLast := len(parts) == 2
 
 	// Set data timeout
 	if err := c.conn.SetReadDeadline(time.Now().Add(c.server.config.DataTimeout)); err != nil {

@@ -1792,6 +1792,91 @@ func TestServer_LoopDetection_BelowThreshold(t *testing.T) {
 
 // --- BDAT / CHUNKING ---
 
+func TestServer_BDAT_RejectsInvalidSequenceAndArguments(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	// BDAT requires an active transaction with at least one accepted recipient.
+	tc.send("BDAT 0 LAST")
+	tc.expectCode(503)
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+	tc.send("BDAT 0 LAST")
+	tc.expectCode(503)
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	invalid := []string{
+		"BDAT",
+		"BDAT -1",
+		"BDAT +1",
+		"BDAT 1x",
+		"BDAT 9223372036854775808",
+		"BDAT 0 MIDDLE",
+		"BDAT 0 LAST EXTRA",
+	}
+	for _, command := range invalid {
+		tc.send("%s", command)
+		tc.expectCode(501)
+	}
+
+	// Invalid commands must not consume payload bytes or corrupt the transaction.
+	msg := "Subject: test\r\n\r\nBody."
+	tc.send("BDAT %d LAST", len(msg))
+	tc.writeRaw(msg)
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+}
+
+func TestServer_BDAT_ZeroLengthLast(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{
+		sessionFactory: func(_ *server.Conn) (server.Session, error) {
+			return sess, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+	tc.send("BDAT 0 LAST")
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(sess.completed))
+	}
+	if len(sess.completed[0].body) != 0 {
+		t.Fatalf("expected empty body, got %q", sess.completed[0].body)
+	}
+}
+
 func TestServer_BDAT_ReceivedHeader(t *testing.T) {
 	sess := &testSession{}
 	backend := &testBackend{
