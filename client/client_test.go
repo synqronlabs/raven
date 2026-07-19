@@ -3114,6 +3114,103 @@ func TestPool_GetAndPut(t *testing.T) {
 	defer func() { _ = client2.Close() }()
 }
 
+func TestPool_BoundsCheckedOutConnections(t *testing.T) {
+	h := &basicSMTPHandler{}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	host, port := splitMockServerAddr(t, srv.addr())
+	p := NewPool(NewDialer(host, port), 2)
+	defer func() { _ = p.Close() }()
+
+	first, err := p.Get()
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	second, err := p.Get()
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := p.GetContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetContext above capacity error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	p.Put(first)
+	reuseCtx, reuseCancel := context.WithTimeout(context.Background(), time.Second)
+	defer reuseCancel()
+	reused, err := p.GetContext(reuseCtx)
+	if err != nil {
+		t.Fatalf("GetContext after Put: %v", err)
+	}
+
+	p.Put(second)
+	p.Put(reused)
+}
+
+func TestPool_CloseWakesBlockedGet(t *testing.T) {
+	h := &basicSMTPHandler{}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	host, port := splitMockServerAddr(t, srv.addr())
+	p := NewPool(NewDialer(host, port), 1)
+	client, err := p.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.Get()
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("blocked Get returned before capacity was released: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("blocked Get error = %v, want %v", err, ErrClientClosed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked Get was not woken by Close")
+	}
+
+	// Returning a checked-out client after Close closes it and releases its slot.
+	p.Put(client)
+}
+
+func TestPool_DialFailureReleasesCapacity(t *testing.T) {
+	srv := newMockSMTPServer(t, func(net.Conn) {})
+	defer srv.close()
+
+	host, port := splitMockServerAddr(t, srv.addr())
+	p := NewPool(NewDialer(host, port), 1)
+	defer func() { _ = p.Close() }()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := p.GetContext(ctx)
+		cancel()
+		if err == nil {
+			t.Fatalf("attempt %d: expected dial failure", attempt)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("attempt %d blocked because capacity was not released: %v", attempt, err)
+		}
+	}
+}
+
 // --- Tests migrated from original client_test.go ---
 
 func TestClientConfig_Defaults(t *testing.T) {

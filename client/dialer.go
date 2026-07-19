@@ -210,96 +210,218 @@ func (d *Dialer) DialAndSendRawMultiple(messages []RawMessage) ([]*SendResult, e
 	return results, nil
 }
 
-// Pool manages a pool of SMTP connections for efficient sending.
+type poolClientState uint8
+
+const (
+	poolClientCheckedOut poolClientState = iota
+	poolClientIdle
+)
+
+// Pool manages a bounded pool of SMTP connections for efficient sending.
+// Its size limits all live connections, including checked-out connections.
 type Pool struct {
 	dialer *Dialer
 	mu     sync.Mutex
 	conns  chan *Client
+	slots  chan struct{}
+	done   chan struct{}
+	owned  map[*Client]poolClientState
 	size   int
 	closed bool
 }
 
-// NewPool creates a new connection pool.
+// NewPool creates a connection pool with at most size live connections.
 func NewPool(dialer *Dialer, size int) *Pool {
 	if size <= 0 {
 		size = 5
 	}
-	return &Pool{
+	p := &Pool{
 		dialer: dialer,
 		conns:  make(chan *Client, size),
+		slots:  make(chan struct{}, size),
+		done:   make(chan struct{}),
+		owned:  make(map[*Client]poolClientState, size),
 		size:   size,
+	}
+	for range size {
+		p.slots <- struct{}{}
+	}
+	return p
+}
+
+// Get retrieves a connection from the pool, waiting when all connections are
+// checked out. Close wakes blocked callers with ErrClientClosed.
+func (p *Pool) Get() (*Client, error) {
+	return p.GetContext(context.Background())
+}
+
+// GetContext retrieves a connection from the pool, waiting for capacity when
+// necessary. Cancellation affects capacity waiting and dialing. Health checks
+// on reused connections and subsequent SMTP operations use the Client's
+// configured timeouts.
+func (p *Pool) GetContext(ctx context.Context) (*Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		// Prefer an already established idle connection over consuming capacity
+		// for a new dial.
+		select {
+		case client := <-p.conns:
+			if reused, err := p.reuse(client); err != nil || reused != nil {
+				return reused, err
+			}
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.done:
+			return nil, ErrClientClosed
+		case client := <-p.conns:
+			if reused, err := p.reuse(client); err != nil || reused != nil {
+				return reused, err
+			}
+		case <-p.slots:
+			// An idle connection may have been returned at the same time as the
+			// capacity token became selectable. Prefer reuse if so.
+			select {
+			case client := <-p.conns:
+				p.releaseSlot()
+				if reused, err := p.reuse(client); err != nil || reused != nil {
+					return reused, err
+				}
+				continue
+			default:
+			}
+
+			p.mu.Lock()
+			closed := p.closed
+			p.mu.Unlock()
+			if closed {
+				p.releaseSlot()
+				return nil, ErrClientClosed
+			}
+
+			client, err := p.dialer.DialContext(ctx)
+			if err != nil {
+				p.releaseSlot()
+				return nil, err
+			}
+
+			p.mu.Lock()
+			closed = p.closed
+			if !closed {
+				p.owned[client] = poolClientCheckedOut
+			}
+			p.mu.Unlock()
+			if closed {
+				_ = client.Close()
+				p.releaseSlot()
+				return nil, ErrClientClosed
+			}
+			return client, nil
+		}
 	}
 }
 
-// Get retrieves a connection from the pool, creating one if necessary.
-func (p *Pool) Get() (*Client, error) {
+func (p *Pool) reuse(client *Client) (*Client, error) {
 	p.mu.Lock()
+	state, owned := p.owned[client]
 	if p.closed {
-		p.mu.Unlock()
-		return nil, ErrClientClosed
-	}
-
-	// Try to get an existing connection
-	select {
-	case client := <-p.conns:
-		p.mu.Unlock()
-		// Verify connection is still valid
-		if err := client.Noop(); err == nil {
-			return client, nil
+		if owned {
+			delete(p.owned, client)
 		}
-		// Connection is dead, close it and create new one
-		_ = client.Close()
-	default:
-		// No available connections
 		p.mu.Unlock()
-	}
-
-	// Create new connection
-	client, err := p.dialer.Dial()
-	if err != nil {
-		return nil, err
-	}
-
-	// Close may have raced with the dial. Do not hand out a new connection
-	// after the pool has been closed.
-	p.mu.Lock()
-	closed := p.closed
-	p.mu.Unlock()
-	if closed {
 		_ = client.Close()
+		if owned {
+			p.releaseSlot()
+		}
 		return nil, ErrClientClosed
 	}
+	if !owned || state != poolClientIdle {
+		p.mu.Unlock()
+		_ = client.Close()
+		return nil, nil
+	}
+	p.owned[client] = poolClientCheckedOut
+	p.mu.Unlock()
 
+	if err := client.Noop(); err != nil {
+		p.discard(client)
+		return nil, nil
+	}
 	return client, nil
 }
 
-// Put returns a connection to the pool.
+func (p *Pool) discard(client *Client) {
+	p.mu.Lock()
+	_, owned := p.owned[client]
+	if owned {
+		delete(p.owned, client)
+	}
+	p.mu.Unlock()
+
+	_ = client.Close()
+	if owned {
+		p.releaseSlot()
+	}
+}
+
+func (p *Pool) releaseSlot() {
+	p.slots <- struct{}{}
+}
+
+// Put returns a connection obtained from Get or GetContext to the pool. Clients
+// not owned by this pool are closed and are never admitted.
 func (p *Pool) Put(client *Client) {
 	if client == nil {
 		return
 	}
 
 	p.mu.Lock()
-	if p.closed {
+	state, owned := p.owned[client]
+	if !owned {
 		p.mu.Unlock()
 		_ = client.Close()
+		return
+	}
+	if state == poolClientIdle {
+		p.mu.Unlock()
+		return
+	}
+	if p.closed {
+		delete(p.owned, client)
+		p.mu.Unlock()
+		_ = client.Close()
+		p.releaseSlot()
 		return
 	}
 
 	// Keep the lifecycle lock held while publishing the connection so Close
 	// cannot mark the pool closed between the check and the channel send.
+	p.owned[client] = poolClientIdle
 	select {
 	case p.conns <- client:
 		p.mu.Unlock()
 		return
 	default:
+		delete(p.owned, client)
 		p.mu.Unlock()
 	}
 
-	// Pool full, close connection outside the lifecycle lock.
+	// The idle queue should only be full after misuse such as duplicate returns.
 	if err := client.Quit(); err != nil {
 		_ = client.Close()
 	}
+	p.releaseSlot()
 }
 
 // Send sends a message using a pooled connection.
@@ -312,7 +434,7 @@ func (p *Pool) Send(mail *ravenmail.Mail) (*SendResult, error) {
 	result, err := client.Send(mail)
 	if err != nil {
 		// Error occurred, close this connection
-		_ = client.Close()
+		p.discard(client)
 		return result, fmt.Errorf("sending mail with pooled client: %w", err)
 	}
 
@@ -330,7 +452,7 @@ func (p *Pool) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult
 
 	result, err := client.SendRaw(envelope, data)
 	if err != nil {
-		_ = client.Close()
+		p.discard(client)
 		return result, fmt.Errorf("sending raw mail with pooled client: %w", err)
 	}
 
@@ -346,13 +468,18 @@ func (p *Pool) Close() error {
 		return nil
 	}
 	p.closed = true
+	close(p.done)
 
 	// The channel intentionally remains open. Closing it would race with Put
 	// callers that observed the pool as open. Drain all idle connections while
 	// holding the lifecycle lock, then close them without blocking other calls.
 	clients := make([]*Client, 0, len(p.conns))
 	for range len(p.conns) {
-		clients = append(clients, <-p.conns)
+		client := <-p.conns
+		if state, ok := p.owned[client]; ok && state == poolClientIdle {
+			delete(p.owned, client)
+			clients = append(clients, client)
+		}
 	}
 	p.mu.Unlock()
 
@@ -360,6 +487,7 @@ func (p *Pool) Close() error {
 		if err := client.Quit(); err != nil {
 			_ = client.Close()
 		}
+		p.releaseSlot()
 	}
 
 	return nil
