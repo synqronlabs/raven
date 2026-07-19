@@ -54,6 +54,8 @@ type RecipientResult struct {
 
 // Send sends a mail message to the server.
 // The mail content is validated against RFC 5322 requirements before sending.
+// MAIL FROM and RCPT TO are sent as one command group when the server advertises
+// PIPELINING.
 func (c *Client) Send(mail *ravenmail.Mail) (*SendResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,23 +75,9 @@ func (c *Client) Send(mail *ravenmail.Mail) (*SendResult, error) {
 		}
 	}
 
-	result := &SendResult{
-		RecipientResults: make([]RecipientResult, 0, len(mail.Envelope.To)),
-	}
-
-	// Send MAIL FROM with appropriate extensions
-	if err := c.sendMailFrom(mail); err != nil {
-		return nil, fmt.Errorf("sending MAIL FROM command: %w", err)
-	}
-
-	// Send RCPT TO for each recipient
-	acceptedCount := 0
-	for _, rcpt := range mail.Envelope.To {
-		rcptResult := c.sendRcptTo(rcpt)
-		result.RecipientResults = append(result.RecipientResults, rcptResult)
-		if rcptResult.Accepted {
-			acceptedCount++
-		}
+	result, acceptedCount, err := c.sendEnvelope(mail.Envelope, SendOptions{})
+	if err != nil {
+		return result, err
 	}
 
 	// If no recipients were accepted, abort
@@ -156,7 +144,8 @@ type RawMessage struct {
 //
 // The caller supplies the SMTP envelope separately from the message stream.
 // Data is streamed directly through DATA with SMTP dot-stuffing; it is not
-// parsed, validated, or buffered in memory.
+// parsed, validated, or buffered in memory. Envelope commands are pipelined
+// when supported by the server.
 func (c *Client) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult, error) {
 	return c.SendRawWithOptions(envelope, data, SendOptions{})
 }
@@ -206,7 +195,8 @@ func (c *Client) SendRawWithOptions(envelope ravenmail.Envelope, data io.Reader,
 	return result, nil
 }
 
-// SendWithOptions sends mail with custom options.
+// SendWithOptions sends mail with custom options. Envelope commands are
+// pipelined when supported by the server.
 func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -263,16 +253,17 @@ func newMailContentReader(content *ravenmail.Content) (io.Reader, int64) {
 	return io.MultiReader(bytes.NewReader(headers), bytes.NewReader(content.Body)), size
 }
 
-// sendMailFrom sends the MAIL FROM command with appropriate extension parameters.
-func (c *Client) sendMailFrom(mail *ravenmail.Mail) error {
-	return c.sendMailFromEnvelope(mail.Envelope)
-}
-
 func (c *Client) sendEnvelope(envelope ravenmail.Envelope, opts SendOptions) (*SendResult, int, error) {
 	if len(envelope.To) == 0 {
 		return nil, 0, ErrNoRecipients
 	}
+	if _, ok := c.extensions[ravenmail.ExtPipelining]; ok {
+		return c.sendEnvelopePipelined(envelope, opts)
+	}
+	return c.sendEnvelopeSequential(envelope, opts)
+}
 
+func (c *Client) sendEnvelopeSequential(envelope ravenmail.Envelope, opts SendOptions) (*SendResult, int, error) {
 	result := &SendResult{
 		RecipientResults: make([]RecipientResult, 0, len(envelope.To)),
 	}
@@ -296,7 +287,80 @@ func (c *Client) sendEnvelope(envelope ravenmail.Envelope, opts SendOptions) (*S
 	return result, acceptedCount, nil
 }
 
+func (c *Client) sendEnvelopePipelined(envelope ravenmail.Envelope, opts SendOptions) (*SendResult, int, error) {
+	mailCommand, err := c.mailFromCommand(envelope)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sending MAIL FROM command: %w", err)
+	}
+
+	commands := make([]string, 1, len(envelope.To)+1)
+	commands[0] = mailCommand
+	for _, rcpt := range envelope.To {
+		commands = append(commands, c.rcptToCommand(rcpt))
+	}
+	if err := c.writePipelineCommands(commands); err != nil {
+		return nil, 0, fmt.Errorf("writing pipelined envelope commands: %w", err)
+	}
+
+	mailResponse, err := c.readResponse()
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading pipelined MAIL FROM response: %w", err)
+	}
+
+	result := &SendResult{
+		RecipientResults: make([]RecipientResult, 0, len(envelope.To)),
+	}
+	acceptedCount := 0
+	firstRejected := ""
+	for _, rcpt := range envelope.To {
+		resp, readErr := c.readResponse()
+		rcptResult := newRecipientResult(rcpt, resp, readErr)
+		result.RecipientResults = append(result.RecipientResults, rcptResult)
+		if readErr != nil {
+			return result, acceptedCount, rcptResult.Error
+		}
+		if rcptResult.Accepted {
+			acceptedCount++
+		} else if firstRejected == "" {
+			firstRejected = rcpt.Address.Mailbox.String()
+		}
+	}
+
+	// All responses must be consumed before acting on any failure in the group.
+	if !mailResponse.IsSuccess() {
+		return nil, 0, fmt.Errorf("sending MAIL FROM command: %w", mailResponse.Error())
+	}
+	if opts.RequireAllRecipients && firstRejected != "" {
+		c.bestEffortRSET()
+		return result, acceptedCount, fmt.Errorf("%w: recipient %s rejected", ErrTransactionFailed, firstRejected)
+	}
+
+	return result, acceptedCount, nil
+}
+
 func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
+	cmd, err := c.mailFromCommand(envelope)
+	if err != nil {
+		return err
+	}
+
+	if err := c.writeCommand("%s", cmd); err != nil {
+		return fmt.Errorf("writing MAIL FROM command: %w", err)
+	}
+
+	resp, err := c.readResponse()
+	if err != nil {
+		return fmt.Errorf("reading MAIL FROM response: %w", err)
+	}
+
+	if !resp.IsSuccess() {
+		return resp.Error()
+	}
+
+	return nil
+}
+
+func (c *Client) mailFromCommand(envelope ravenmail.Envelope) (string, error) {
 	var params []string
 
 	// SIZE parameter
@@ -331,7 +395,7 @@ func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 	// - The server advertises REQUIRETLS in EHLO
 	if envelope.RequireTLS {
 		if !c.isTLS {
-			return &SMTPError{
+			return "", &SMTPError{
 				Code:         550,
 				EnhancedCode: escRequireTLSRequired,
 				Message:      "REQUIRETLS requires an active TLS session",
@@ -341,7 +405,7 @@ func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 			params = append(params, "REQUIRETLS")
 		} else {
 			// Server doesn't support REQUIRETLS but message requires it
-			return &SMTPError{
+			return "", &SMTPError{
 				Code:         550,
 				EnhancedCode: escRequireTLSRequired,
 				Message:      "REQUIRETLS support required",
@@ -352,17 +416,17 @@ func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 	// DELIVERBY parameter (RFC 2852)
 	if envelope.DeliveryBy != nil {
 		if _, ok := c.extensions[ravenmail.ExtDeliverBy]; !ok {
-			return ErrDeliveryByNotSupported
+			return "", ErrDeliveryByNotSupported
 		}
 
 		value, err := formatDeliveryBy(envelope.DeliveryBy)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if envelope.DeliveryBy.Mode == ravenmail.DeliveryByModeReturn {
 			minSeconds, err := parseDeliveryByMinimum(c.extensions[ravenmail.ExtDeliverBy])
 			if err == nil && minSeconds > 0 && envelope.DeliveryBy.Seconds < minSeconds {
-				return fmt.Errorf("smtp: DELIVERYBY BY time %d is below server minimum %d", envelope.DeliveryBy.Seconds, minSeconds)
+				return "", fmt.Errorf("smtp: DELIVERYBY BY time %d is below server minimum %d", envelope.DeliveryBy.Seconds, minSeconds)
 			}
 		}
 		params = append(params, "BY="+value)
@@ -405,21 +469,7 @@ func (c *Client) sendMailFromEnvelope(envelope ravenmail.Envelope) error {
 	if len(params) > 0 {
 		cmd += " " + strings.Join(params, " ")
 	}
-
-	if err := c.writeCommand("%s", cmd); err != nil {
-		return fmt.Errorf("writing MAIL FROM command: %w", err)
-	}
-
-	resp, err := c.readResponse()
-	if err != nil {
-		return fmt.Errorf("reading MAIL FROM response: %w", err)
-	}
-
-	if !resp.IsSuccess() {
-		return resp.Error()
-	}
-
-	return nil
+	return cmd, nil
 }
 
 func formatDeliveryBy(deliveryBy *ravenmail.DeliveryBy) (string, error) {
@@ -470,10 +520,19 @@ func (c *Client) bestEffortRSET() {
 
 // sendRcptTo sends a RCPT TO command for a single recipient.
 func (c *Client) sendRcptTo(rcpt ravenmail.Recipient) RecipientResult {
-	result := RecipientResult{
-		Address: rcpt.Address.Mailbox.String(),
+	cmd := c.rcptToCommand(rcpt)
+	if err := c.writeCommand("%s", cmd); err != nil {
+		return RecipientResult{
+			Address: rcpt.Address.Mailbox.String(),
+			Error:   fmt.Errorf("writing RCPT TO command for %s: %w", rcpt.Address.Mailbox.String(), err),
+		}
 	}
 
+	resp, err := c.readResponse()
+	return newRecipientResult(rcpt, resp, err)
+}
+
+func (c *Client) rcptToCommand(rcpt ravenmail.Recipient) string {
 	var params []string
 
 	// DSN parameters (per-recipient)
@@ -492,20 +551,18 @@ func (c *Client) sendRcptTo(rcpt ravenmail.Recipient) RecipientResult {
 	if len(params) > 0 {
 		cmd += " " + strings.Join(params, " ")
 	}
+	return cmd
+}
 
-	if err := c.writeCommand("%s", cmd); err != nil {
-		result.Error = fmt.Errorf("writing RCPT TO command for %s: %w", rcpt.Address.Mailbox.String(), err)
-		return result
+func newRecipientResult(rcpt ravenmail.Recipient, resp *ClientResponse, err error) RecipientResult {
+	result := RecipientResult{
+		Address:  rcpt.Address.Mailbox.String(),
+		Response: resp,
 	}
-
-	resp, err := c.readResponse()
 	if err != nil {
 		result.Error = fmt.Errorf("reading RCPT TO response for %s: %w", rcpt.Address.Mailbox.String(), err)
 		return result
 	}
-
-	result.Response = resp
-
 	if resp.IsSuccess() {
 		result.Accepted = true
 	} else {
@@ -1000,11 +1057,8 @@ func (c *Client) PipelineCommands(commands []string) ([]*ClientResponse, error) 
 		return nil, fmt.Errorf("%w: PIPELINING", ErrExtensionNotSupported)
 	}
 
-	// Send all commands
-	for _, cmd := range commands {
-		if err := c.writeCommand("%s", cmd); err != nil {
-			return nil, fmt.Errorf("writing pipelined command %q: %w", cmd, err)
-		}
+	if err := c.writePipelineCommands(commands); err != nil {
+		return nil, err
 	}
 
 	// Read all responses
@@ -1018,6 +1072,32 @@ func (c *Client) PipelineCommands(commands []string) ([]*ClientResponse, error) 
 	}
 
 	return responses, nil
+}
+
+// writePipelineCommands writes a complete command group and flushes it once.
+// The caller must read exactly one response per command afterward.
+func (c *Client) writePipelineCommands(commands []string) error {
+	if c.config.WriteTimeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout)); err != nil {
+			return fmt.Errorf("setting write deadline for pipelined commands: %w", err)
+		}
+	}
+
+	for _, cmd := range commands {
+		if c.config.Debug && c.config.DebugWriter != nil {
+			_, _ = fmt.Fprintf(c.config.DebugWriter, "C: %s\n", cmd)
+		}
+		if _, err := c.writer.WriteString(cmd); err != nil {
+			return fmt.Errorf("writing pipelined command %q: %w", cmd, err)
+		}
+		if _, err := c.writer.WriteString("\r\n"); err != nil {
+			return fmt.Errorf("terminating pipelined command %q: %w", cmd, err)
+		}
+	}
+	if err := c.writer.Flush(); err != nil {
+		return fmt.Errorf("flushing %d pipelined commands: %w", len(commands), err)
+	}
+	return nil
 }
 
 // StreamData streams large message data to the server using an io.Reader.

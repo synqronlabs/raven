@@ -1464,10 +1464,167 @@ func TestClient_Send_PartialRecipientRejection(t *testing.T) {
 	}
 }
 
+func TestClient_Send_PipelinesEnvelopeCommands(t *testing.T) {
+	handlerDone := make(chan error, 1)
+	commands := make(chan []string, 1)
+	srv := newMockSMTPServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			handlerDone <- err
+			return
+		}
+		smtpGreeting(w)
+
+		line, err := readLine(r)
+		if err != nil || !strings.HasPrefix(strings.ToUpper(line), "EHLO") {
+			handlerDone <- fmt.Errorf("reading EHLO: line=%q err=%v", line, err)
+			return
+		}
+		smtpEHLO(w, []string{"PIPELINING"})
+
+		group := make([]string, 0, 3)
+		for range 3 {
+			line, err = readLine(r)
+			if err != nil {
+				handlerDone <- fmt.Errorf("reading pipelined envelope: %w", err)
+				return
+			}
+			group = append(group, line)
+		}
+		commands <- group
+
+		mustWriteString(w, "250 2.1.0 Sender accepted\r\n")
+		mustWriteString(w, "250 2.1.5 Recipient accepted\r\n")
+		mustWriteString(w, "550 5.1.1 Recipient rejected\r\n")
+		mustFlush(w)
+
+		line, err = readLine(r)
+		if err != nil || strings.ToUpper(line) != "DATA" {
+			handlerDone <- fmt.Errorf("reading DATA after envelope: line=%q err=%v", line, err)
+			return
+		}
+		mustWriteString(w, "354 Start mail input\r\n")
+		mustFlush(w)
+		for {
+			line, err = readLine(r)
+			if err != nil {
+				handlerDone <- fmt.Errorf("reading DATA payload: %w", err)
+				return
+			}
+			if line == "." {
+				break
+			}
+		}
+		mustWriteString(w, "250 2.0.0 Queued\r\n")
+		mustFlush(w)
+		handlerDone <- nil
+	})
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("good@example.com", "bad@example.com").
+		Subject("Pipelined envelope").
+		TextBody("body").
+		MustBuild()
+	result, err := c.Send(mail)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !result.Success || len(result.RecipientResults) != 2 || !result.RecipientResults[0].Accepted || result.RecipientResults[1].Accepted {
+		t.Fatalf("unexpected send result: %+v", result)
+	}
+
+	gotCommands := <-commands
+	wantCommands := []string{
+		"MAIL FROM:<sender@example.com>",
+		"RCPT TO:<good@example.com>",
+		"RCPT TO:<bad@example.com>",
+	}
+	if strings.Join(gotCommands, "\n") != strings.Join(wantCommands, "\n") {
+		t.Fatalf("pipelined commands = %#v, want %#v", gotCommands, wantCommands)
+	}
+	if err := <-handlerDone; err != nil {
+		t.Fatalf("SMTP handler: %v", err)
+	}
+}
+
+func TestClient_Send_PipelinedMailRejectionDrainsResponses(t *testing.T) {
+	handlerDone := make(chan error, 1)
+	srv := newMockSMTPServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		w := bufio.NewWriter(conn)
+		smtpGreeting(w)
+
+		line, err := readLine(r)
+		if err != nil || !strings.HasPrefix(strings.ToUpper(line), "EHLO") {
+			handlerDone <- fmt.Errorf("reading EHLO: line=%q err=%v", line, err)
+			return
+		}
+		smtpEHLO(w, []string{"PIPELINING"})
+		for range 3 {
+			if _, err := readLine(r); err != nil {
+				handlerDone <- fmt.Errorf("reading pipelined envelope: %w", err)
+				return
+			}
+		}
+		mustWriteString(w, "550 5.1.0 Sender rejected\r\n")
+		mustWriteString(w, "503 5.5.1 MAIL required\r\n")
+		mustWriteString(w, "503 5.5.1 MAIL required\r\n")
+		mustFlush(w)
+
+		line, err = readLine(r)
+		if err != nil || strings.ToUpper(line) != "NOOP" {
+			handlerDone <- fmt.Errorf("reading NOOP after rejected group: line=%q err=%v", line, err)
+			return
+		}
+		mustWriteString(w, "250 2.0.0 Ok\r\n")
+		mustFlush(w)
+		handlerDone <- nil
+	})
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("one@example.com", "two@example.com").
+		Subject("Rejected pipeline").
+		TextBody("body").
+		MustBuild()
+	if _, err := c.Send(mail); err == nil {
+		t.Fatal("expected MAIL FROM rejection")
+	}
+	if err := c.Noop(); err != nil {
+		t.Fatalf("NOOP after pipelined rejection: %v", err)
+	}
+	if err := <-handlerDone; err != nil {
+		t.Fatalf("SMTP handler: %v", err)
+	}
+}
+
 // --- SendWithOptions tests ---
 
 func TestClient_SendWithOptions_RequireAllRecipients(t *testing.T) {
 	h := &basicSMTPHandler{
+		extensions: []string{"PIPELINING"},
 		rejectRcptTo: map[string]bool{
 			"<bad@example.com>": true,
 		},
