@@ -177,3 +177,57 @@ func BenchmarkFoldHeaderLong(b *testing.B) {
 		}
 	}
 }
+
+func benchmarkStreamingMIME(size int) (Headers, []byte) {
+	const boundary = "raven-benchmark-boundary"
+	headers := Headers{{Name: "Content-Type", Value: `multipart/mixed; boundary="` + boundary + `"`}}
+	prefix := []byte("--" + boundary + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nbenchmark body\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+	suffix := []byte("\r\n--" + boundary + "--\r\n")
+	encodedLine := []byte("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789QUJDREVGR0hJSktMTU5PUFFSU1RV\r\n")
+	body := make([]byte, 0, size+len(encodedLine))
+	body = append(body, prefix...)
+	for len(body)+len(encodedLine)+len(suffix) <= size {
+		body = append(body, encodedLine...)
+	}
+	body = append(body, suffix...)
+	return headers, body
+}
+
+func benchmarkDisplayMIMEWalk(b *testing.B, size int) {
+	headers, body := benchmarkStreamingMIME(size)
+	reader := bytes.NewReader(body)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		reader.Reset(body)
+		if err := WalkMIME(headers, reader, MIMEWalkOptions{}, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDisplayMIMEWalk1MiB(b *testing.B) {
+	benchmarkDisplayMIMEWalk(b, 1<<20)
+}
+
+func BenchmarkDisplayMIMEWalk16MiB(b *testing.B) {
+	benchmarkDisplayMIMEWalk(b, 16<<20)
+}
+
+func BenchmarkScaleMIMEWalk1MiB(b *testing.B) {
+	headers, body := benchmarkStreamingMIME(1 << 20)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		reader := bytes.NewReader(body)
+		for pb.Next() {
+			reader.Reset(body)
+			if err := WalkMIME(headers, reader, MIMEWalkOptions{}, nil); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}

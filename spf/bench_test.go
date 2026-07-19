@@ -63,8 +63,8 @@ func newBenchResolver() *benchSPFResolver {
 	}
 }
 
-// BenchmarkVerifyPass measures Verify for a passing sender (ip4 mechanism hit inside an include).
-func BenchmarkVerifyPass(b *testing.B) {
+// BenchmarkDisplaySPFVerifyPass measures a passing sender through an include.
+func BenchmarkDisplaySPFVerifyPass(b *testing.B) {
 	resolver := newBenchResolver()
 	ctx := context.Background()
 	args := Args{

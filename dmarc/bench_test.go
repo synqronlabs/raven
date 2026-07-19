@@ -59,8 +59,8 @@ func BenchmarkLookup(b *testing.B) {
 	}
 }
 
-// BenchmarkVerifyPass measures Verify when SPF and DKIM both pass with aligned domains.
-func BenchmarkVerifyPass(b *testing.B) {
+// BenchmarkDisplayDMARCVerifyPass measures aligned SPF and DKIM passes.
+func BenchmarkDisplayDMARCVerifyPass(b *testing.B) {
 	resolver := newBenchDNSResolver("reject")
 	ctx := context.Background()
 	args := VerifyArgs{

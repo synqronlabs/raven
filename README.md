@@ -149,6 +149,41 @@ _ = useDMARC
 _ = dmarcResult
 ```
 
+## Performance
+
+Raven's curated benchmarks exercise server-oriented streaming paths entirely in
+memory, excluding network, disk, and external DNS latency. These are median
+single-stream results from the documented reference host:
+
+| Workload | Time/op | Throughput | B/op | Allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| SMTP DATA receive, 1 MiB | 205 µs | 5.12 GB/s | 4,352 | 4 |
+| SMTP DATA send, 1 MiB | 987 µs | 1.06 GB/s | 0 | 0 |
+| SMTP BDAT receive, 1 MiB / 64 KiB chunks | 90.6 µs | 11.6 GB/s | 48,449 | 148 |
+| SMTP BDAT send, 1 MiB / 64 KiB chunks | 22.9 µs | 45.9 GB/s | 4,176 | 167 |
+| Streaming MIME walk, 1 MiB | 159 µs | 6.58 GB/s | 8,008 | 48 |
+| DKIM RSA-2048 `SignReader`, 1 MiB | 2.15 ms | 487 MB/s | 18,033 | 168 |
+| DKIM RSA-2048 `VerifyReader`, 1 MiB | 1.86 ms | 563 MB/s | 3,169,775 | 214 |
+| ARC RSA-2048 `SealReader`, 1 MiB | 3.14 ms | 334 MB/s | 28,472 | 227 |
+| ARC RSA-2048 `VerifyReader`, 1 MiB | 1.66 ms | 634 MB/s | 42,944 | 277 |
+| SPF pass with include | 3.73 µs | — | 2,928 | 67 |
+| DMARC aligned pass | 1.61 µs | — | 864 | 15 |
+
+Hardware, methodology, larger-message scaling, and reproduction commands are
+documented in [BENCHMARKS.md](BENCHMARKS.md). Absolute timings are specific to
+the reference environment.
+
+Parallel 1 MiB workloads on the 22-thread reference workstation scaled to
+approximately 9.22 GB/s for DATA send, 49.5 GB/s for DATA receive, 50.3 GB/s
+for MIME traversal, 4.31 GB/s for DKIM verification, and 5.42 GB/s for ARC
+verification. Transport and MIME peaked around 16 workers; authentication
+continued scaling through 22. These are in-memory aggregate rates, not network
+throughput measurements.
+
+The primary objective for the benchmarks is to prove that Raven’s protocol layer
+will not be the primary performance blocker across parallel SMTP connections in
+a production environment.
+
 ## License
 
 MIT License. See `LICENSE`.

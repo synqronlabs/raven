@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/synqronlabs/raven/internal/transferbuf"
 	ravenmail "github.com/synqronlabs/raven/mail"
 )
 
@@ -177,7 +178,7 @@ func (c *Client) SendRawWithOptions(envelope ravenmail.Envelope, data io.Reader,
 	if useBDAT {
 		chunkSize := opts.ChunkSize
 		if chunkSize <= 0 {
-			chunkSize = 64 * 1024
+			chunkSize = transferbuf.ChunkSize
 		}
 		if err := c.sendStreamWithBDAT(data, chunkSize); err != nil {
 			return result, fmt.Errorf("sending raw message body with BDAT chunks: %w", err)
@@ -225,7 +226,7 @@ func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendR
 	if useBDAT {
 		chunkSize := opts.ChunkSize
 		if chunkSize <= 0 {
-			chunkSize = 64 * 1024 // 64KB default
+			chunkSize = transferbuf.ChunkSize
 		}
 		err := c.sendStreamWithBDAT(message, chunkSize)
 		if err != nil {
@@ -761,7 +762,9 @@ func (c *Client) sendStreamWithBDAT(r io.Reader, chunkSize int) error {
 		return errors.New("smtp: BDAT chunk size must be positive")
 	}
 
-	buf := make([]byte, chunkSize)
+	buffer := transferbuf.Get(chunkSize)
+	defer buffer.Release()
+	buf := buffer.Bytes
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
@@ -1115,8 +1118,12 @@ func (c *Client) StreamData(r io.Reader) (*ClientResponse, error) {
 
 // streamWithDotStuffing streams data while performing dot-stuffing.
 func (c *Client) streamWithDotStuffing(r io.Reader) error {
-	buf := make([]byte, 32*1024)
-	out := make([]byte, 0, len(buf)+512)
+	readBuffer := transferbuf.Get(transferbuf.ReadSize)
+	defer readBuffer.Release()
+	dotStuffBuffer := transferbuf.Get(transferbuf.DotStuffSize)
+	defer dotStuffBuffer.Release()
+	buf := readBuffer.Bytes
+	out := dotStuffBuffer.Bytes[:0]
 	atLineStart := true
 	var previous, last byte
 	wrote := false

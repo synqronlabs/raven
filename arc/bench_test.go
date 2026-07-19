@@ -28,6 +28,38 @@ func BenchmarkBodyHashRelaxedManyLines(b *testing.B) {
 	}
 }
 
+func benchmarkARCMessage(size int) []byte {
+	header := []byte("From: sender@example.com\r\nTo: recipient@example.net\r\nSubject: Raven ARC benchmark\r\nDate: Mon, 20 Jul 2026 12:00:00 +0000\r\nMessage-ID: <arc-benchmark@example.com>\r\n\r\n")
+	line := []byte("A deterministic ARC body line with  spaces and a tab\tfor canonicalization.\r\n")
+	message := make([]byte, 0, size)
+	message = append(message, header...)
+	for len(message)+len(line) <= size {
+		message = append(message, line...)
+	}
+	message = append(message, bytes.Repeat([]byte{'x'}, size-len(message))...)
+	return message
+}
+
+func benchmarkDisplayARCBodyHashRelaxed(b *testing.B, size int) {
+	body := benchmarkARCMessage(size)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := bodyHashRelaxed(sha256.New(), bytes.NewReader(body), -1); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDisplayARCBodyHashRelaxed1MiB(b *testing.B) {
+	benchmarkDisplayARCBodyHashRelaxed(b, 1<<20)
+}
+
+func BenchmarkDisplayARCBodyHashRelaxed16MiB(b *testing.B) {
+	benchmarkDisplayARCBodyHashRelaxed(b, 16<<20)
+}
+
 const (
 	benchARCAuthenticationResults = "i=2; mx.example.com; dkim=pass header.d=example.com; spf=pass smtp.mailfrom=sender@example.com"
 	benchARCMessageSignature      = "i=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=selector; h=From:To:Subject:Date:Message-ID; bh=YWJj; b=c2ln"
@@ -222,4 +254,106 @@ func BenchmarkVerifyMailContext(b *testing.B) {
 			b.Fatalf("Status = %s, want %s", result.Status, StatusPass)
 		}
 	}
+}
+
+func BenchmarkDisplayARCSealReaderRSA1MiB(b *testing.B) {
+	privateKey, _ := benchmarkARCKeyAndRecord(b)
+	message := benchmarkARCMessage(1 << 20)
+	sealer := &Sealer{
+		Domain:                 "example.com",
+		Selector:               "arc",
+		PrivateKey:             privateKey,
+		Headers:                DefaultSignedHeaders,
+		HeaderCanonicalization: CanonRelaxed,
+		BodyCanonicalization:   CanonRelaxed,
+		Clock:                  func() time.Time { return time.Unix(1734607200, 0) },
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(message)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := sealer.SealReader(bytes.NewReader(message), int64(len(message)), "example.com", "spf=pass; dkim=pass", ChainValidationNone); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDisplayARCVerifyReaderRSA1MiB(b *testing.B) {
+	privateKey, record := benchmarkARCKeyAndRecord(b)
+	message := benchmarkARCMessage(1 << 20)
+	sealer := &Sealer{
+		Domain:                 "example.com",
+		Selector:               "arc",
+		PrivateKey:             privateKey,
+		Headers:                DefaultSignedHeaders,
+		HeaderCanonicalization: CanonRelaxed,
+		BodyCanonicalization:   CanonRelaxed,
+		Clock:                  func() time.Time { return time.Unix(1734607200, 0) },
+	}
+	result, err := sealer.SealReader(bytes.NewReader(message), int64(len(message)), "example.com", "spf=pass; dkim=pass", ChainValidationNone)
+	if err != nil {
+		b.Fatalf("SealReader setup: %v", err)
+	}
+	sealedMessage := []byte(result.Seal + "\r\n" + result.MessageSignature + "\r\n" + result.AuthenticationResults + "\r\n" + string(message))
+	verifier := &Verifier{
+		Resolver: &mockResolver{txtRecords: map[string][]string{
+			"arc._domainkey.example.com": {record},
+		}},
+		MinRSAKeyBits: 1024,
+		Clock:         func() time.Time { return time.Unix(1734607200, 0) },
+	}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(sealedMessage)))
+	b.ResetTimer()
+	for b.Loop() {
+		result, err := verifier.VerifyReader(ctx, bytes.NewReader(sealedMessage))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if result.Status != StatusPass {
+			b.Fatalf("unexpected verification result: %+v", result)
+		}
+	}
+}
+
+func BenchmarkScaleARCVerifyReaderRSA1MiB(b *testing.B) {
+	privateKey, record := benchmarkARCKeyAndRecord(b)
+	message := benchmarkARCMessage(1 << 20)
+	sealer := &Sealer{
+		Domain:                 "example.com",
+		Selector:               "arc",
+		PrivateKey:             privateKey,
+		Headers:                DefaultSignedHeaders,
+		HeaderCanonicalization: CanonRelaxed,
+		BodyCanonicalization:   CanonRelaxed,
+		Clock:                  func() time.Time { return time.Unix(1734607200, 0) },
+	}
+	result, err := sealer.SealReader(bytes.NewReader(message), int64(len(message)), "example.com", "spf=pass; dkim=pass", ChainValidationNone)
+	if err != nil {
+		b.Fatalf("SealReader setup: %v", err)
+	}
+	sealedMessage := []byte(result.Seal + "\r\n" + result.MessageSignature + "\r\n" + result.AuthenticationResults + "\r\n" + string(message))
+	verifier := &Verifier{
+		Resolver: &mockResolver{txtRecords: map[string][]string{
+			"arc._domainkey.example.com": {record},
+		}},
+		MinRSAKeyBits: 1024,
+		Clock:         func() time.Time { return time.Unix(1734607200, 0) },
+	}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(sealedMessage)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		reader := bytes.NewReader(sealedMessage)
+		for pb.Next() {
+			reader.Reset(sealedMessage)
+			result, err := verifier.VerifyReader(ctx, reader)
+			if err != nil || result.Status != StatusPass {
+				b.Errorf("VerifyReader = (%+v, %v)", result, err)
+				return
+			}
+		}
+	})
 }

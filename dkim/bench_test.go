@@ -27,6 +27,38 @@ func BenchmarkBodyHashRelaxedManyLines(b *testing.B) {
 	}
 }
 
+func benchmarkRFC5322Message(size int) []byte {
+	header := []byte("From: sender@example.com\r\nTo: recipient@example.net\r\nSubject: Raven benchmark\r\nDate: Mon, 20 Jul 2026 12:00:00 +0000\r\nMessage-ID: <benchmark@example.com>\r\n\r\n")
+	line := []byte("A deterministic message body line with  spaces and a tab\tfor canonicalization.\r\n")
+	message := make([]byte, 0, size)
+	message = append(message, header...)
+	for len(message)+len(line) <= size {
+		message = append(message, line...)
+	}
+	message = append(message, bytes.Repeat([]byte{'x'}, size-len(message))...)
+	return message
+}
+
+func benchmarkDisplayDKIMBodyHashRelaxed(b *testing.B, size int) {
+	body := benchmarkRFC5322Message(size)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := writeBodyHashRelaxed(sha256.New(), bytes.NewReader(body)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDisplayDKIMBodyHashRelaxed1MiB(b *testing.B) {
+	benchmarkDisplayDKIMBodyHashRelaxed(b, 1<<20)
+}
+
+func BenchmarkDisplayDKIMBodyHashRelaxed16MiB(b *testing.B) {
+	benchmarkDisplayDKIMBodyHashRelaxed(b, 16<<20)
+}
+
 // benchMessage is a realistic RFC 5322 message used for signing/verification benchmarks.
 var benchMessage = []byte("From: sender@example.com\r\n" +
 	"To: recipient@example.org\r\n" +
@@ -200,6 +232,73 @@ func BenchmarkVerifyEd25519(b *testing.B) {
 			b.Fatalf("expected StatusPass, got %v", results)
 		}
 	}
+}
+
+func BenchmarkDisplayDKIMSignReaderRSA1MiB(b *testing.B) {
+	signer, _ := setupRSASigner(b)
+	message := benchmarkRFC5322Message(1 << 20)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(message)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := signer.SignReader(bytes.NewReader(message), int64(len(message))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDisplayDKIMVerifyReaderRSA1MiB(b *testing.B) {
+	signer, record := setupRSASigner(b)
+	message := benchmarkRFC5322Message(1 << 20)
+	sigHeader, err := signer.SignReader(bytes.NewReader(message), int64(len(message)))
+	if err != nil {
+		b.Fatalf("SignReader setup: %v", err)
+	}
+	signedMessage := append([]byte(sigHeader), message...)
+	verifier := &Verifier{Resolver: &benchDKIMResolver{records: map[string][]string{
+		"bench._domainkey.example.com": {record},
+	}}}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(signedMessage)))
+	b.ResetTimer()
+	for b.Loop() {
+		results, err := verifier.VerifyReader(ctx, bytes.NewReader(signedMessage))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Status != StatusPass {
+			b.Fatalf("unexpected verification result: %+v", results)
+		}
+	}
+}
+
+func BenchmarkScaleDKIMVerifyReaderRSA1MiB(b *testing.B) {
+	signer, record := setupRSASigner(b)
+	message := benchmarkRFC5322Message(1 << 20)
+	sigHeader, err := signer.SignReader(bytes.NewReader(message), int64(len(message)))
+	if err != nil {
+		b.Fatalf("SignReader setup: %v", err)
+	}
+	signedMessage := append([]byte(sigHeader), message...)
+	verifier := &Verifier{Resolver: &benchDKIMResolver{records: map[string][]string{
+		"bench._domainkey.example.com": {record},
+	}}}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(signedMessage)))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		reader := bytes.NewReader(signedMessage)
+		for pb.Next() {
+			reader.Reset(signedMessage)
+			results, err := verifier.VerifyReader(ctx, reader)
+			if err != nil || len(results) != 1 || results[0].Status != StatusPass {
+				b.Errorf("VerifyReader = (%+v, %v)", results, err)
+				return
+			}
+		}
+	})
 }
 
 // BenchmarkParseSignature measures ParseSignature for a reasonably full header.

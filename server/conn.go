@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/synqronlabs/raven/internal/transferbuf"
 	ravenio "github.com/synqronlabs/raven/io"
 	"github.com/synqronlabs/raven/sasl"
 )
@@ -907,7 +908,7 @@ func (d *dataReader) drainData() {
 	}
 }
 
-const bdatReadBufferSize = 32 * 1024
+const bdatReadBufferSize = transferbuf.ReadSize
 
 var (
 	receivedHeaderName        = []byte("Received:")
@@ -1355,7 +1356,9 @@ func (c *Conn) handleBDAT(args string) error {
 	}
 
 	limited := &io.LimitedReader{R: c.reader, N: size}
-	buf := make([]byte, bdatReadBufferSize)
+	buffer := transferbuf.Get(bdatReadBufferSize)
+	defer buffer.Release()
+	buf := buffer.Bytes
 	for limited.N > 0 {
 		n, err := limited.Read(buf)
 		if n > 0 {

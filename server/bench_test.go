@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -37,6 +38,13 @@ func (*benchSession) Data(MessageHeaders, io.Reader) error { return nil }
 func (*benchSession) Reset()                               {}
 func (*benchSession) Logout() error                        { return nil }
 
+type benchDrainSession struct{ benchSession }
+
+func (*benchDrainSession) Data(_ MessageHeaders, body io.Reader) error {
+	_, err := io.Copy(io.Discard, body)
+	return err
+}
+
 type benchAuthSession struct{ benchSession }
 
 func (*benchAuthSession) AuthMechanisms() []string { return []string{"PLAIN", "LOGIN"} }
@@ -50,19 +58,12 @@ var (
 	benchServerPath         = "<user@example.com> BODY=8BITMIME SIZE=4096 SMTPUTF8"
 	benchServerMailParams   = "BODY=8BITMIME SIZE=4096 SMTPUTF8 REQUIRETLS RET=FULL ENVID=queue-123 AUTH=sender@example.com"
 	benchServerRcptParams   = "NOTIFY=SUCCESS,FAILURE,DELAY ORCPT=rfc822;recipient@example.net"
-	benchServerData         = []byte("Received: from mx1.example.net by mx2.example.net\r\n" +
-		"Subject: Benchmark DATA\r\n" +
-		"\r\n" +
-		"Hello world\r\n" +
-		"..dot-stuffed line\r\n" +
-		"Another line\r\n" +
-		".\r\n")
 )
 
 func newBenchmarkConn(session Session) *Conn {
 	server := NewServer(nil, ServerConfig{
 		Domain:            "mx.example.com",
-		MaxMessageBytes:   1 << 20,
+		MaxMessageBytes:   32 << 20,
 		MaxRecipients:     100,
 		MaxLineLength:     2000,
 		EnableSMTPUTF8:    true,
@@ -184,15 +185,121 @@ func BenchmarkBuildExtensions(b *testing.B) {
 	}
 }
 
-func BenchmarkDataReaderRead(b *testing.B) {
-	b.SetBytes(int64(len(benchServerData)))
+func benchmarkDATAInput(size int) []byte {
+	line := append(bytes.Repeat([]byte{'x'}, 76), '\r', '\n')
+	dotLine := append([]byte(".."), bytes.Repeat([]byte{'x'}, 74)...)
+	dotLine = append(dotLine, '\r', '\n')
+	data := make([]byte, 0, size+len(line)+3)
+	lineNumber := 0
+	for len(data)+len(line) <= size {
+		if lineNumber%10 == 0 {
+			data = append(data, dotLine...)
+		} else {
+			data = append(data, line...)
+		}
+		lineNumber++
+	}
+	if remaining := size - len(data); remaining > 0 {
+		if remaining >= 2 {
+			data = append(data, bytes.Repeat([]byte{'x'}, remaining-2)...)
+			data = append(data, '\r', '\n')
+		} else {
+			data = append(data, 'x')
+		}
+	}
+	data = append(data, '.', '\r', '\n')
+	return data
+}
+
+func benchmarkDisplaySMTPDATAReceive(b *testing.B, size int) {
+	data := benchmarkDATAInput(size)
+	b.ReportAllocs()
+	b.SetBytes(int64(size))
 
 	for b.Loop() {
-		reader := newDataReader(bufio.NewReader(bytes.NewReader(benchServerData)), false, 1<<20)
+		reader := newDataReader(bufio.NewReader(bytes.NewReader(data)), false, int64(size))
 		if _, err := io.Copy(io.Discard, reader); err != nil {
 			b.Fatalf("io.Copy: %v", err)
 		}
 	}
+}
+
+func BenchmarkDisplaySMTPDATAReceive1MiB(b *testing.B) {
+	benchmarkDisplaySMTPDATAReceive(b, 1<<20)
+}
+
+func BenchmarkDisplaySMTPDATAReceive16MiB(b *testing.B) {
+	benchmarkDisplaySMTPDATAReceive(b, 16<<20)
+}
+
+func BenchmarkScaleSMTPDATAReceive1MiB(b *testing.B) {
+	const size = 1 << 20
+	data := benchmarkDATAInput(size)
+	b.ReportAllocs()
+	b.SetBytes(size)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			reader := newDataReader(bufio.NewReader(bytes.NewReader(data)), false, size)
+			if _, err := io.Copy(io.Discard, reader); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}
+
+type benchmarkBDATChunk struct {
+	data []byte
+	args string
+}
+
+func benchmarkBDATChunks(size int) []benchmarkBDATChunk {
+	header := []byte("From: sender@example.com\r\nTo: recipient@example.net\r\nSubject: benchmark\r\n\r\n")
+	message := make([]byte, size)
+	copy(message, header)
+	for i := len(header); i < len(message); i++ {
+		message[i] = 'x'
+	}
+
+	const chunkSize = 64 * 1024
+	chunks := make([]benchmarkBDATChunk, 0, (size+chunkSize-1)/chunkSize)
+	for len(message) > 0 {
+		n := min(len(message), chunkSize)
+		chunk := benchmarkBDATChunk{data: message[:n], args: strconv.Itoa(n)}
+		message = message[n:]
+		if len(message) == 0 {
+			chunk.args += " LAST"
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+func benchmarkDisplaySMTPBDATReceive(b *testing.B, size int) {
+	chunks := benchmarkBDATChunks(size)
+	b.ReportAllocs()
+	b.SetBytes(int64(size))
+	b.ResetTimer()
+	for b.Loop() {
+		conn := newBenchmarkConn(&benchDrainSession{})
+		conn.state = StateRcpt
+		conn.recipientCount = 1
+		for _, chunk := range chunks {
+			conn.reader.Reset(bytes.NewReader(chunk.data))
+			if err := conn.handleBDAT(chunk.args); err != nil {
+				b.Fatalf("handleBDAT: %v", err)
+			}
+		}
+	}
+}
+
+func BenchmarkDisplaySMTPBDATReceive1MiB(b *testing.B) {
+	benchmarkDisplaySMTPBDATReceive(b, 1<<20)
+}
+
+func BenchmarkDisplaySMTPBDATReceive16MiB(b *testing.B) {
+	benchmarkDisplaySMTPBDATReceive(b, 16<<20)
 }
 
 func BenchmarkHandleMAIL(b *testing.B) {

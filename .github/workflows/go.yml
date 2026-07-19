@@ -28,3 +28,41 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+  benchmark:
+    name: Informational benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.25'
+
+    - name: Run curated benchmarks
+      run: |
+        go version | tee benchmark-environment.txt
+        uname -srmo | tee -a benchmark-environment.txt
+        lscpu | grep '^Model name:' | tee -a benchmark-environment.txt
+        go test -p=1 ./client ./server ./mail ./dkim ./arc ./spf ./dmarc \
+          -run '^$' -bench '^BenchmarkDisplay' -benchmem \
+          -benchtime=500ms -count=3 -cpu=1 | tee benchmark-results.txt
+
+    - name: Publish benchmark summary
+      if: always()
+      run: |
+        echo '## Curated benchmark snapshot' >> "$GITHUB_STEP_SUMMARY"
+        echo '```text' >> "$GITHUB_STEP_SUMMARY"
+        cat benchmark-environment.txt benchmark-results.txt >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload benchmark output
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: |
+          benchmark-environment.txt
+          benchmark-results.txt
+        retention-days: 30

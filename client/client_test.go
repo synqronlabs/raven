@@ -2389,6 +2389,27 @@ func TestClient_StreamData_NoConnection(t *testing.T) {
 	}
 }
 
+func TestStreamWithDotStuffingAcrossTransferBufferBoundary(t *testing.T) {
+	// This prefix fills one complete transfer read and exercises the maximum
+	// expansion pattern: every other byte begins a new dot-prefixed line.
+	prefix := bytes.Repeat([]byte(".\n"), 16*1024)
+	input := append(prefix, []byte(".after-boundary\r\n")...)
+
+	var wire bytes.Buffer
+	client := &Client{writer: bufio.NewWriter(&wire)}
+	if err := client.streamWithDotStuffing(bytes.NewReader(input)); err != nil {
+		t.Fatalf("streamWithDotStuffing() error = %v", err)
+	}
+	if err := client.writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	want := dotStuff(input)
+	if !bytes.Equal(wire.Bytes(), want) {
+		t.Fatalf("streamed output differs across transfer-buffer boundary")
+	}
+}
+
 func TestClient_SendRaw_StreamsEMLData(t *testing.T) {
 	var gotMailFrom string
 	var gotRcptTo string
