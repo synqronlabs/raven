@@ -17,6 +17,9 @@ type headerGetter interface {
 
 // MIMEPart represents a MIME entity parsed from Content, including multipart
 // children and the raw wire body bytes for each part.
+//
+// Deprecated: Use WalkMIME and MIMEWalkPart to inspect MIME content without
+// retaining a second in-memory tree and copies of every part body.
 type MIMEPart struct {
 	Headers                 Headers                 `json:"headers,omitempty"`
 	ContentType             string                  `json:"content_type,omitempty"`
@@ -40,6 +43,9 @@ func (p *MIMEPart) IsMultipart() bool {
 }
 
 // ToBytes serializes a MIME part tree back to raw body bytes.
+//
+// Deprecated: Preserve and stream the original wire body where possible. Use
+// WalkMIME for inspection; ToBytes materializes the complete MIME tree again.
 func (p *MIMEPart) ToBytes() ([]byte, error) {
 	if p == nil {
 		return nil, nil

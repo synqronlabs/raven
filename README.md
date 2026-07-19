@@ -2,9 +2,15 @@
 
 Raven is an idiomatic Go toolkit for ESMTP transport and email authentication protocols.
 
+Raven is server-oriented. Its primary message path keeps RFC 5322 content as a
+stream: `server.Session.Data` receives an `io.Reader`, `client.SendRaw` forwards
+an `io.Reader`, and DKIM/ARC expose `io.ReaderAt` APIs for seekable message
+spools. Structured `mail.Mail` composition remains available for generated
+messages, but eager secondary representations are deprecated.
+
 It includes:
 - SMTP server and client primitives.
-- Structured message handling, including MIME parsing and multipart serialization.
+- Streaming MIME traversal plus compatibility helpers for structured messages.
 - SPF, DKIM, DMARC, and ARC verification/signing.
 - DNS resolvers with optional DNSSEC authenticity signals.
 
@@ -26,6 +32,9 @@ go get github.com/synqronlabs/raven
 - `sasl`: SASL LOGIN and PLAIN primitives
 - `server`: SMTP server implementation (Backend/Session pattern)
 - `spf`: SPF parsing and evaluation
+
+See [DEPRECATIONS.md](DEPRECATIONS.md) for eager convenience APIs retained for
+compatibility and their streaming replacements.
 
 ## Quick Start
 

@@ -144,6 +144,9 @@ type SendOptions struct {
 
 // RawMessage contains a raw RFC 5322 message stream and the SMTP envelope
 // used to deliver it.
+//
+// Deprecated: Pass an Envelope and io.Reader directly to SendRaw. RawMessage is
+// retained only for compatibility with the deprecated batch helpers.
 type RawMessage struct {
 	Envelope ravenmail.Envelope
 	Data     io.Reader
@@ -873,7 +876,9 @@ func (c *Client) Expand(listName string) ([]string, error) {
 }
 
 // SendMultiple sends multiple messages in a single connection.
-// This is more efficient than sending messages one at a time.
+//
+// Deprecated: Call Send or SendRaw in the queue-processing loop so each message
+// and result can be released before the next transaction.
 func (c *Client) SendMultiple(mails []*ravenmail.Mail) ([]*SendResult, error) {
 	results := make([]*SendResult, 0, len(mails))
 
@@ -899,6 +904,9 @@ func (c *Client) SendMultiple(mails []*ravenmail.Mail) ([]*SendResult, error) {
 
 // SendRawMultiple streams multiple raw messages in a single SMTP connection.
 // Each message is sent as an independent transaction.
+//
+// Deprecated: Call SendRaw in the queue-processing loop so each message and
+// result can be released before the next transaction.
 func (c *Client) SendRawMultiple(messages []RawMessage) ([]*SendResult, error) {
 	results := make([]*SendResult, 0, len(messages))
 

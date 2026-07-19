@@ -1,9 +1,12 @@
-// Package mail provides Raven's core email model, builder APIs, and MIME helpers.
+// Package mail provides Raven's SMTP envelope and header model, builder APIs,
+// and streaming MIME helpers.
 //
 // The package defines the fundamental structures used across the module:
-// Mail, Envelope, Content, Headers, MIMEPart, and related builder and
-// serialization helpers. SMTP transport packages and authentication packages
-// (dkim, spf, dmarc, arc) can share these types without circular dependencies.
+// Mail, Envelope, Content, and Headers. SMTP transport and authentication
+// packages (dkim, spf, dmarc, arc) share these types without circular
+// dependencies. Eager MIME trees and whole-message serialization helpers remain
+// available only for compatibility; server code should prefer readers and
+// caller-owned message spools.
 package mail
 
 //go:generate msgp
@@ -1253,16 +1256,27 @@ func ParseAddress(addr string) (MailboxAddress, error) {
 }
 
 // ToJSON serializes the Mail object to JSON bytes.
+//
+// Deprecated: Use json.NewEncoder to stream persistence metadata, and spool
+// message content separately instead of materializing the entire message as a
+// second byte slice.
 func (m *Mail) ToJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
 // ToJSONIndent serializes the Mail object to pretty-printed JSON bytes.
+//
+// Deprecated: Use json.Encoder with SetIndent to stream persistence metadata,
+// and spool message content separately.
 func (m *Mail) ToJSONIndent() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
 // FromJSON deserializes a Mail object from JSON bytes.
+//
+// Deprecated: Use json.NewDecoder when compatibility with this representation
+// is required. New server queues should keep envelope metadata separate from
+// spooled RFC 5322 content.
 func FromJSON(data []byte) (*Mail, error) {
 	var m Mail
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -1272,11 +1286,17 @@ func FromJSON(data []byte) (*Mail, error) {
 }
 
 // ToMessagePack serializes the Mail object to MessagePack bytes.
+//
+// Deprecated: Use EncodeMsg with a msgp.Writer when compatibility is required.
+// New server queues should keep envelope metadata separate from spooled RFC
+// 5322 content.
 func (m *Mail) ToMessagePack() ([]byte, error) {
 	return m.MarshalMsg(nil)
 }
 
 // FromMessagePack deserializes a Mail object from MessagePack bytes.
+//
+// Deprecated: Use DecodeMsg with a msgp.Reader when compatibility is required.
 func FromMessagePack(data []byte) (*Mail, error) {
 	var m Mail
 	_, err := m.UnmarshalMsg(data)
@@ -1335,6 +1355,9 @@ func (c *Content) Validate() error {
 //
 // Multipart content is parsed recursively. For single-part content, the returned
 // MIMEPart carries the decoded media type metadata and the original wire body.
+//
+// Deprecated: Use WalkMIME to inspect MIME content incrementally without
+// retaining a second tree and copies of all part bodies.
 func (c *Content) ToMIME() (*MIMEPart, error) {
 	return parseMIME(&c.Headers, c.Body)
 }
@@ -1344,6 +1367,9 @@ func (c *Content) ToMIME() (*MIMEPart, error) {
 // Multipart trees are serialized with their boundaries preserved. Encoding and
 // Charset are updated from the supplied part, defaulting the encoding to 7bit
 // when the part does not specify one.
+//
+// Deprecated: Prefer preserving and streaming the original wire body. Build
+// newly generated MIME content directly rather than round-tripping MIMEPart.
 func (c *Content) FromMIME(part *MIMEPart) error {
 	if part == nil {
 		return errors.New("mime part is required")
@@ -1369,6 +1395,10 @@ func (c *Content) FromMIME(part *MIMEPart) error {
 // FromRaw parses raw message data and populates Headers and Body fields.
 // This also sets the Encoding field based on Content-Transfer-Encoding header,
 // defaulting to "7bit" if not specified.
+//
+// Deprecated: SMTP servers receive parsed headers and a streaming body through
+// server.Session.Data. For other streams, use net/mail.ReadMessage or retain the
+// raw message for reader-based processing instead of pinning it in Content.
 func (c *Content) FromRaw(data []byte) {
 	c.Headers, c.Body = parseRawContent(data)
 
@@ -1405,6 +1435,10 @@ func (c *Content) FromRaw(data []byte) {
 // ToRaw serializes the Content back to raw RFC 5322 format.
 // It reconstructs the message from Headers and Body.
 // Header lines are folded to comply with line length limits.
+//
+// Deprecated: Use client.SendRaw with a streamed RFC 5322 message. When adapting
+// an existing Content, compose Headers.ToRaw, the blank CRLF, and Body with
+// io.MultiReader to avoid allocating another full-message byte slice.
 func (c *Content) ToRaw() []byte {
 	// Estimate size: headers + blank line + body (with some extra for folding)
 	estimatedSize := len(c.Body) + 2 // +2 for CRLF before body

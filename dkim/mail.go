@@ -35,6 +35,10 @@ func rawMailMessage(mail *ravenmail.Mail) []byte {
 
 // SignMail signs a mail message and adds the DKIM-Signature header.
 // This is a convenience function for signing mail objects.
+//
+// Deprecated: Use Signer.SignReader with a seekable spool and prepend the
+// returned header while streaming the message. SignMail builds another complete
+// raw message in memory.
 func SignMail(mail *ravenmail.Mail, signer *Signer) error {
 	// Build raw message
 	rawMessage := rawMailMessage(mail)
@@ -55,6 +59,8 @@ func SignMail(mail *ravenmail.Mail, signer *Signer) error {
 }
 
 // SignMailMultiple signs a mail message with multiple signers.
+//
+// Deprecated: Use SignMultipleReader with a seekable message spool.
 func SignMailMultiple(mail *ravenmail.Mail, signers []Signer) error {
 	for i := range signers {
 		if err := SignMail(mail, &signers[i]); err != nil {
@@ -65,6 +71,9 @@ func SignMailMultiple(mail *ravenmail.Mail, signers []Signer) error {
 }
 
 // QuickSign is a simplified signing function for common use cases.
+//
+// Deprecated: Configure a Signer and use Signer.SignReader with a seekable
+// message spool.
 func QuickSign(mail *ravenmail.Mail, domain, selector string, privateKey crypto.Signer) error {
 	signer := &Signer{
 		Domain:                 domain,
@@ -83,6 +92,9 @@ func QuickSign(mail *ravenmail.Mail, domain, selector string, privateKey crypto.
 
 // VerifyMailContext verifies DKIM signatures in a mail message.
 // Returns verification results for each signature found.
+//
+// Deprecated: Use Verifier.VerifyReader with the server's seekable message
+// spool. This adapter builds another complete raw message in memory.
 func VerifyMailContext(ctx context.Context, mail *ravenmail.Mail, resolver ravendns.Resolver) ([]Result, error) {
 	rawMessage := rawMailMessage(mail)
 	verifier := &Verifier{Resolver: resolver}

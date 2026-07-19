@@ -115,6 +115,9 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 }
 
 // DialAndSend is a convenience method that connects, sends a message, and disconnects.
+//
+// Deprecated: Use Dial and reuse the returned Client, or use Pool. Opening one
+// SMTP connection per message is inefficient for server workloads.
 func (d *Dialer) DialAndSend(mail *ravenmail.Mail) (*SendResult, error) {
 	client, err := d.Dial()
 	if err != nil {
@@ -136,6 +139,9 @@ func (d *Dialer) DialAndSend(mail *ravenmail.Mail) (*SendResult, error) {
 }
 
 // DialAndSendRaw connects, streams a raw RFC 5322 message, and disconnects.
+//
+// Deprecated: Use Dial and reuse Client.SendRaw, or use Pool.SendRaw. Opening
+// one SMTP connection per message is inefficient for server workloads.
 func (d *Dialer) DialAndSendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult, error) {
 	client, err := d.Dial()
 	if err != nil {
@@ -157,6 +163,9 @@ func (d *Dialer) DialAndSendRaw(envelope ravenmail.Envelope, data io.Reader) (*S
 }
 
 // DialAndSendMultiple sends multiple messages in a single connection.
+//
+// Deprecated: Dial once and call Send or SendRaw for each queued message. This
+// avoids retaining the entire batch and its result slice in memory.
 func (d *Dialer) DialAndSendMultiple(mails []*ravenmail.Mail) ([]*SendResult, error) {
 	client, err := d.Dial()
 	if err != nil {
@@ -178,6 +187,9 @@ func (d *Dialer) DialAndSendMultiple(mails []*ravenmail.Mail) ([]*SendResult, er
 }
 
 // DialAndSendRawMultiple streams multiple raw messages in a single connection.
+//
+// Deprecated: Dial once and call SendRaw for each queued message so messages
+// and results can be released incrementally.
 func (d *Dialer) DialAndSendRawMultiple(messages []RawMessage) ([]*SendResult, error) {
 	client, err := d.Dial()
 	if err != nil {
@@ -356,6 +368,9 @@ func (p *Pool) Close() error {
 // QuickSend is a convenience function for sending a single email.
 // It handles all connection setup and teardown automatically.
 //
+// Deprecated: Use Dialer or Pool and reuse SMTP connections. Prefer SendRaw for
+// an already serialized message stream.
+//
 // Example:
 //
 //	err := client.QuickSend(
@@ -423,6 +438,8 @@ func QuickSend(address string, auth *ClientAuth, from string, to []string, subje
 }
 
 // QuickSendTLS is like QuickSend but uses implicit TLS (port 465).
+//
+// Deprecated: Configure Dialer.TLS and reuse the resulting Client or Pool.
 func QuickSendTLS(address string, auth *ClientAuth, from string, to []string, subject, body string) error {
 	builder := ravenmail.NewMailBuilder().
 		From(from).
@@ -470,6 +487,9 @@ func QuickSendTLS(address string, auth *ClientAuth, from string, to []string, su
 }
 
 // QuickSendMail is a convenience function for sending a pre-built Mail object.
+//
+// Deprecated: Use Dialer or Pool and reuse SMTP connections. Prefer SendRaw for
+// an already serialized message stream.
 func QuickSendMail(address string, auth *ClientAuth, mail *ravenmail.Mail) error {
 	config := DefaultClientConfig()
 	config.Auth = auth

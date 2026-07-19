@@ -22,6 +22,10 @@ import (
 //
 // The function will prepend the three ARC headers to the message:
 // ARC-Seal, ARC-Message-Signature, and ARC-Authentication-Results.
+//
+// Deprecated: Use Sealer.SealReader with a seekable message spool and prepend
+// the returned headers while streaming. SignMail builds another complete raw
+// message in memory.
 func SignMail(mail *ravenmail.Mail, sealer *Sealer, authServID, authResults string, chainValidation ChainValidationStatus) error {
 	// Build raw message
 	rawMessage := mail.Content.ToRaw()
@@ -55,6 +59,9 @@ func SignMail(mail *ravenmail.Mail, sealer *Sealer, authServID, authResults stri
 }
 
 // QuickSeal is a simplified sealing function for common use cases.
+//
+// Deprecated: Configure a Sealer and use Sealer.SealReader with a seekable
+// message spool.
 func QuickSeal(mail *ravenmail.Mail, domain, selector string, privateKey crypto.Signer, authServID, authResults string, chainValidation ChainValidationStatus) error {
 	sealer := &Sealer{
 		Domain:                 domain,
@@ -72,6 +79,9 @@ func QuickSeal(mail *ravenmail.Mail, domain, selector string, privateKey crypto.
 
 // VerifyMailContext verifies ARC chain in a mail message.
 // Returns the verification result.
+//
+// Deprecated: Use Verifier.VerifyReader with the server's seekable message
+// spool. This adapter builds another complete raw message in memory.
 func VerifyMailContext(ctx context.Context, mail *ravenmail.Mail, resolver ravendns.Resolver) (*Result, error) {
 	rawMessage := mail.Content.ToRaw()
 	verifier := &Verifier{Resolver: resolver}
