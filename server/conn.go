@@ -879,14 +879,28 @@ func (d *dataReader) drainLine() {
 	}
 }
 
-// drainData reads and discards remaining DATA content.
+// drainData reads and discards through the DATA terminator. It deliberately
+// ignores content validation errors so a rejected transaction cannot leave
+// message bytes in the SMTP command stream.
 func (d *dataReader) drainData() {
 	if d.done {
 		return
 	}
+	d.buf = nil
+	d.lineBuf = d.lineBuf[:0]
+	atLineStart := true
 	for {
-		line, err := d.readLine(false)
-		if err != nil || len(line) == 3 && line[0] == '.' && line[1] == '\r' && line[2] == '\n' {
+		line, err := d.reader.ReadSlice('\n')
+		if atLineStart && err == nil && len(line) == 3 && line[0] == '.' && line[1] == '\r' && line[2] == '\n' {
+			d.done = true
+			return
+		}
+		switch {
+		case err == nil:
+			atLineStart = true
+		case errors.Is(err, bufio.ErrBufferFull):
+			atLineStart = false
+		default:
 			d.done = true
 			return
 		}
@@ -1275,6 +1289,12 @@ func (c *Conn) handleDATA() error {
 	// Check if data reader encountered an error
 	if dataRdr.err != nil {
 		c.writeError(dataRdr.err)
+		c.resetTransaction()
+		return nil
+	}
+	if !dataRdr.done {
+		dataRdr.drainData()
+		c.writeError(errMessageBodyNotConsumed)
 		c.resetTransaction()
 		return nil
 	}

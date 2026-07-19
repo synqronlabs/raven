@@ -121,6 +121,24 @@ func (*testSession) Logout() error {
 	return nil
 }
 
+type shortDataSession struct {
+	readBytes int
+}
+
+func (*shortDataSession) Mail(string, *server.MailOptions) error { return nil }
+func (*shortDataSession) Rcpt(string, *server.RcptOptions) error { return nil }
+
+func (s *shortDataSession) Data(_ server.MessageHeaders, body io.Reader) error {
+	if s.readBytes == 0 {
+		return nil
+	}
+	_, err := io.CopyN(io.Discard, body, int64(s.readBytes))
+	return err
+}
+
+func (*shortDataSession) Reset()        {}
+func (*shortDataSession) Logout() error { return nil }
+
 // testServer wraps a server.Server for testing.
 type testServer struct {
 	srv      *server.Server
@@ -568,6 +586,55 @@ func TestServer_BasicMailTransaction(t *testing.T) {
 	}
 	if len(tx.recipients) != 1 || tx.recipients[0] != "recipient@example.com" {
 		t.Errorf("expected 1 recipient 'recipient@example.com', got %v", tx.recipients)
+	}
+}
+
+func TestServer_DATARejectsUnconsumedBodyAndPreservesConnection(t *testing.T) {
+	tests := []struct {
+		name      string
+		readBytes int
+		payload   string
+	}{
+		{name: "unread", readBytes: 0, payload: "abcdef\r\n"},
+		{name: "partially read", readBytes: 4, payload: "abcdef\r\n"},
+		{name: "malformed unread remainder", readBytes: 0, payload: "invalid bare LF\nabcdef\r\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &testBackend{
+				sessionFactory: func(_ *server.Conn) (server.Session, error) {
+					return &shortDataSession{readBytes: tt.readBytes}, nil
+				},
+			}
+			ts := newTestServer(t, backend, server.ServerConfig{})
+			defer ts.close()
+
+			tc := ts.dial()
+			defer tc.close()
+
+			tc.send("EHLO client.example.com")
+			tc.expectMultilineCode(250)
+			tc.send("MAIL FROM:<sender@example.com>")
+			tc.expectCode(250)
+			tc.send("RCPT TO:<recipient@example.com>")
+			tc.expectCode(250)
+			tc.send("DATA")
+			tc.expectCode(354)
+
+			// Pipeline NOOP after the DATA terminator to verify that rejecting the
+			// transaction drains exactly the remaining message bytes.
+			tc.writeRaw("Subject: unread body\r\n\r\n" + tt.payload + ".\r\nNOOP\r\n")
+			line := tc.expectCode(451)
+			if !strings.Contains(line, "session returned before consuming the message body") {
+				t.Fatalf("unexpected DATA rejection: %s", line)
+			}
+			tc.expectCode(250)
+
+			// The failed transaction must reset to the greeted state.
+			tc.send("MAIL FROM:<next@example.com>")
+			tc.expectCode(250)
+		})
 	}
 }
 
