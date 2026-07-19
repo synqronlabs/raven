@@ -754,7 +754,8 @@ type dataReader struct {
 	bytesRead   int64
 	done        bool
 	err         error
-	buf         []byte // Current line buffer
+	buf         []byte // Unconsumed bytes from the current line
+	lineBuf     []byte // Reused only when a line spans the bufio buffer
 }
 
 func newDataReader(r *bufio.Reader, enforce7Bit bool, maxSize int64) *dataReader {
@@ -780,43 +781,102 @@ func (d *dataReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 
-	// Read next line
-	line, err := ravenio.ReadLine(d.reader, maxContentLineLength, d.enforce7Bit)
+	// Read the next line as bytes. In the common case this is a zero-copy view
+	// into the bufio.Reader and remains valid until the next read from it.
+	line, err := d.readLine(d.enforce7Bit)
 	if err != nil {
 		d.err = err
 		return 0, err
 	}
 
 	// Check for end of data
-	if line == "." {
+	if len(line) == 3 && line[0] == '.' && line[1] == '\r' && line[2] == '\n' {
 		d.done = true
 		return 0, io.EOF
 	}
 
 	// Handle dot-stuffing
-	if line != "" && line[0] == '.' {
+	if line[0] == '.' {
 		line = line[1:]
 	}
 
-	// Add CRLF
-	lineBytes := []byte(line + "\r\n")
-
 	// Check size limit
-	if d.maxSize > 0 && d.bytesRead+int64(len(lineBytes)) > d.maxSize {
+	if d.maxSize > 0 && d.bytesRead+int64(len(line)) > d.maxSize {
 		// Drain remaining data
 		d.drainData()
 		d.err = ErrMessageTooLarge
 		return 0, d.err
 	}
-	d.bytesRead += int64(len(lineBytes))
+	d.bytesRead += int64(len(line))
 
 	// Copy to output buffer
-	n := copy(p, lineBytes)
-	if n < len(lineBytes) {
-		d.buf = lineBytes[n:]
+	n := copy(p, line)
+	if n < len(line) {
+		d.buf = line[n:]
 	}
 
 	return n, nil
+}
+
+// readLine returns one validated CRLF-terminated DATA line. Lines that fit in
+// the bufio buffer require no allocation; lineBuf handles the uncommon case
+// where a caller supplied an unusually small buffer.
+func (d *dataReader) readLine(enforce7Bit bool) ([]byte, error) {
+	line, err := d.reader.ReadSlice('\n')
+	if err == nil {
+		return d.validateLine(line, enforce7Bit)
+	}
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		return nil, fmt.Errorf("reading SMTP line: %w", err)
+	}
+
+	d.lineBuf = append(d.lineBuf[:0], line...)
+	if len(d.lineBuf) > maxContentLineLength {
+		d.drainLine()
+		return nil, ravenio.ErrLineTooLong
+	}
+	for {
+		line, err = d.reader.ReadSlice('\n')
+		if len(d.lineBuf)+len(line) > maxContentLineLength {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				d.drainLine()
+			}
+			return nil, ravenio.ErrLineTooLong
+		}
+		d.lineBuf = append(d.lineBuf, line...)
+		if err == nil {
+			return d.validateLine(d.lineBuf, enforce7Bit)
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, fmt.Errorf("reading continued SMTP line: %w", err)
+		}
+	}
+}
+
+func (d *dataReader) validateLine(line []byte, enforce7Bit bool) ([]byte, error) {
+	if len(line) > maxContentLineLength {
+		return nil, ravenio.ErrLineTooLong
+	}
+	if len(line) < 2 || line[len(line)-2] != '\r' {
+		return nil, ravenio.ErrBadLineEnding
+	}
+	if enforce7Bit {
+		for _, b := range line {
+			if b > 127 {
+				return nil, ravenio.Err8BitIn7BitMode
+			}
+		}
+	}
+	return line, nil
+}
+
+func (d *dataReader) drainLine() {
+	for {
+		_, err := d.reader.ReadSlice('\n')
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return
+		}
+	}
 }
 
 // drainData reads and discards remaining DATA content.
@@ -825,8 +885,8 @@ func (d *dataReader) drainData() {
 		return
 	}
 	for {
-		line, err := ravenio.ReadLine(d.reader, maxContentLineLength, false)
-		if err != nil || line == "." {
+		line, err := d.readLine(false)
+		if err != nil || len(line) == 3 && line[0] == '.' && line[1] == '\r' && line[2] == '\n' {
 			d.done = true
 			return
 		}
