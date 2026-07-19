@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -97,17 +98,17 @@ func (c *Client) Send(mail *ravenmail.Mail) (*SendResult, error) {
 		return result, fmt.Errorf("%w: all recipients rejected", ErrTransactionFailed)
 	}
 
-	// Send message content
-	raw := mail.Content.ToRaw()
+	message, messageSize := newMailContentReader(&mail.Content)
 
 	// Use BDAT if available and message is large, otherwise use DATA
-	if c.extensions[ravenmail.ExtChunking] != "" && len(raw) > 1024*1024 {
-		err := c.sendWithBDAT(raw)
+	_, supportsBDAT := c.extensions[ravenmail.ExtChunking]
+	if supportsBDAT && messageSize > 1024*1024 {
+		err := c.sendStreamWithSingleBDAT(message, messageSize)
 		if err != nil {
 			return result, fmt.Errorf("sending message body with BDAT: %w", err)
 		}
 	} else {
-		resp, err := c.sendWithDATA(raw)
+		resp, err := c.sendStreamWithDATA(message)
 		if err != nil {
 			return result, fmt.Errorf("sending message body with DATA: %w", err)
 		}
@@ -179,7 +180,8 @@ func (c *Client) SendRawWithOptions(envelope ravenmail.Envelope, data io.Reader,
 		return result, fmt.Errorf("%w: all recipients rejected", ErrTransactionFailed)
 	}
 
-	useBDAT := opts.PreferBDAT && c.extensions[ravenmail.ExtChunking] != ""
+	_, supportsBDAT := c.extensions[ravenmail.ExtChunking]
+	useBDAT := opts.PreferBDAT && supportsBDAT
 	if useBDAT {
 		chunkSize := opts.ChunkSize
 		if chunkSize <= 0 {
@@ -223,21 +225,21 @@ func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendR
 		return result, fmt.Errorf("%w: all recipients rejected", ErrTransactionFailed)
 	}
 
-	// Send message content
-	raw := mail.Content.ToRaw()
+	message, _ := newMailContentReader(&mail.Content)
 
-	useBDAT := opts.PreferBDAT && c.extensions[ravenmail.ExtChunking] != ""
+	_, supportsBDAT := c.extensions[ravenmail.ExtChunking]
+	useBDAT := opts.PreferBDAT && supportsBDAT
 	if useBDAT {
 		chunkSize := opts.ChunkSize
 		if chunkSize <= 0 {
 			chunkSize = 64 * 1024 // 64KB default
 		}
-		err := c.sendWithBDATChunked(raw, chunkSize)
+		err := c.sendStreamWithBDAT(message, chunkSize)
 		if err != nil {
 			return result, fmt.Errorf("sending message body with BDAT chunks: %w", err)
 		}
 	} else {
-		resp, err := c.sendWithDATA(raw)
+		resp, err := c.sendStreamWithDATA(message)
 		if err != nil {
 			return result, fmt.Errorf("sending message body with DATA: %w", err)
 		}
@@ -247,6 +249,15 @@ func (c *Client) SendWithOptions(mail *ravenmail.Mail, opts SendOptions) (*SendR
 
 	result.Success = true
 	return result, nil
+}
+
+// newMailContentReader serializes only the message headers and streams the
+// existing body slice without copying it into a second full-message buffer.
+func newMailContentReader(content *ravenmail.Content) (io.Reader, int64) {
+	headers := content.Headers.ToRaw()
+	headers = append(headers, '\r', '\n')
+	size := int64(len(headers)) + int64(len(content.Body))
+	return io.MultiReader(bytes.NewReader(headers), bytes.NewReader(content.Body)), size
 }
 
 // sendMailFrom sends the MAIL FROM command with appropriate extension parameters.
@@ -606,6 +617,35 @@ func (c *Client) sendStreamWithDATA(r io.Reader) (*ClientResponse, error) {
 // sendWithBDAT sends message content using BDAT command (single chunk).
 func (c *Client) sendWithBDAT(data []byte) error {
 	return c.sendWithBDATChunked(data, len(data))
+}
+
+// sendStreamWithSingleBDAT sends a reader of known size as one LAST chunk.
+func (c *Client) sendStreamWithSingleBDAT(r io.Reader, size int64) error {
+	if size < 0 {
+		return errors.New("smtp: BDAT message size must not be negative")
+	}
+	if c.config.WriteTimeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout)); err != nil {
+			return fmt.Errorf("setting write deadline for BDAT payload: %w", err)
+		}
+	}
+	if err := c.writeCommand("BDAT %d LAST", size); err != nil {
+		return fmt.Errorf("writing BDAT command: %w", err)
+	}
+	if _, err := io.CopyN(c.writer, r, size); err != nil {
+		return fmt.Errorf("writing BDAT payload (%d bytes): %w", size, err)
+	}
+	if err := c.writer.Flush(); err != nil {
+		return fmt.Errorf("flushing BDAT payload (%d bytes): %w", size, err)
+	}
+	resp, err := c.readResponse()
+	if err != nil {
+		return fmt.Errorf("reading BDAT response: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return resp.Error()
+	}
+	return nil
 }
 
 // sendWithBDATChunked sends message content using BDAT command in chunks.
@@ -990,7 +1030,7 @@ func (c *Client) streamWithDotStuffing(r io.Reader) error {
 	buf := make([]byte, 32*1024)
 	out := make([]byte, 0, len(buf)+512)
 	atLineStart := true
-	var last byte
+	var previous, last byte
 	wrote := false
 
 	for {
@@ -1005,6 +1045,7 @@ func (c *Client) streamWithDotStuffing(r io.Reader) error {
 				}
 				out = append(out, b)
 				atLineStart = (b == '\n')
+				previous = last
 				last = b
 				wrote = true
 			}
@@ -1023,7 +1064,7 @@ func (c *Client) streamWithDotStuffing(r io.Reader) error {
 	}
 
 	// Ensure data ends with CRLF
-	if wrote && last != '\n' {
+	if wrote && (previous != '\r' || last != '\n') {
 		if _, err := c.writer.WriteString("\r\n"); err != nil {
 			return fmt.Errorf("writing trailing CRLF for streamed DATA payload: %w", err)
 		}

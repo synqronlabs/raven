@@ -136,6 +136,8 @@ type basicSMTPHandler struct {
 	rejectAuth       bool
 	mu               sync.Mutex
 	mailFromLine     string
+	dataCommands     int
+	bdatCommands     int
 }
 
 func (h *basicSMTPHandler) handle(conn net.Conn) {
@@ -181,6 +183,9 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			mustFlush(w)
 
 		case cmd == "DATA":
+			h.mu.Lock()
+			h.dataCommands++
+			h.mu.Unlock()
 			mustWriteString(w, "354 Start mail input\r\n")
 			mustFlush(w)
 			// Read until ".\r\n"
@@ -263,6 +268,9 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			return
 
 		case strings.HasPrefix(cmd, "BDAT"):
+			h.mu.Lock()
+			h.bdatCommands++
+			h.mu.Unlock()
 			// Parse size
 			parts := strings.Fields(line)
 			size := 0
@@ -2435,6 +2443,29 @@ func TestClient_SendRawMultiple_ReusesConnection(t *testing.T) {
 
 // --- Send with BDAT ---
 
+func TestNewMailContentReaderStreamsBodyWithoutCopy(t *testing.T) {
+	body := []byte("original body")
+	content := &ravenmail.Content{
+		Headers: ravenmail.Headers{{Name: "Subject", Value: "streamed"}},
+		Body:    body,
+	}
+
+	reader, size := newMailContentReader(content)
+	body[0] = 'O'
+
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := content.ToRaw()
+	if !bytes.Equal(got, want) {
+		t.Fatalf("streamed content = %q, want %q", got, want)
+	}
+	if size != int64(len(want)) {
+		t.Fatalf("streamed size = %d, want %d", size, len(want))
+	}
+}
+
 func TestClient_Send_WithBDAT(t *testing.T) {
 	h := &basicSMTPHandler{extensions: []string{"CHUNKING"}}
 	srv := newMockSMTPServer(t, h.handle)
@@ -2464,6 +2495,47 @@ func TestClient_Send_WithBDAT(t *testing.T) {
 	}
 	if !result.Success {
 		t.Error("expected success")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.bdatCommands == 0 || h.dataCommands != 0 {
+		t.Fatalf("BDAT commands = %d, DATA commands = %d; want BDAT only", h.bdatCommands, h.dataCommands)
+	}
+}
+
+func TestClient_Send_LargeMailUsesSingleBDAT(t *testing.T) {
+	h := &basicSMTPHandler{extensions: []string{"CHUNKING"}}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	c := NewClient(&ClientConfig{LocalName: "localhost", ValidateBeforeSend: false})
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	mail := ravenmail.NewMailBuilder().
+		From("sender@example.com").
+		To("recipient@example.com").
+		Subject("Large streamed message").
+		TextBody(strings.Repeat("x", 1024*1024)).
+		MustBuild()
+
+	result, err := c.Send(mail)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected success")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.bdatCommands != 1 || h.dataCommands != 0 {
+		t.Fatalf("BDAT commands = %d, DATA commands = %d; want one BDAT and no DATA", h.bdatCommands, h.dataCommands)
 	}
 }
 

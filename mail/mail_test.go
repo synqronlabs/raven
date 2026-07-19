@@ -36,6 +36,10 @@ func TestMailBuilder_Basic(t *testing.T) {
 	if mail.Content.Headers.Get("Subject") != "Test Subject" {
 		t.Errorf("Expected subject 'Test Subject', got %q", mail.Content.Headers.Get("Subject"))
 	}
+
+	if got, want := mail.Envelope.Size, int64(len(mail.Content.ToRaw())); got != want {
+		t.Errorf("Envelope.Size = %d, want serialized size %d", got, want)
+	}
 }
 
 func TestNewHeaderPrependedReader(t *testing.T) {

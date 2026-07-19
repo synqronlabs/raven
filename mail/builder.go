@@ -478,8 +478,8 @@ func (b *MailBuilder) Build() (*Mail, error) {
 
 	// Calculate size if not set
 	if b.mail.Envelope.Size == 0 {
-		raw := b.mail.Content.ToRaw()
-		b.mail.Envelope.Size = int64(len(raw))
+		headers := b.mail.Content.Headers.ToRaw()
+		b.mail.Envelope.Size = int64(len(headers)) + 2 + int64(len(b.mail.Content.Body))
 	}
 
 	// Set received time
