@@ -1,10 +1,12 @@
 package dkim
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"net"
@@ -12,6 +14,18 @@ import (
 
 	ravendns "github.com/synqronlabs/raven/dns"
 )
+
+func BenchmarkBodyHashRelaxedManyLines(b *testing.B) {
+	body := bytes.Repeat([]byte("word\t  word  \r\n"), 10_000)
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := writeBodyHashRelaxed(sha256.New(), bytes.NewReader(body)); err != nil {
+			b.Fatalf("writeBodyHashRelaxed: %v", err)
+		}
+	}
+}
 
 // benchMessage is a realistic RFC 5322 message used for signing/verification benchmarks.
 var benchMessage = []byte("From: sender@example.com\r\n" +

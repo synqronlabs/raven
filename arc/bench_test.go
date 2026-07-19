@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"maps"
@@ -14,6 +15,18 @@ import (
 
 	ravenmail "github.com/synqronlabs/raven/mail"
 )
+
+func BenchmarkBodyHashRelaxedManyLines(b *testing.B) {
+	body := bytes.Repeat([]byte("word\t  word  \r\n"), 10_000)
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := bodyHashRelaxed(sha256.New(), bytes.NewReader(body), -1); err != nil {
+			b.Fatalf("bodyHashRelaxed: %v", err)
+		}
+	}
+}
 
 const (
 	benchARCAuthenticationResults = "i=2; mx.example.com; dkim=pass header.d=example.com; spf=pass smtp.mailfrom=sender@example.com"

@@ -1,12 +1,13 @@
 package arc
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"hash"
 	"io"
 	"strings"
+
+	mailcanonical "github.com/synqronlabs/raven/internal/canonical"
 )
 
 // computeBodyHash calculates the hash of the message body with optional length limit.
@@ -23,7 +24,7 @@ func computeBodyHash(h hash.Hash, canon Canonicalization, body io.Reader, length
 //   - Multiple trailing CRLFs become one
 //   - Empty body becomes single CRLF
 func bodyHashSimple(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	var written int64
 
@@ -31,7 +32,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, err
 	numTrailingCRLF := 0
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -88,7 +89,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, err
 //   - Ignore all empty lines at end of body
 //   - Empty body canonicalizes to the empty string
 func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	var written int64
 
@@ -98,7 +99,7 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 	endsWithCRLF := false
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -115,7 +116,7 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 		line = bytes.TrimRight(line, " \t")
 
 		// Compress internal whitespace
-		line = compressWhitespace(line)
+		line = mailcanonical.CompressWhitespace(line)
 
 		// Empty line (after canonicalization)?
 		if len(line) == 0 {
@@ -166,24 +167,6 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader, lengthLimit int64) ([]byte, er
 	}
 
 	return h.Sum(nil), nil
-}
-
-// compressWhitespace compresses runs of whitespace to a single space.
-func compressWhitespace(line []byte) []byte {
-	var result []byte
-	prevWS := false
-	for _, c := range line {
-		if c == ' ' || c == '\t' {
-			if !prevWS {
-				result = append(result, ' ')
-				prevWS = true
-			}
-		} else {
-			result = append(result, c)
-			prevWS = false
-		}
-	}
-	return result
 }
 
 // canonicalizeHeaderRelaxed returns the header in relaxed canonicalization.

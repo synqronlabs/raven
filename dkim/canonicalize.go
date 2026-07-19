@@ -8,6 +8,8 @@ import (
 	"hash"
 	"io"
 	"strings"
+
+	mailcanonical "github.com/synqronlabs/raven/internal/canonical"
 )
 
 // canonicalizeHeaderRelaxed returns the header in relaxed canonicalization.
@@ -111,7 +113,7 @@ func bodyHashSimple(h hash.Hash, body io.Reader) ([]byte, error) {
 }
 
 func canonicalizeBodySimple(body io.Reader) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	var canonical bytes.Buffer
 
@@ -119,7 +121,7 @@ func canonicalizeBodySimple(body io.Reader) ([]byte, error) {
 	numTrailingCRLF := 0
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -153,12 +155,12 @@ func canonicalizeBodySimple(body io.Reader) ([]byte, error) {
 }
 
 func writeBodyHashSimple(h hash.Hash, body io.Reader) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	numTrailingCRLF := 0
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -214,7 +216,7 @@ func bodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
 }
 
 func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	var canonical bytes.Buffer
 
@@ -224,7 +226,7 @@ func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
 	lastLineHadCRLF := false
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -242,23 +244,11 @@ func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
 		// Trim trailing whitespace
 		line = bytes.TrimRight(line, " \t")
 
-		// Compress internal whitespace
-		var processed []byte
-		prevWS := false
-		for _, b := range line {
-			if b == ' ' || b == '\t' {
-				if !prevWS {
-					processed = append(processed, ' ')
-					prevWS = true
-				}
-			} else {
-				processed = append(processed, b)
-				prevWS = false
-			}
-		}
+		// Compress internal whitespace in the borrowed line buffer.
+		line = mailcanonical.CompressWhitespace(line)
 
 		// Check if line is empty after processing
-		if len(processed) == 0 {
+		if len(line) == 0 {
 			if hasCRLF {
 				emptyLines++
 			}
@@ -272,7 +262,7 @@ func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
 		}
 		emptyLines = 0
 
-		canonical.Write(processed)
+		canonical.Write(line)
 		if hasCRLF {
 			canonical.Write(crlf)
 		}
@@ -290,14 +280,14 @@ func canonicalizeBodyRelaxed(body io.Reader) ([]byte, error) {
 }
 
 func writeBodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
-	br := bufio.NewReader(body)
+	lr := mailcanonical.NewLineReader(body)
 	var crlf = []byte("\r\n")
 	emptyLines := 0
 	bodyNonEmpty := false
 	lastLineHadCRLF := false
 
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := lr.ReadLine()
 		if len(line) == 0 && err == io.EOF {
 			break
 		}
@@ -314,21 +304,9 @@ func writeBodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
 
 		line = bytes.TrimRight(line, " \t")
 
-		var processed []byte
-		prevWS := false
-		for _, b := range line {
-			if b == ' ' || b == '\t' {
-				if !prevWS {
-					processed = append(processed, ' ')
-					prevWS = true
-				}
-			} else {
-				processed = append(processed, b)
-				prevWS = false
-			}
-		}
+		line = mailcanonical.CompressWhitespace(line)
 
-		if len(processed) == 0 {
+		if len(line) == 0 {
 			if hasCRLF {
 				emptyLines++
 			}
@@ -343,7 +321,7 @@ func writeBodyHashRelaxed(h hash.Hash, body io.Reader) ([]byte, error) {
 		}
 		emptyLines = 0
 
-		if _, err := h.Write(processed); err != nil {
+		if _, err := h.Write(line); err != nil {
 			return nil, fmt.Errorf("writing canonicalized relaxed body line to hash: %w", err)
 		}
 		if hasCRLF {
@@ -432,13 +410,14 @@ func parseMessageHeaders(data []byte) ([]headerData, int, error) {
 
 // parseHeaders parses headers from a reader.
 func parseHeaders(br *bufio.Reader) ([]headerData, int, error) {
+	lr := mailcanonical.NewLineReader(br)
 	var headers []headerData
 	var offset int
 	var currentKey, currentLKey string
 	var currentValue, currentRaw []byte
 
 	for {
-		line, err := readLine(br)
+		line, err := readLine(lr)
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading message header line: %w", err)
 		}
@@ -502,17 +481,20 @@ func parseHeaders(br *bufio.Reader) ([]headerData, int, error) {
 }
 
 // readLine reads a line including CRLF.
-func readLine(r *bufio.Reader) ([]byte, error) {
+func readLine(r *mailcanonical.LineReader) ([]byte, error) {
 	var buf []byte
 	for {
-		line, err := r.ReadBytes('\n')
+		line, err := r.ReadLine()
 		if err != nil {
 			return nil, fmt.Errorf("reading header bytes: %w", err)
 		}
-		buf = append(buf, line...)
-		if bytes.HasSuffix(buf, []byte("\r\n")) {
-			return buf, nil
+		if bytes.HasSuffix(line, []byte("\r\n")) {
+			if len(buf) == 0 {
+				return line, nil
+			}
+			return append(buf, line...), nil
 		}
+		buf = append(buf, line...)
 	}
 }
 

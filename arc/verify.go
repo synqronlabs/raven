@@ -683,7 +683,7 @@ func parseHeaders(r *bufio.Reader) ([]headerData, int, error) {
 
 		name := string(bytes.TrimSpace(before))
 		headers = append(headers, headerData{
-			raw:  line,
+			raw:  bytes.Clone(line),
 			lkey: strings.ToLower(name),
 		})
 
@@ -700,9 +700,18 @@ func readHeaderLine(r *bufio.Reader) ([]byte, error) {
 	var line []byte
 
 	for {
-		part, err := r.ReadBytes('\n')
-		if len(part) > 0 {
+		part, err := r.ReadSlice('\n')
+		if len(line) > 0 {
 			line = append(line, part...)
+		}
+		if err == bufio.ErrBufferFull {
+			if len(line) == 0 {
+				line = append(line, part...)
+			}
+			continue
+		}
+		if len(line) == 0 {
+			line = part
 		}
 		if err != nil {
 			return line, err
@@ -715,6 +724,11 @@ func readHeaderLine(r *bufio.Reader) ([]byte, error) {
 		}
 		if next[0] != ' ' && next[0] != '\t' {
 			return line, nil
+		}
+
+		// The next read invalidates data borrowed from the bufio.Reader.
+		if len(line) == len(part) {
+			line = bytes.Clone(line)
 		}
 	}
 }
