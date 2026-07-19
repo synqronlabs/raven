@@ -11,4 +11,7 @@ func TestServerConfig_DefaultLineLimits(t *testing.T) {
 	if got := srv.config.MaxAuthLineLength; got != 12288 {
 		t.Fatalf("MaxAuthLineLength = %d, want 12288", got)
 	}
+	if srv.config.EnableSMTPUTF8 {
+		t.Fatal("EnableSMTPUTF8 = true, want false by default")
+	}
 }

@@ -39,8 +39,9 @@ func (s *Session) Reset()                                                   {}
 func (s *Session) Logout() error                                            { return nil }
 
 srv := server.NewServer(&Backend{}, server.ServerConfig{
-    Domain: "mx.example.com",
-    Addr:   ":2525",
+    Domain:         "mx.example.com",
+    Addr:           ":2525",
+    EnableSMTPUTF8: true, // Opt in to RFC 6531 support.
 })
 
 if err := srv.ListenAndServe(ctx); err != nil {

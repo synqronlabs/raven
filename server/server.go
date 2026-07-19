@@ -70,7 +70,7 @@ type ServerConfig struct {
 	MaxAuthLineLength int
 
 	// EnableSMTPUTF8 advertises SMTPUTF8 extension (RFC 6531).
-	// Default: true
+	// Disabled by default; set to true to enable SMTPUTF8 support.
 	EnableSMTPUTF8 bool
 
 	// EnableREQUIRETLS advertises REQUIRETLS extension (RFC 8689).

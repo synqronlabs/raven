@@ -45,6 +45,7 @@
 //	    Domain:          "mail.example.com",
 //	    Addr:            ":25",
 //	    MaxMessageBytes: 25 * 1024 * 1024,
+//	    EnableSMTPUTF8:  true, // Opt in to RFC 6531 support.
 //	}
 //
 //	srv := server.NewServer(&MyBackend{}, cfg)

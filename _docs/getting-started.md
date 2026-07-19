@@ -161,8 +161,9 @@ func (s *MySession) Logout() error { return nil }
 
 ```go
 srv := server.NewServer(&MyBackend{}, server.ServerConfig{
-    Domain: "mx.example.com",
-    Addr:   ":2525",
+    Domain:         "mx.example.com",
+    Addr:           ":2525",
+    EnableSMTPUTF8: true, // Opt in to RFC 6531 support.
 })
 
 ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
