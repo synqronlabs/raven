@@ -1767,6 +1767,35 @@ func TestPool_Close(t *testing.T) {
 	if !p.closed {
 		t.Error("expected pool to be closed")
 	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestPool_CloseConcurrentWithPut(t *testing.T) {
+	const clientCount = 1000
+
+	p := NewPool(NewDialer("localhost", 25), clientCount)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range clientCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			p.Put(&Client{})
+		}()
+	}
+
+	close(start)
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	wg.Wait()
+
+	if _, err := p.Get(); !errors.Is(err, ErrClientClosed) {
+		t.Fatalf("Get after concurrent shutdown error = %v, want %v", err, ErrClientClosed)
+	}
 }
 
 func TestPool_Get_ClosedPool(t *testing.T) {

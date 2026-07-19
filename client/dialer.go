@@ -226,11 +226,11 @@ func (p *Pool) Get() (*Client, error) {
 		p.mu.Unlock()
 		return nil, ErrClientClosed
 	}
-	p.mu.Unlock()
 
 	// Try to get an existing connection
 	select {
 	case client := <-p.conns:
+		p.mu.Unlock()
 		// Verify connection is still valid
 		if err := client.Noop(); err == nil {
 			return client, nil
@@ -239,33 +239,54 @@ func (p *Pool) Get() (*Client, error) {
 		_ = client.Close()
 	default:
 		// No available connections
+		p.mu.Unlock()
 	}
 
 	// Create new connection
-	return p.dialer.Dial()
+	client, err := p.dialer.Dial()
+	if err != nil {
+		return nil, err
+	}
+
+	// Close may have raced with the dial. Do not hand out a new connection
+	// after the pool has been closed.
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		_ = client.Close()
+		return nil, ErrClientClosed
+	}
+
+	return client, nil
 }
 
 // Put returns a connection to the pool.
 func (p *Pool) Put(client *Client) {
+	if client == nil {
+		return
+	}
+
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		_ = client.Close()
 		return
 	}
-	p.mu.Unlock()
 
-	// Try to return to pool
+	// Keep the lifecycle lock held while publishing the connection so Close
+	// cannot mark the pool closed between the check and the channel send.
 	select {
 	case p.conns <- client:
-		// Returned to pool
+		p.mu.Unlock()
+		return
 	default:
-		// Pool full, close connection
-		if err := client.Quit(); err != nil {
-			if closeErr := client.Close(); closeErr != nil {
-				_ = closeErr
-			}
-		}
+		p.mu.Unlock()
+	}
+
+	// Pool full, close connection outside the lifecycle lock.
+	if err := client.Quit(); err != nil {
+		_ = client.Close()
 	}
 }
 
@@ -308,16 +329,24 @@ func (p *Pool) SendRaw(envelope ravenmail.Envelope, data io.Reader) (*SendResult
 // Close closes the pool and all connections.
 func (p *Pool) Close() error {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
 	p.closed = true
+
+	// The channel intentionally remains open. Closing it would race with Put
+	// callers that observed the pool as open. Drain all idle connections while
+	// holding the lifecycle lock, then close them without blocking other calls.
+	clients := make([]*Client, 0, len(p.conns))
+	for range len(p.conns) {
+		clients = append(clients, <-p.conns)
+	}
 	p.mu.Unlock()
 
-	close(p.conns)
-
-	for client := range p.conns {
+	for _, client := range clients {
 		if err := client.Quit(); err != nil {
-			if closeErr := client.Close(); closeErr != nil {
-				_ = closeErr
-			}
+			_ = client.Close()
 		}
 	}
 
