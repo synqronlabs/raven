@@ -1944,12 +1944,10 @@ func TestPool_CloseConcurrentWithPut(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for range clientCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			p.Put(&Client{})
-		}()
+		})
 	}
 
 	close(start)

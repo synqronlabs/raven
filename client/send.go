@@ -573,66 +573,6 @@ func newRecipientResult(rcpt ravenmail.Recipient, resp *ClientResponse, err erro
 	return result
 }
 
-// sendWithDATA sends message content using the traditional DATA command.
-func (c *Client) sendWithDATA(data []byte) (*ClientResponse, error) {
-	if err := c.writeCommand("DATA"); err != nil {
-		return nil, fmt.Errorf("writing DATA command: %w", err)
-	}
-
-	resp, err := c.readResponse()
-	if err != nil {
-		return nil, fmt.Errorf("reading DATA intermediate response: %w", err)
-	}
-
-	// Expect 354 response
-	if !resp.IsIntermediate() {
-		return nil, fmt.Errorf("%w: expected 354, got %d", ErrDataFailed, resp.Code)
-	}
-
-	// Perform dot-stuffing and send data
-	stuffed := dotStuff(data)
-
-	// Write message data
-	if c.config.WriteTimeout > 0 {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout)); err != nil {
-			return nil, fmt.Errorf("setting write deadline for DATA payload: %w", err)
-		}
-	}
-
-	if _, err := c.writer.Write(stuffed); err != nil {
-		return nil, fmt.Errorf("writing DATA payload: %w", err)
-	}
-
-	// Ensure data ends with CRLF
-	if len(stuffed) < 2 || stuffed[len(stuffed)-2] != '\r' || stuffed[len(stuffed)-1] != '\n' {
-		if _, err := c.writer.WriteString("\r\n"); err != nil {
-			return nil, fmt.Errorf("writing trailing CRLF for DATA payload: %w", err)
-		}
-	}
-
-	// Send terminating sequence
-	if _, err := c.writer.WriteString(".\r\n"); err != nil {
-		return nil, fmt.Errorf("writing DATA terminator: %w", err)
-	}
-
-	if err := c.writer.Flush(); err != nil {
-		return nil, fmt.Errorf("flushing DATA payload: %w", err)
-	}
-
-	// Read final response
-	resp, err = c.readResponse()
-	if err != nil {
-		return nil, fmt.Errorf("reading DATA final response: %w", err)
-	}
-
-	if !resp.IsSuccess() {
-		errResp := resp.Error()
-		return resp, errResp
-	}
-
-	return resp, nil
-}
-
 func (c *Client) sendStreamWithDATA(r io.Reader) (*ClientResponse, error) {
 	if err := c.writeCommand("DATA"); err != nil {
 		return nil, fmt.Errorf("writing DATA command: %w", err)
@@ -675,11 +615,6 @@ func (c *Client) sendStreamWithDATA(r io.Reader) (*ClientResponse, error) {
 	return finalResp, nil
 }
 
-// sendWithBDAT sends message content using BDAT command (single chunk).
-func (c *Client) sendWithBDAT(data []byte) error {
-	return c.sendWithBDATChunked(data, len(data))
-}
-
 // sendStreamWithSingleBDAT sends a reader of known size as one LAST chunk.
 func (c *Client) sendStreamWithSingleBDAT(r io.Reader, size int64) error {
 	if size < 0 {
@@ -706,54 +641,6 @@ func (c *Client) sendStreamWithSingleBDAT(r io.Reader, size int64) error {
 	if !resp.IsSuccess() {
 		return resp.Error()
 	}
-	return nil
-}
-
-// sendWithBDATChunked sends message content using BDAT command in chunks.
-func (c *Client) sendWithBDATChunked(data []byte, chunkSize int) error {
-	remaining := data
-	isLast := false
-
-	for len(remaining) > 0 {
-		chunk := remaining
-		if len(chunk) > chunkSize {
-			chunk = remaining[:chunkSize]
-			remaining = remaining[chunkSize:]
-		} else {
-			remaining = nil
-			isLast = true
-		}
-
-		var cmd string
-		if isLast {
-			cmd = fmt.Sprintf("BDAT %d LAST", len(chunk))
-		} else {
-			cmd = fmt.Sprintf("BDAT %d", len(chunk))
-		}
-
-		if err := c.writeCommand("%s", cmd); err != nil {
-			return fmt.Errorf("writing BDAT command: %w", err)
-		}
-
-		// Send chunk data (no dot-stuffing needed for BDAT)
-		if _, err := c.writer.Write(chunk); err != nil {
-			return fmt.Errorf("writing BDAT chunk (%d bytes): %w", len(chunk), err)
-		}
-
-		if err := c.writer.Flush(); err != nil {
-			return fmt.Errorf("flushing BDAT chunk (%d bytes): %w", len(chunk), err)
-		}
-
-		resp, err := c.readResponse()
-		if err != nil {
-			return fmt.Errorf("reading BDAT response: %w", err)
-		}
-
-		if !resp.IsSuccess() {
-			return resp.Error()
-		}
-	}
-
 	return nil
 }
 
