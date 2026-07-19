@@ -932,6 +932,14 @@ func expandDomainSpec(ctx context.Context, resolver Resolver, spec string, args 
 
 // findValidatedPTR finds a PTR name that validates back to the remote IP.
 func findValidatedPTR(ctx context.Context, resolver Resolver, names []string, args Args, authentic *bool) string {
+	// RFC 7208 section 4.6.4 limits forward address queries for the %{p}
+	// macro to the first ten PTR answers. Ignore later answers before applying
+	// the macro's preference order so an attacker cannot move a preferred name
+	// beyond the lookup bound.
+	if len(names) > mxPtrLimit {
+		names = names[:mxPtrLimit]
+	}
+
 	domain := strings.ToLower(args.domain) + "."
 	dotDomain := "." + domain
 

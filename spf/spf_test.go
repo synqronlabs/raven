@@ -19,6 +19,7 @@ type MockResolver struct {
 	PTRRecords  map[string][]string
 	Authentic   bool
 	Errors      map[string]error
+	IPLookups   []string
 }
 
 func (m *MockResolver) LookupTXT(_ context.Context, name string) ([]string, Result, error) {
@@ -33,6 +34,7 @@ func (m *MockResolver) LookupTXT(_ context.Context, name string) ([]string, Resu
 }
 
 func (m *MockResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, Result, error) {
+	m.IPLookups = append(m.IPLookups, host)
 	if err, ok := m.Errors[host]; ok {
 		return nil, Result{Authentic: m.Authentic}, err
 	}
@@ -988,7 +990,11 @@ func TestFindValidatedPTROrdering(t *testing.T) {
 			"invalid.example.com.": {net.ParseIP("192.0.2.55")},
 		},
 	}
-	args := Args{domain: "example.com", RemoteIP: net.ParseIP("192.0.2.1")}
+	args := Args{
+		domain:      "example.com",
+		RemoteIP:    net.ParseIP("192.0.2.1"),
+		voidLookups: new(int),
+	}
 
 	authentic := true
 	if got := findValidatedPTR(context.Background(), resolver, []string{"example.com."}, args, &authentic); got != "example.com" {
@@ -1008,6 +1014,47 @@ func TestFindValidatedPTROrdering(t *testing.T) {
 	authentic = true
 	if got := findValidatedPTR(context.Background(), resolver, []string{"invalid.example.com."}, args, &authentic); got != "unknown" {
 		t.Fatalf("findValidatedPTR() unknown = %q, want %q", got, "unknown")
+	}
+}
+
+func TestFindValidatedPTRLimitsForwardLookups(t *testing.T) {
+	const matchingName = "example.com."
+
+	names := make([]string, 0, mxPtrLimit+1)
+	for i := range mxPtrLimit {
+		names = append(names, fmt.Sprintf("host%d.example.net.", i))
+	}
+	names = append(names, matchingName)
+
+	resolver := &MockResolver{
+		ARecords: map[string][]net.IP{
+			matchingName: {net.ParseIP("192.0.2.1")},
+		},
+		PTRRecords: map[string][]string{
+			"192.0.2.1": names,
+		},
+	}
+	args := Args{
+		domain:      "example.com",
+		RemoteIP:    net.ParseIP("192.0.2.1"),
+		dnsRequests: new(int),
+		voidLookups: new(int),
+	}
+
+	got, _, err := expandDomainSpec(context.Background(), resolver, "%{p}", args, false)
+	if err != nil {
+		t.Fatalf("expandDomainSpec() error = %v", err)
+	}
+	if got != "unknown" {
+		t.Fatalf("expandDomainSpec() = %q, want %q when matching name is beyond limit", got, "unknown")
+	}
+	if len(resolver.IPLookups) != mxPtrLimit {
+		t.Fatalf("forward lookup count = %d, want %d", len(resolver.IPLookups), mxPtrLimit)
+	}
+	for _, name := range resolver.IPLookups {
+		if name == matchingName {
+			t.Fatalf("forward lookup unexpectedly queried PTR answer beyond limit: %q", name)
+		}
 	}
 }
 
