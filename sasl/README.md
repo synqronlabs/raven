@@ -10,15 +10,14 @@ import "github.com/synqronlabs/raven/sasl"
 
 ## What It Does
 
-- Implements LOGIN and PLAIN mechanism handlers.
-- Provides ready-made `sasl.Server` verifiers for LOGIN and PLAIN.
+- Implements PLAIN and legacy LOGIN mechanism handlers.
+- Provides a ready-made `sasl.Server` verifier for PLAIN.
 - Defines client-side and server-side mechanism interfaces.
 - Exposes typed errors for cancellation and malformed authentication payloads.
 
 ## Key API
 
-- `NewPlain()`, `NewLogin()`
-- `NewPlainServer()`, `NewLoginServer()`
+- `NewPlain()`, `NewPlainServer()`
 - `VerifyFunc`
 - `Mechanism` interface
 - `Server` interface
@@ -30,12 +29,12 @@ import "github.com/synqronlabs/raven/sasl"
 plain := sasl.NewPlain()
 _ = plain
 
-login := sasl.NewLogin()
-_ = login
-
 plainServer := sasl.NewPlainServer(func(creds *sasl.Credentials) error {
 	_ = creds
 	return nil
 })
 _ = plainServer
 ```
+
+Prefer PLAIN inside TLS. LOGIN is not a standards-track SASL mechanism and is
+provided only for compatibility with older SMTP clients.

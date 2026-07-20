@@ -20,9 +20,8 @@ import "github.com/synqronlabs/raven/client"
 
 - `NewDialer(host, port)`
 - `(*Dialer).Dial()`, `(*Client).Send(mail)`
-- `(*Client).SendRaw(envelope, reader)`, `(*Client).SendRawMultiple(messages)`
-- `(*Dialer).DialAndSendRaw(envelope, reader)`
-- `QuickSend(...)`, `QuickSendTLS(...)`, `QuickSendMail(...)`
+- `(*Client).SendRaw(envelope, reader)`
+- `NewPool(dialer, size)`, `(*Pool).Send(...)`, `(*Pool).SendRaw(...)`
 - `Probe(...)`, `ProbeWithSTARTTLS(...)`, `ProbeTLS(...)`
 
 ## Example
@@ -41,13 +40,17 @@ if err != nil {
 }
 defer c.Quit()
 
-result, err := c.Send(msg)
-if err != nil {
-    panic(err)
+for _, msg := range queue {
+    result, err := c.Send(msg)
+    if err != nil {
+        panic(err)
+    }
+    _ = result.Success
 }
-
-_ = result.Success
 ```
+
+Dial once for a sequential queue. For concurrent producers, use a bounded
+`Pool` and close it during shutdown.
 
 ## Streaming Raw Mail
 
@@ -63,7 +66,6 @@ env := mail.Envelope{
     To: []mail.Recipient{
         {Address: mail.Path{Mailbox: mail.MailboxAddress{LocalPart: "rcpt", Domain: "example.net"}}},
     },
-    Size: 12345,
 }
 
 result, err := c.SendRaw(env, f)
@@ -72,3 +74,7 @@ if err != nil {
 }
 _ = result.MessageID
 ```
+
+`SendRaw` does not parse or validate the RFC 5322 stream. It applies SMTP
+dot-stuffing for DATA and keeps the envelope separate. Do not reuse a reader
+after it has been sent unless you seek it back to the beginning.

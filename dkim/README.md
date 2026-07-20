@@ -16,9 +16,10 @@ import "github.com/synqronlabs/raven/dkim"
 
 ## Key API
 
-- `(*Signer).Sign(message)`
-- `Verify(ctx, resolver, message)`
-- `SignMail(...)`, `SignMailMultiple(...)`, `QuickSign(...)`
+- `(*Signer).SignReader(message, size)`
+- `SignMultipleReader(message, size, signers)`
+- `(*Verifier).VerifyReader(ctx, message)`
+- `ParseRecord(...)`, `ParseSignature(...)`
 
 ## Example
 
@@ -29,14 +30,23 @@ signer := &dkim.Signer{
     PrivateKey: privateKey,
 }
 
-sigHeader, err := signer.Sign(rawMessage)
+info, err := spool.Stat()
 if err != nil {
     panic(err)
 }
 
-_ = sigHeader
+sigHeader, err := signer.SignReader(spool, info.Size())
+if err != nil {
+    panic(err)
+}
 
-results, err := dkim.Verify(ctx, resolver, rawMessage)
+if _, err := spool.Seek(0, io.SeekStart); err != nil {
+    panic(err)
+}
+signedMessage := mail.NewHeaderPrependedReader(sigHeader, spool)
+_ = signedMessage // Pass this reader to client.SendRaw.
+
+results, err := (&dkim.Verifier{Resolver: resolver}).VerifyReader(ctx, spool)
 if err != nil {
     panic(err)
 }
@@ -47,3 +57,8 @@ for _, r := range results {
     }
 }
 ```
+
+The reader must contain the complete RFC 5322 message and implement
+`io.ReaderAt`; an `*os.File` spool is suitable. Signing returns a complete
+`DKIM-Signature` header line. Seek the spool before forwarding because ordinary
+reads use its current offset.

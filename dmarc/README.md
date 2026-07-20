@@ -18,7 +18,7 @@ import "github.com/synqronlabs/raven/dmarc"
 
 - `Lookup(ctx, resolver, domain)`
 - `Verify(ctx, resolver, args, applyRandomPercentage)`
-- `VerifyMail(...)`, `VerifyMailObject(...)`
+- `ExtractFromDomain(fromHeader)`
 - `OrganizationalDomain(...)`, `DomainsAligned(...)`
 
 ## Example
@@ -45,3 +45,8 @@ if useResult && result.Reject {
     // Apply DMARC reject policy.
 }
 ```
+
+Parse the visible `From` header once and pass its domain explicitly. SPF must be
+evaluated against the SMTP identity before DATA; DKIM results come from the
+complete RFC 5322 message. Set `applyRandomPercentage` to `true` in normal mail
+processing so the record's `pct` policy is honored.

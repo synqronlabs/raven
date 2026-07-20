@@ -1,6 +1,7 @@
 # mail
 
-Package `mail` defines Raven's core message model and MIME helpers: envelope, headers, body, trace fields, builder APIs, and parsed MIME trees.
+Package `mail` defines Raven's SMTP envelope, RFC 5322 content model, message
+builder, and streaming MIME helpers.
 
 ## Import
 
@@ -12,22 +13,19 @@ import "github.com/synqronlabs/raven/mail"
 
 - Represents SMTP envelope and RFC 5322 content separately.
 - Provides fluent message construction via `MailBuilder`, including multipart content and attachments.
-- Parses message content into `MIMEPart` trees and serializes MIME structures back to wire bytes.
-- Walks and validates MIME structure from streaming readers without building a full MIME tree.
+- Walks and validates MIME structure without retaining every part body.
 - Validates header/body constraints (line endings, required headers, lengths).
-- Supports JSON and MessagePack serialization helpers.
+- Provides helpers for prepending generated authentication headers to a stream.
 
 ## Key API
 
 - `NewMailBuilder()`
 - `(*MailBuilder).Build()`
 - `(*Content).Validate()`
-- `(*Content).ToMIME()`, `(*Content).FromMIME(...)`
-- `(*MIMEPart).IsMultipart()`, `(*MIMEPart).ToBytes()`
-- `WalkMIME(...)`
+- `ParseHeaders(...)`, `Headers.Validate()`
+- `WalkMIME(...)`, `MIMEWalkPart`
 - `ValidateMIMEStream(...)`
-- `(*Mail).ToJSON()`, `FromJSON(...)`
-- `(*Mail).ToMessagePack()`, `FromMessagePack(...)`
+- `NewHeaderPrependedReader(...)`, `PrependedSize(...)`
 
 ## Example
 
@@ -46,12 +44,25 @@ if err := msg.Content.Validate(); err != nil {
     panic(err)
 }
 
-part, err := msg.Content.ToMIME()
+err = mail.WalkMIME(
+    msg.Content.Headers,
+    bytes.NewReader(msg.Content.Body),
+    mail.MIMEWalkOptions{MaxDepth: 20, MaxParts: 1_000},
+    func(part *mail.MIMEWalkPart) error {
+        if !part.IsMultipart() {
+            _, err := io.Copy(io.Discard, part.Body)
+            return err
+        }
+        return nil
+    },
+)
 if err != nil {
     panic(err)
 }
-
-if err := msg.Content.FromMIME(part); err != nil {
-    panic(err)
-}
 ```
+
+`MIMEWalkPart.Body` is valid during the callback. Raven drains unread leaf data
+before visiting the next part, so copy content that must outlive the callback.
+For server workloads, keep the SMTP envelope and original message spool
+separate instead of using the deprecated eager serialization and MIME-tree
+compatibility helpers.

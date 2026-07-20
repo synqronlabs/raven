@@ -32,11 +32,15 @@ func (b *Backend) NewSession(c *server.Conn) (server.Session, error) {
 
 type Session struct{}
 
-func (s *Session) Mail(from string, opts *server.MailOptions) error           { return nil }
-func (s *Session) Rcpt(to string, opts *server.RcptOptions) error             { return nil }
-func (s *Session) Data(headers server.MessageHeaders, body io.Reader) error { return nil }
-func (s *Session) Reset()                                                   {}
-func (s *Session) Logout() error                                            { return nil }
+func (s *Session) Mail(from string, opts *server.MailOptions) error { return nil }
+func (s *Session) Rcpt(to string, opts *server.RcptOptions) error   { return nil }
+func (s *Session) Data(headers server.MessageHeaders, body io.Reader) error {
+    // Replace io.Discard with a queue, MIME walker, or bounded spool.
+    _, err := io.Copy(io.Discard, body)
+    return err
+}
+func (s *Session) Reset()        {}
+func (s *Session) Logout() error { return nil }
 
 srv := server.NewServer(&Backend{}, server.ServerConfig{
     Domain:         "mx.example.com",
@@ -48,3 +52,8 @@ if err := srv.ListenAndServe(ctx); err != nil {
     panic(err)
 }
 ```
+
+`Data` must consume `body` before returning, even when rejecting a message.
+`headers` contains the raw header block, including Raven's `Received` field but
+not the blank-line separator. To create a complete seekable message for
+DKIM/ARC, write `headers`, `"\r\n"`, and `body` to a caller-owned spool.

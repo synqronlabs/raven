@@ -9,10 +9,24 @@ spools. Structured `mail.Mail` composition remains available for generated
 messages, but eager secondary representations are deprecated.
 
 It includes:
+
 - SMTP server and client primitives.
 - Streaming MIME traversal plus compatibility helpers for structured messages.
 - SPF, DKIM, DMARC, and ARC verification/signing.
 - DNS resolvers with optional DNSSEC authenticity signals.
+
+## Why Raven
+
+Raven is designed for mail servers, gateways, submission agents, and delivery
+workers that need explicit control over the SMTP transaction. The SMTP envelope
+is kept separate from RFC 5322 content, protocol results are typed, and policy
+decisions remain with the caller.
+
+Large incoming messages do not need to become object graphs. A server session
+receives the header block and a streaming body; callers can validate or walk
+MIME incrementally and spool a complete message when DKIM or ARC needs repeatable
+reads. The `mail.MailBuilder` remains the convenient choice for messages that
+an application creates itself.
 
 ## Install
 
@@ -28,8 +42,8 @@ go get github.com/synqronlabs/raven
 - `dmarc`: DMARC lookup and policy evaluation
 - `dns`: DNS resolvers with optional DNSSEC awareness and domain validation helpers
 - `io`: SMTP-oriented line-reading helpers and ASCII string helpers
-- `mail`: Core message model, builder, and MIME parsing/serialization
-- `sasl`: SASL LOGIN and PLAIN primitives
+- `mail`: Core message model, builder, and streaming MIME traversal
+- `sasl`: SASL PLAIN primitives and legacy LOGIN compatibility
 - `server`: SMTP server implementation (Backend/Session pattern)
 - `spf`: SPF parsing and evaluation
 
@@ -101,11 +115,15 @@ func (b *Backend) NewSession(c *server.Conn) (server.Session, error) {
 
 type Session struct{}
 
-func (s *Session) Mail(from string, opts *server.MailOptions) error           { return nil }
-func (s *Session) Rcpt(to string, opts *server.RcptOptions) error             { return nil }
-func (s *Session) Data(headers server.MessageHeaders, body io.Reader) error { return nil }
-func (s *Session) Reset()                                                   {}
-func (s *Session) Logout() error                                            { return nil }
+func (s *Session) Mail(from string, opts *server.MailOptions) error { return nil }
+func (s *Session) Rcpt(to string, opts *server.RcptOptions) error   { return nil }
+func (s *Session) Data(headers server.MessageHeaders, body io.Reader) error {
+    // Queue or process the body here. Data must consume it before returning.
+    _, err := io.Copy(io.Discard, body)
+    return err
+}
+func (s *Session) Reset()        {}
+func (s *Session) Logout() error { return nil }
 
 srv := server.NewServer(&Backend{}, server.ServerConfig{
     Domain:         "mx.example.com",
@@ -133,7 +151,7 @@ if err != nil {
     panic(err)
 }
 
-dkimResults, err := dkim.Verify(ctx, resolver, rawMessage)
+dkimResults, err := (&dkim.Verifier{Resolver: resolver}).VerifyReader(ctx, messageSpool)
 if err != nil {
     panic(err)
 }
@@ -148,6 +166,41 @@ useDMARC, dmarcResult := dmarc.Verify(ctx, resolver, dmarc.VerifyArgs{
 _ = useDMARC
 _ = dmarcResult
 ```
+
+Here `messageSpool` is an `io.ReaderAt` containing the complete RFC 5322
+message. A temporary file is a practical bounded-memory spool for messages
+received through `server.Session.Data`; retain its size as well when signing.
+
+### Sign and forward a spooled message
+
+```go
+info, err := spool.Stat()
+if err != nil {
+    panic(err)
+}
+
+signer := dkim.Signer{
+    Domain:     "example.com",
+    Selector:   "mail2026",
+    PrivateKey: privateKey,
+}
+signature, err := signer.SignReader(spool, info.Size())
+if err != nil {
+    panic(err)
+}
+
+if _, err := spool.Seek(0, io.SeekStart); err != nil {
+    panic(err)
+}
+signed := mail.NewHeaderPrependedReader(signature, spool)
+result, err := c.SendRaw(envelope, signed)
+if err != nil {
+    panic(err)
+}
+```
+
+DKIM and ARC return complete header lines. Prepending those lines while reading
+the original spool avoids constructing a second full message in memory.
 
 ## Performance
 
