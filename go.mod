@@ -3,7 +3,7 @@ module github.com/synqronlabs/raven
 go 1.25.0
 
 require (
-	github.com/gofrs/uuid/v5 v5.4.0
+	github.com/gofrs/uuid/v5 v5.5.1
 	github.com/miekg/dns v1.1.72
 	github.com/tinylib/msgp v1.6.4
 	golang.org/x/net v0.57.0
