@@ -278,7 +278,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // Close immediately closes the server and all connections.
 func (s *Server) Close() error {
-	return s.Shutdown(context.Background())
+	alreadyClosed := s.closed.Swap(true)
+	if !alreadyClosed {
+		close(s.done)
+	}
+
+	s.mu.Lock()
+	for _, l := range s.listeners {
+		_ = l.Close()
+	}
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+
+	if alreadyClosed {
+		return ErrServerClosed
+	}
+	return nil
 }
 
 // handleConn handles a single connection.
@@ -286,9 +303,14 @@ func (s *Server) handleConn(ctx context.Context, netConn net.Conn) {
 	// Track connection
 	c := newConn(ctx, netConn, s)
 	s.mu.Lock()
+	if s.closed.Load() {
+		s.mu.Unlock()
+		_ = c.Close()
+		return
+	}
 	s.conns[c] = struct{}{}
-	s.mu.Unlock()
 	s.connCount.Add(1)
+	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()

@@ -96,7 +96,8 @@ func (c EnhancedCode) String() string {
 var NoEnhancedCode = EnhancedCode{-1, -1, -1}
 
 // SMTPError represents an SMTP protocol error.
-// Session methods can return this to send specific SMTP response codes.
+// Session methods and SASL servers can return this to send specific SMTP
+// response codes.
 type SMTPError struct {
 	Code         int          // 3-digit SMTP code (e.g., 550)
 	EnhancedCode EnhancedCode // Enhanced status code (e.g., 5.7.1)

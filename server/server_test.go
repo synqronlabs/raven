@@ -3,11 +3,19 @@ package server_test
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,6 +146,23 @@ func (s *shortDataSession) Data(_ server.MessageHeaders, body io.Reader) error {
 
 func (*shortDataSession) Reset()        {}
 func (*shortDataSession) Logout() error { return nil }
+
+type trackedSession struct {
+	testSession
+	logoutOnce sync.Once
+	loggedOut  chan struct{}
+	logouts    atomic.Int32
+}
+
+func newTrackedSession() *trackedSession {
+	return &trackedSession{loggedOut: make(chan struct{})}
+}
+
+func (s *trackedSession) Logout() error {
+	s.logouts.Add(1)
+	s.logoutOnce.Do(func() { close(s.loggedOut) })
+	return nil
+}
 
 // testServer wraps a server.Server for testing.
 type testServer struct {
@@ -270,9 +295,227 @@ func (c *testClient) close() {
 	_ = c.conn.Close()
 }
 
+func waitForLogout(t *testing.T, session *trackedSession) {
+	t.Helper()
+	select {
+	case <-session.loggedOut:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session logout")
+	}
+}
+
+func testTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate TLS key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test.example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"test.example.com"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create TLS certificate: %v", err)
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{der},
+			PrivateKey:  key,
+		}},
+	}
+}
+
 // =============================================================================
 // Basic Server Tests
 // =============================================================================
+
+func TestServer_SessionLifecycle(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		sessions []*trackedSession
+	)
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			session := newTrackedSession()
+			mu.Lock()
+			sessions = append(sessions, session)
+			mu.Unlock()
+			return session, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	tc.send("EHLO first.example.com")
+	tc.expectMultilineCode(250)
+	tc.send("EHLO second.example.com")
+	tc.expectMultilineCode(250)
+
+	mu.Lock()
+	if len(sessions) != 2 {
+		mu.Unlock()
+		t.Fatalf("created %d sessions, want 2", len(sessions))
+	}
+	first, second := sessions[0], sessions[1]
+	mu.Unlock()
+
+	waitForLogout(t, first)
+	tc.close()
+	waitForLogout(t, second)
+
+	if got := first.logouts.Load(); got != 1 {
+		t.Fatalf("first session logout count = %d, want 1", got)
+	}
+	if got := second.logouts.Load(); got != 1 {
+		t.Fatalf("second session logout count = %d, want 1", got)
+	}
+}
+
+func TestServer_STARTTLSLogsOutSession(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		sessions []*trackedSession
+	)
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			session := newTrackedSession()
+			mu.Lock()
+			sessions = append(sessions, session)
+			mu.Unlock()
+			return session, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{TLSConfig: testTLSConfig(t)})
+	defer ts.close()
+
+	tc := ts.dial()
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+	tc.send("STARTTLS")
+	tc.expectCode(220)
+
+	tlsConn := tls.Client(tc.conn, &tls.Config{
+		InsecureSkipVerify: true, // The server uses a generated test certificate.
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake failed: %v", err)
+	}
+	tc.conn = tlsConn
+	tc.reader = bufio.NewReader(tlsConn)
+
+	mu.Lock()
+	if len(sessions) != 1 {
+		mu.Unlock()
+		t.Fatalf("created %d sessions before second EHLO, want 1", len(sessions))
+	}
+	first := sessions[0]
+	mu.Unlock()
+	waitForLogout(t, first)
+
+	tc.send("EHLO secure.example.com")
+	tc.expectMultilineCode(250)
+	mu.Lock()
+	second := sessions[1]
+	mu.Unlock()
+	tc.close()
+	waitForLogout(t, second)
+}
+
+func TestServer_SessionLogoutOnTimeout(t *testing.T) {
+	session := newTrackedSession()
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			return session, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{ReadTimeout: 20 * time.Millisecond})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+	tc.expectCode(421)
+	waitForLogout(t, session)
+}
+
+func TestServer_SessionLogoutOnSTARTTLSHandshakeFailure(t *testing.T) {
+	session := newTrackedSession()
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			return session, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{TLSConfig: testTLSConfig(t)})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+	tc.send("STARTTLS")
+	tc.expectCode(220)
+	if _, err := tc.conn.Write([]byte{0, 0, 0, 0, 0}); err != nil {
+		t.Fatalf("write invalid TLS record: %v", err)
+	}
+	waitForLogout(t, session)
+}
+
+func TestServer_CloseImmediatelyClosesConnections(t *testing.T) {
+	var session *trackedSession
+	var mu sync.Mutex
+	backend := &testBackend{
+		sessionFactory: func(*server.Conn) (server.Session, error) {
+			created := newTrackedSession()
+			mu.Lock()
+			session = created
+			mu.Unlock()
+			return created, nil
+		},
+	}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	closed := make(chan error, 1)
+	go func() { closed <- ts.srv.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close returned an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked with an active connection")
+	}
+
+	mu.Lock()
+	created := session
+	mu.Unlock()
+	if created == nil {
+		t.Fatal("session was not created")
+	}
+	waitForLogout(t, created)
+
+	if err := tc.conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := tc.reader.ReadString('\n'); err == nil {
+		t.Fatal("connection remained open after Close")
+	}
+}
 
 func TestServer_Greeting(t *testing.T) {
 	backend := &testBackend{}

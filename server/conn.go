@@ -169,6 +169,7 @@ func (c *Conn) serve() {
 			c.server.logf("panic: %v", r)
 		}
 	}()
+	defer c.logoutSession()
 
 	// Send greeting
 	c.writeResponse(220, c.server.config.Domain+" ESMTP ready")
@@ -376,13 +377,17 @@ func (c *Conn) handleHELO(hostname string, isEHLO bool) error {
 	c.state = StateGreeted
 	c.mu.Unlock()
 
+	// A new greeting starts a new backend session. Release the old one first so
+	// its resources cannot block creation of the replacement.
+	c.logoutSession()
+
 	// Create session from backend
 	session, err := c.server.backend.NewSession(c)
 	if err != nil {
 		c.writeError(err)
 		return nil
 	}
-	c.session = session
+	c.replaceSession(session)
 
 	if !isEHLO {
 		// HELO - simple response
@@ -490,10 +495,10 @@ func (c *Conn) handleSTARTTLS() error {
 	c.tlsState = &state
 	// Reset state after STARTTLS - client must re-issue EHLO
 	c.state = StateNew
-	c.session = nil
 	c.authenticated = false
 	c.authIdentity = ""
 	c.mu.Unlock()
+	c.logoutSession()
 
 	return nil
 }
@@ -556,7 +561,12 @@ func (c *Conn) handleAUTH(args string) error {
 			if errors.Is(err, sasl.ErrAuthenticationCancelled) {
 				c.writeError(errAuthCancelled)
 			} else {
-				c.writeError(ErrAuthFailed)
+				var smtpErr *SMTPError
+				if errors.As(err, &smtpErr) {
+					c.writeError(smtpErr)
+				} else {
+					c.writeError(ErrAuthFailed)
+				}
 			}
 			return nil
 		}
@@ -1470,17 +1480,42 @@ func (c *Conn) handleHELP(_ string) error {
 func (c *Conn) handleQUIT() error {
 	c.writeResponse(221, fmt.Sprintf("2.0.0 %s closing connection", c.server.config.Domain))
 
-	if c.session != nil {
-		if err := c.session.Logout(); err != nil {
-			c.server.logf("session logout error: %v", err)
-		}
-	}
+	c.logoutSession()
 
 	c.mu.Lock()
 	c.state = StateQuit
 	c.mu.Unlock()
 
 	return nil
+}
+
+// replaceSession installs session and releases any session it supersedes.
+func (c *Conn) replaceSession(session Session) {
+	c.mu.Lock()
+	previous := c.session
+	c.session = session
+	c.mu.Unlock()
+
+	c.logout(previous)
+}
+
+// logoutSession detaches and releases the current session exactly once.
+func (c *Conn) logoutSession() {
+	c.mu.Lock()
+	session := c.session
+	c.session = nil
+	c.mu.Unlock()
+
+	c.logout(session)
+}
+
+func (c *Conn) logout(session Session) {
+	if session == nil {
+		return
+	}
+	if err := session.Logout(); err != nil {
+		c.server.logf("session logout error: %v", err)
+	}
 }
 
 // resetTransaction resets the current mail transaction.

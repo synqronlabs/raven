@@ -13,9 +13,10 @@ import (
 )
 
 type verifierAuthSession struct {
-	conn     *server.Conn
-	identity string
-	verified bool
+	conn      *server.Conn
+	identity  string
+	verified  bool
+	verifyErr error
 }
 
 func (s *verifierAuthSession) Mail(string, *server.MailOptions) error      { return nil }
@@ -32,6 +33,9 @@ func (s *verifierAuthSession) Auth(mech string) (sasl.Server, error) {
 	}
 
 	return sasl.NewPlainServer(func(creds *sasl.Credentials) error {
+		if s.verifyErr != nil {
+			return s.verifyErr
+		}
 		if creds.AuthenticationID != "user@example.com" || creds.Password != "s3cret" {
 			return errors.New("invalid credentials")
 		}
@@ -39,6 +43,37 @@ func (s *verifierAuthSession) Auth(mech string) (sasl.Server, error) {
 		s.verified = true
 		return nil
 	}), nil
+}
+
+func TestServer_AUTHPreservesSMTPError(t *testing.T) {
+	temporary := &server.SMTPError{
+		Code:         454,
+		EnhancedCode: server.EnhancedCode{4, 7, 0},
+		Message:      "Temporary authentication failure",
+	}
+	backend := &testBackend{
+		sessionFactory: func(c *server.Conn) (server.Session, error) {
+			return &verifierAuthSession{
+				conn:      c,
+				verifyErr: fmt.Errorf("authentication backend unavailable: %w", temporary),
+			}, nil
+		},
+	}
+
+	ts := newTestServer(t, backend, server.ServerConfig{AllowInsecureAuth: true})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.example.com")
+	tc.expectMultilineCode(250)
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("\x00user@example.com\x00s3cret"))
+	tc.send("AUTH PLAIN %s", encoded)
+	if line := tc.expectCode(454); line != "454 4.7.0 Temporary authentication failure" {
+		t.Fatalf("unexpected response: %s", line)
+	}
 }
 
 type manualIdentitySession struct {

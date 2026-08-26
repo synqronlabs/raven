@@ -82,6 +82,8 @@ type AuthSession interface {
 	// Conn.SetAuthIdentity() from custom sasl.Server implementations.
 	// sasl.NewPlainServer and sasl.NewLoginServer populate Conn.AuthIdentity()
 	// automatically on successful authentication.
+	// Errors from the SASL server that wrap an *SMTPError are sent to the client
+	// unchanged; other errors are reported as ErrAuthFailed.
 	Auth(mech string) (sasl.Server, error)
 }
 
