@@ -136,6 +136,7 @@ type basicSMTPHandler struct {
 	rejectAuth       bool
 	mu               sync.Mutex
 	mailFromLine     string
+	rcptToLines      []string
 	dataCommands     int
 	bdatCommands     int
 }
@@ -173,6 +174,9 @@ func (h *basicSMTPHandler) handle(conn net.Conn) {
 			mustFlush(w)
 
 		case strings.HasPrefix(cmd, "RCPT TO:"):
+			h.mu.Lock()
+			h.rcptToLines = append(h.rcptToLines, line)
+			h.mu.Unlock()
 			addr := line[len("RCPT TO:"):]
 			addr = strings.TrimSpace(addr)
 			if h.rejectRcptTo != nil && h.rejectRcptTo[addr] {

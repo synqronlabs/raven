@@ -258,6 +258,16 @@ func (c *Client) sendEnvelope(envelope ravenmail.Envelope, opts SendOptions) (*S
 	if len(envelope.To) == 0 {
 		return nil, 0, ErrNoRecipients
 	}
+	// Validate every command before starting the transaction. This prevents a
+	// malformed later recipient from leaving a partially-open transaction.
+	if _, err := c.mailFromCommand(envelope); err != nil {
+		return nil, 0, err
+	}
+	for _, rcpt := range envelope.To {
+		if _, err := c.rcptToCommand(rcpt, envelope.SMTPUTF8); err != nil {
+			return nil, 0, err
+		}
+	}
 	if _, ok := c.extensions[ravenmail.ExtPipelining]; ok {
 		return c.sendEnvelopePipelined(envelope, opts)
 	}
@@ -275,7 +285,7 @@ func (c *Client) sendEnvelopeSequential(envelope ravenmail.Envelope, opts SendOp
 
 	acceptedCount := 0
 	for _, rcpt := range envelope.To {
-		rcptResult := c.sendRcptTo(rcpt)
+		rcptResult := c.sendRcptTo(rcpt, envelope.SMTPUTF8)
 		result.RecipientResults = append(result.RecipientResults, rcptResult)
 		if rcptResult.Accepted {
 			acceptedCount++
@@ -297,7 +307,11 @@ func (c *Client) sendEnvelopePipelined(envelope ravenmail.Envelope, opts SendOpt
 	commands := make([]string, 1, len(envelope.To)+1)
 	commands[0] = mailCommand
 	for _, rcpt := range envelope.To {
-		commands = append(commands, c.rcptToCommand(rcpt))
+		rcptCommand, err := c.rcptToCommand(rcpt, envelope.SMTPUTF8)
+		if err != nil {
+			return nil, 0, fmt.Errorf("building RCPT TO command: %w", err)
+		}
+		commands = append(commands, rcptCommand)
 	}
 	if err := c.writePipelineCommands(commands); err != nil {
 		return nil, 0, fmt.Errorf("writing pipelined envelope commands: %w", err)
@@ -440,16 +454,36 @@ func (c *Client) mailFromCommand(envelope ravenmail.Envelope) (string, error) {
 
 	// DSN parameters (envelope-level)
 	if envelope.DSNParams != nil {
-		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
-			if envelope.DSNParams.RET != "" {
-				params = append(params, fmt.Sprintf("RET=%s", envelope.DSNParams.RET))
+		if envelope.DSNParams.RET != "" {
+			ret, err := ravenmail.NormalizeDSNReturn(envelope.DSNParams.RET)
+			if err != nil {
+				return "", fmt.Errorf("smtp: invalid DSN RET: %w", err)
+			}
+			if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
+				params = append(params, "RET="+ret)
+			}
+		}
+		if envelope.DSNParams.EnvelopeID != nil && envelope.EnvID != "" {
+			return "", errors.New("smtp: ENVID specified in both EnvID and DSNParams.EnvelopeID")
+		}
+		if envelope.DSNParams.EnvelopeID != nil {
+			envid, err := ravenmail.FormatDSNEnvelopeID(*envelope.DSNParams.EnvelopeID)
+			if err != nil {
+				return "", fmt.Errorf("smtp: invalid DSN ENVID: %w", err)
+			}
+			if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
+				params = append(params, "ENVID="+envid)
 			}
 		}
 	}
 
 	if envelope.EnvID != "" {
+		envid, err := ravenmail.FormatDSNEnvelopeID(ravenmail.DSNXText{Decoded: envelope.EnvID})
+		if err != nil {
+			return "", fmt.Errorf("smtp: invalid DSN ENVID: %w", err)
+		}
 		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
-			params = append(params, fmt.Sprintf("ENVID=%s", envelope.EnvID))
+			params = append(params, "ENVID="+envid)
 		}
 	}
 
@@ -520,8 +554,14 @@ func (c *Client) bestEffortRSET() {
 }
 
 // sendRcptTo sends a RCPT TO command for a single recipient.
-func (c *Client) sendRcptTo(rcpt ravenmail.Recipient) RecipientResult {
-	cmd := c.rcptToCommand(rcpt)
+func (c *Client) sendRcptTo(rcpt ravenmail.Recipient, smtpUTF8 bool) RecipientResult {
+	cmd, err := c.rcptToCommand(rcpt, smtpUTF8)
+	if err != nil {
+		return RecipientResult{
+			Address: rcpt.Address.Mailbox.String(),
+			Error:   err,
+		}
+	}
 	if err := c.writeCommand("%s", cmd); err != nil {
 		return RecipientResult{
 			Address: rcpt.Address.Mailbox.String(),
@@ -533,17 +573,51 @@ func (c *Client) sendRcptTo(rcpt ravenmail.Recipient) RecipientResult {
 	return newRecipientResult(rcpt, resp, err)
 }
 
-func (c *Client) rcptToCommand(rcpt ravenmail.Recipient) string {
+func (c *Client) rcptToCommand(rcpt ravenmail.Recipient, smtpUTF8 bool) (string, error) {
 	var params []string
 
 	// DSN parameters (per-recipient)
 	if rcpt.DSNParams != nil {
-		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
-			if len(rcpt.DSNParams.Notify) > 0 {
-				params = append(params, fmt.Sprintf("NOTIFY=%s", strings.Join(rcpt.DSNParams.Notify, ",")))
+		var notify []string
+		if len(rcpt.DSNParams.Notify) > 0 {
+			var err error
+			notify, err = ravenmail.NormalizeDSNNotify(rcpt.DSNParams.Notify)
+			if err != nil {
+				return "", fmt.Errorf("smtp: invalid DSN NOTIFY: %w", err)
 			}
-			if rcpt.DSNParams.ORcpt != "" {
-				params = append(params, fmt.Sprintf("ORCPT=%s", rcpt.DSNParams.ORcpt))
+		}
+
+		if rcpt.DSNParams.OriginalRecipient != nil && rcpt.DSNParams.ORcpt != "" {
+			return "", errors.New("smtp: ORCPT specified in both ORcpt and OriginalRecipient")
+		}
+		var orcpt string
+		if rcpt.DSNParams.OriginalRecipient != nil {
+			var err error
+			orcpt, err = ravenmail.FormatDSNOriginalRecipient(*rcpt.DSNParams.OriginalRecipient, smtpUTF8)
+			if err != nil {
+				return "", fmt.Errorf("smtp: invalid DSN ORCPT: %w", err)
+			}
+		} else if rcpt.DSNParams.ORcpt != "" {
+			addressType, address, ok := strings.Cut(rcpt.DSNParams.ORcpt, ";")
+			if !ok {
+				return "", errors.New("smtp: invalid DSN ORCPT: expected address-type;address")
+			}
+			var err error
+			orcpt, err = ravenmail.FormatDSNOriginalRecipient(ravenmail.DSNOriginalRecipient{
+				AddressType: addressType,
+				Address:     ravenmail.DSNXText{Decoded: address},
+			}, smtpUTF8)
+			if err != nil {
+				return "", fmt.Errorf("smtp: invalid DSN ORCPT: %w", err)
+			}
+		}
+
+		if _, ok := c.extensions[ravenmail.ExtDSN]; ok {
+			if len(notify) > 0 {
+				params = append(params, "NOTIFY="+strings.Join(notify, ","))
+			}
+			if orcpt != "" {
+				params = append(params, "ORCPT="+orcpt)
 			}
 		}
 	}
@@ -552,7 +626,7 @@ func (c *Client) rcptToCommand(rcpt ravenmail.Recipient) string {
 	if len(params) > 0 {
 		cmd += " " + strings.Join(params, " ")
 	}
-	return cmd
+	return cmd, nil
 }
 
 func newRecipientResult(rcpt ravenmail.Recipient, resp *ClientResponse, err error) RecipientResult {

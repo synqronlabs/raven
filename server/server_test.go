@@ -44,6 +44,7 @@ type testSession struct {
 	from       string
 	mailOpts   *server.MailOptions
 	recipients []string
+	rcptOpts   []*server.RcptOptions
 	headers    server.MessageHeaders
 	body       []byte
 	t          *testing.T
@@ -77,6 +78,23 @@ func cloneMailOptions(opts *server.MailOptions) *server.MailOptions {
 		deliveryBy := *opts.DeliveryBy
 		cloned.DeliveryBy = &deliveryBy
 	}
+	if opts.EnvelopeIDValue != nil {
+		envelopeID := *opts.EnvelopeIDValue
+		cloned.EnvelopeIDValue = &envelopeID
+	}
+	return &cloned
+}
+
+func cloneRcptOptions(opts *server.RcptOptions) *server.RcptOptions {
+	if opts == nil {
+		return nil
+	}
+	cloned := *opts
+	cloned.Notify = append([]server.DSNNotify(nil), opts.Notify...)
+	if opts.OriginalRecipientValue != nil {
+		originalRecipient := *opts.OriginalRecipientValue
+		cloned.OriginalRecipientValue = &originalRecipient
+	}
 	return &cloned
 }
 
@@ -91,13 +109,14 @@ func (s *testSession) Mail(from string, opts *server.MailOptions) error {
 	return nil
 }
 
-func (s *testSession) Rcpt(to string, _ *server.RcptOptions) error {
+func (s *testSession) Rcpt(to string, opts *server.RcptOptions) error {
 	if s.rejectRcpt != nil {
 		if err := s.rejectRcpt(to); err != nil {
 			return err
 		}
 	}
 	s.recipients = append(s.recipients, to)
+	s.rcptOpts = append(s.rcptOpts, cloneRcptOptions(opts))
 	return nil
 }
 
@@ -121,6 +140,7 @@ func (s *testSession) Reset() {
 	s.from = ""
 	s.mailOpts = nil
 	s.recipients = nil
+	s.rcptOpts = nil
 	s.headers = nil
 	s.body = nil
 }

@@ -66,7 +66,11 @@ type MailOptions struct {
 	Return DSNReturn
 
 	// EnvelopeID is the envelope identifier for DSN (DSN extension).
+	// It contains the decoded semantic value.
 	EnvelopeID string
+
+	// EnvelopeIDValue retains both the wire and decoded ENVID forms.
+	EnvelopeIDValue *ravenmail.DSNXText
 
 	// Auth is the authenticated sender identity (AUTH= parameter, RFC 4954).
 	// nil means AUTH not specified, empty string means AUTH=<>.
@@ -80,7 +84,11 @@ type RcptOptions struct {
 	Notify []DSNNotify
 
 	// OriginalRecipient is the original recipient address (ORCPT parameter).
+	// It contains address-type followed by the decoded address.
 	OriginalRecipient string
+
+	// OriginalRecipientValue retains the structured and exact wire ORCPT forms.
+	OriginalRecipientValue *ravenmail.DSNOriginalRecipient
 }
 
 // EnhancedCode represents an enhanced status code (RFC 3463).

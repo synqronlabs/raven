@@ -18,6 +18,7 @@ import (
 
 	"github.com/synqronlabs/raven/internal/transferbuf"
 	ravenio "github.com/synqronlabs/raven/io"
+	ravenmail "github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/sasl"
 )
 
@@ -1595,13 +1596,14 @@ func extractPathAndParams(s string) (path, params string, err error) {
 // parseMailOptions parses MAIL FROM parameters.
 func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 	opts := &MailOptions{}
+	var seenRET, seenENVID bool
 
 	if params == "" {
 		return opts, nil
 	}
 
 	for param := range strings.FieldsSeq(params) {
-		key, value, _ := strings.Cut(param, "=")
+		key, value, hasValue := strings.Cut(param, "=")
 		key = strings.ToUpper(key)
 
 		switch key {
@@ -1657,20 +1659,35 @@ func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 			if !c.server.config.EnableDSN {
 				return nil, &SMTPError{Code: 555, Message: "DSN not supported"}
 			}
-			switch strings.ToUpper(value) {
+			if seenRET || !hasValue {
+				return nil, &SMTPError{Code: 501, Message: "Invalid or duplicate RET parameter"}
+			}
+			seenRET = true
+			ret, err := ravenmail.NormalizeDSNReturn(value)
+			if err != nil {
+				return nil, &SMTPError{Code: 501, Message: "Invalid RET value"}
+			}
+			switch ret {
 			case "FULL":
 				opts.Return = DSNReturnFull
 			case "HDRS":
 				opts.Return = DSNReturnHeaders
-			default:
-				return nil, &SMTPError{Code: 501, Message: "Invalid RET value"}
 			}
 
 		case "ENVID":
 			if !c.server.config.EnableDSN {
 				return nil, &SMTPError{Code: 555, Message: "DSN not supported"}
 			}
-			opts.EnvelopeID = value
+			if seenENVID || !hasValue {
+				return nil, &SMTPError{Code: 501, Message: "Invalid or duplicate ENVID parameter"}
+			}
+			seenENVID = true
+			envelopeID, err := ravenmail.ParseDSNEnvelopeID(value)
+			if err != nil {
+				return nil, &SMTPError{Code: 501, Message: "Invalid ENVID value"}
+			}
+			opts.EnvelopeID = envelopeID.Decoded
+			opts.EnvelopeIDValue = &envelopeID
 
 		case "AUTH":
 			if value == "<>" {
@@ -1725,13 +1742,14 @@ func parseDeliveryByValue(value string) (*DeliveryBy, error) {
 // parseRcptOptions parses RCPT TO parameters.
 func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 	opts := &RcptOptions{}
+	var seenNotify, seenORCPT bool
 
 	if params == "" {
 		return opts, nil
 	}
 
 	for param := range strings.FieldsSeq(params) {
-		key, value, _ := strings.Cut(param, "=")
+		key, value, hasValue := strings.Cut(param, "=")
 		key = strings.ToUpper(key)
 
 		switch key {
@@ -1739,8 +1757,16 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 			if !c.server.config.EnableDSN {
 				return nil, &SMTPError{Code: 555, Message: "DSN not supported"}
 			}
-			for n := range strings.SplitSeq(value, ",") {
-				switch strings.ToUpper(n) {
+			if seenNotify || !hasValue {
+				return nil, &SMTPError{Code: 501, Message: "Invalid or duplicate NOTIFY parameter"}
+			}
+			seenNotify = true
+			notify, err := ravenmail.NormalizeDSNNotify(strings.Split(value, ","))
+			if err != nil {
+				return nil, &SMTPError{Code: 501, Message: "Invalid NOTIFY value"}
+			}
+			for _, n := range notify {
+				switch n {
 				case "NEVER":
 					opts.Notify = append(opts.Notify, DSNNotifyNever)
 				case "SUCCESS":
@@ -1749,8 +1775,6 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 					opts.Notify = append(opts.Notify, DSNNotifyFailure)
 				case "DELAY":
 					opts.Notify = append(opts.Notify, DSNNotifyDelay)
-				default:
-					return nil, &SMTPError{Code: 501, Message: "Invalid NOTIFY value"}
 				}
 			}
 
@@ -1758,7 +1782,21 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 			if !c.server.config.EnableDSN {
 				return nil, &SMTPError{Code: 555, Message: "DSN not supported"}
 			}
-			opts.OriginalRecipient = value
+			if seenORCPT || !hasValue {
+				return nil, &SMTPError{Code: 501, Message: "Invalid or duplicate ORCPT parameter"}
+			}
+			seenORCPT = true
+			originalRecipient, err := ravenmail.ParseDSNOriginalRecipient(value, c.smtputf8)
+			if err != nil {
+				return nil, &SMTPError{Code: 501, Message: "Invalid ORCPT value"}
+			}
+			if strings.EqualFold(originalRecipient.AddressType, "utf-8") {
+				if _, err := parseAddress(originalRecipient.Address.Decoded, true); err != nil {
+					return nil, &SMTPError{Code: 501, Message: "Invalid UTF-8 ORCPT address"}
+				}
+			}
+			opts.OriginalRecipient = originalRecipient.AddressType + ";" + originalRecipient.Address.Decoded
+			opts.OriginalRecipientValue = &originalRecipient
 
 		default:
 			// Unknown parameter - ignore per RFC

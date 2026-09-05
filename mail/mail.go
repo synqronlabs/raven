@@ -111,10 +111,26 @@ type Recipient struct {
 	DSNParams *DSNRecipientParams `json:"dsn_params,omitempty"`
 }
 
+// DSNXText retains both an RFC 3461 xtext value and its decoded form.
+// Wire is suitable for byte-for-byte relay; Decoded is suitable for DSN fields.
+type DSNXText struct {
+	Wire    string `json:"wire"`
+	Decoded string `json:"decoded"`
+}
+
+// DSNOriginalRecipient is an RFC 3461 ORCPT value.
+type DSNOriginalRecipient struct {
+	// Wire retains the complete address-type ";" encoded-address value.
+	Wire        string   `json:"wire"`
+	AddressType string   `json:"address_type"`
+	Address     DSNXText `json:"address"`
+}
+
 // DSNRecipientParams contains per-recipient DSN parameters.
 type DSNRecipientParams struct {
-	Notify []string `json:"notify,omitempty"` // NEVER, SUCCESS, FAILURE, DELAY
-	ORcpt  string   `json:"orcpt,omitempty"`  // Original recipient
+	Notify            []string              `json:"notify,omitempty"` // NEVER, SUCCESS, FAILURE, DELAY
+	ORcpt             string                `json:"orcpt,omitempty"`  // Deprecated: decoded address-type;address value
+	OriginalRecipient *DSNOriginalRecipient `json:"original_recipient,omitempty"`
 }
 
 // DeliveryByMode controls how the server handles messages that miss the
@@ -154,7 +170,8 @@ type Envelope struct {
 
 // DSNEnvelopeParams contains envelope-level DSN parameters.
 type DSNEnvelopeParams struct {
-	RET string `json:"ret"` // FULL or HDRS
+	RET        string    `json:"ret"` // FULL or HDRS
+	EnvelopeID *DSNXText `json:"envelope_id,omitempty"`
 }
 
 // Header represents a message header field.
