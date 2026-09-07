@@ -314,6 +314,35 @@ func (c *Conn) writeResponseMulti(code int, messages []string) {
 	}
 }
 
+const (
+	defaultDataSuccessResponse = "2.0.0 OK"
+	customDataSuccessPrefix    = "2.0.0 accepted; "
+	maxSMTPReplyLineOctets     = 512
+)
+
+func (c *Conn) writeDataSuccessResponse() {
+	response := defaultDataSuccessResponse
+	if provider, ok := c.session.(DataSuccessResponseProvider); ok {
+		custom := provider.DataSuccessResponse()
+		if validDataSuccessResponse(custom) {
+			response = customDataSuccessPrefix + custom
+		}
+	}
+	c.writeResponse(250, response)
+}
+
+func validDataSuccessResponse(response string) bool {
+	if response == "" || len("250 ")+len(customDataSuccessPrefix)+len(response)+len("\r\n") > maxSMTPReplyLineOctets {
+		return false
+	}
+	for i := 0; i < len(response); i++ {
+		if response[i] != '\t' && (response[i] < 32 || response[i] > 126) {
+			return false
+		}
+	}
+	return true
+}
+
 // handleCommand parses and dispatches an SMTP command.
 func (c *Conn) handleCommand(line string) error {
 	verb, args := parseCommand(line)
@@ -1311,7 +1340,7 @@ func (c *Conn) handleDATA() error {
 		return nil
 	}
 
-	c.writeResponse(250, "2.0.0 OK")
+	c.writeDataSuccessResponse()
 	c.resetTransaction()
 	return nil
 }
@@ -1413,7 +1442,7 @@ func (c *Conn) handleBDAT(args string) error {
 		return nil
 	}
 
-	c.writeResponse(250, "2.0.0 OK")
+	c.writeDataSuccessResponse()
 	c.resetTransaction()
 	return nil
 }

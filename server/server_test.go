@@ -167,6 +167,15 @@ func (s *shortDataSession) Data(_ server.MessageHeaders, body io.Reader) error {
 func (*shortDataSession) Reset()        {}
 func (*shortDataSession) Logout() error { return nil }
 
+type dataSuccessResponseSession struct {
+	testSession
+	response string
+}
+
+func (s *dataSuccessResponseSession) DataSuccessResponse() string {
+	return s.response
+}
+
 type trackedSession struct {
 	testSession
 	logoutOnce sync.Once
@@ -849,6 +858,83 @@ func TestServer_BasicMailTransaction(t *testing.T) {
 	}
 	if len(tx.recipients) != 1 || tx.recipients[0] != "recipient@example.com" {
 		t.Errorf("expected 1 recipient 'recipient@example.com', got %v", tx.recipients)
+	}
+}
+
+func TestServer_CustomDataSuccessResponse(t *testing.T) {
+	transports := []struct {
+		name   string
+		config server.ServerConfig
+		send   func(*testClient, string)
+	}{
+		{
+			name: "DATA",
+			send: func(tc *testClient, message string) {
+				tc.send("DATA")
+				tc.expectCode(354)
+				tc.writeRaw(message + ".\r\n")
+			},
+		},
+		{
+			name:   "BDAT LAST",
+			config: server.ServerConfig{EnableCHUNKING: true},
+			send: func(tc *testClient, message string) {
+				tc.send("BDAT %d LAST", len(message))
+				tc.writeRaw(message)
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{
+			name:     "valid",
+			response: "message_ref=86a33087-51ab-40a2-a020-d2745fe08d34",
+			want:     "250 2.0.0 accepted; message_ref=86a33087-51ab-40a2-a020-d2745fe08d34",
+		},
+		{
+			name:     "empty",
+			response: "",
+			want:     "250 2.0.0 OK",
+		},
+		{
+			name:     "line injection",
+			response: "message_ref=unsafe\r\n250 injected",
+			want:     "250 2.0.0 OK",
+		},
+	}
+
+	for _, transport := range transports {
+		for _, tt := range tests {
+			t.Run(transport.name+"/"+tt.name, func(t *testing.T) {
+				sess := &dataSuccessResponseSession{response: tt.response}
+				backend := &testBackend{
+					sessionFactory: func(_ *server.Conn) (server.Session, error) {
+						return sess, nil
+					},
+				}
+				ts := newTestServer(t, backend, transport.config)
+				defer ts.close()
+
+				tc := ts.dial()
+				defer tc.close()
+
+				tc.send("EHLO client.example.com")
+				tc.expectMultilineCode(250)
+				tc.send("MAIL FROM:<sender@example.com>")
+				tc.expectCode(250)
+				tc.send("RCPT TO:<recipient@example.com>")
+				tc.expectCode(250)
+
+				transport.send(tc, "Subject: custom response\r\n\r\nBody\r\n")
+				if got := tc.readLine(); got != tt.want {
+					t.Fatalf("success response = %q, want %q", got, tt.want)
+				}
+			})
+		}
 	}
 }
 

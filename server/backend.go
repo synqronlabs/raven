@@ -58,6 +58,16 @@ type Session interface {
 	Logout() error
 }
 
+// DataSuccessResponseProvider is an optional interface that Sessions can
+// implement to customize the successful final response to DATA and BDAT LAST.
+type DataSuccessResponseProvider interface {
+	// DataSuccessResponse returns text appended to "2.0.0 accepted; ". The text
+	// must be non-empty, contain only RFC 5321 textstring characters (HTAB and
+	// printable ASCII), and keep the complete reply line within 512 octets.
+	// Invalid text is ignored and the default success response is used.
+	DataSuccessResponse() string
+}
+
 // AuthSession is an optional interface that Sessions can implement
 // to support SMTP authentication (RFC 4954).
 // Use type assertion to check if a Session supports authentication:
