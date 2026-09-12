@@ -965,7 +965,7 @@ func readMessageHeaders(r io.Reader, prepended MessageHeaders, maxReceived int) 
 	receivedCount := 0
 	if len(prepended) > 0 {
 		receivedCount = 1
-		if maxReceived > 0 && receivedCount >= maxReceived {
+		if maxReceived > 0 && receivedCount > maxReceived {
 			return nil, br, errTooManyHops
 		}
 	}
@@ -979,7 +979,7 @@ func readMessageHeaders(r io.Reader, prepended MessageHeaders, maxReceived int) 
 					headers = append(headers, line...)
 					if isReceivedHeaderLine(line) {
 						receivedCount++
-						if maxReceived > 0 && receivedCount >= maxReceived {
+						if maxReceived > 0 && receivedCount > maxReceived {
 							return nil, br, errTooManyHops
 						}
 					}
@@ -999,7 +999,7 @@ func readMessageHeaders(r io.Reader, prepended MessageHeaders, maxReceived int) 
 		headers = append(headers, line...)
 		if isReceivedHeaderLine(line) {
 			receivedCount++
-			if maxReceived > 0 && receivedCount >= maxReceived {
+			if maxReceived > 0 && receivedCount > maxReceived {
 				return nil, br, errTooManyHops
 			}
 		}
@@ -1104,7 +1104,7 @@ func (s *bdatStreamState) startSession(c *Conn) error {
 	headers := make(MessageHeaders, 0, len(s.receivedHeader)+len(s.clientHeaders))
 	headers = append(headers, s.receivedHeader...)
 	headers = append(headers, s.clientHeaders...)
-	if c.server.config.MaxReceivedHeaders > 0 && countReceivedHeaders(headers) >= c.server.config.MaxReceivedHeaders {
+	if c.server.config.MaxReceivedHeaders > 0 && countReceivedHeaders(headers) > c.server.config.MaxReceivedHeaders {
 		return errTooManyHops
 	}
 
@@ -1278,6 +1278,13 @@ func (c *Conn) protocolString() string {
 // handleDATA handles the DATA command.
 func (c *Conn) handleDATA() error {
 	if c.state != StateRcpt {
+		c.writeError(errBadSequence)
+		return nil
+	}
+
+	// BINARYMIME content must be transferred using CHUNKING/BDAT. DATA is not
+	// permitted once the transaction declared BODY=BINARYMIME (RFC 3030 §3).
+	if c.bodyType == BodyBinaryMIME {
 		c.writeError(errBadSequence)
 		return nil
 	}
@@ -1622,9 +1629,10 @@ func extractPathAndParams(s string) (path, params string, err error) {
 	return path, params, nil
 }
 
-// parseMailOptions parses MAIL FROM parameters.
+// parseMailOptions parses MAIL FROM parameters. An omitted BODY parameter is
+// normalized to BODY=7BIT, which is the SMTP default (RFC 6152 section 3).
 func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
-	opts := &MailOptions{}
+	opts := &MailOptions{Body: Body7Bit}
 	var seenRET, seenENVID bool
 
 	if params == "" {
@@ -1727,7 +1735,7 @@ func (c *Conn) parseMailOptions(params string) (*MailOptions, error) {
 			}
 
 		default:
-			// Unknown parameter - ignore per RFC
+			return nil, &SMTPError{Code: 555, Message: "Unrecognized MAIL FROM parameter"}
 		}
 	}
 
@@ -1828,7 +1836,7 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 			opts.OriginalRecipientValue = &originalRecipient
 
 		default:
-			// Unknown parameter - ignore per RFC
+			return nil, &SMTPError{Code: 555, Message: "Unrecognized RCPT TO parameter"}
 		}
 	}
 

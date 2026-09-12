@@ -1775,6 +1775,197 @@ func TestServer_BodyParameter(t *testing.T) {
 	}
 }
 
+func TestServer_OmittedBodyEnforces7Bit(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	// Omit BODY; the SMTP default is 7BIT and non-ASCII content must be rejected.
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	if session.mailOpts.Body != server.Body7Bit {
+		t.Fatalf("omitted BODY normalized to %q, want %q", session.mailOpts.Body, server.Body7Bit)
+	}
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	tc.send("Subject: test")
+	tc.send("")
+	tc.send("caf\xe9")
+	tc.send(".")
+	tc.expectCode(451)
+
+	if len(session.completed) != 0 {
+		t.Fatalf("expected 8-bit message to be rejected, got %d completed transactions", len(session.completed))
+	}
+}
+
+func TestServer_Body8BitMIMEAllowsNonASCII(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> BODY=8BITMIME")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	tc.send("Subject: test")
+	tc.send("")
+	tc.send("caf\xe9")
+	tc.send(".")
+	tc.expectCode(250)
+
+	if len(session.completed) != 1 {
+		t.Fatalf("expected one completed transaction, got %d", len(session.completed))
+	}
+}
+
+func TestServer_Body7BitRejectsNonASCII(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> BODY=7BIT")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	tc.send("Subject: test")
+	tc.send("")
+	tc.send("caf\xe9")
+	tc.send(".")
+	tc.expectCode(451)
+}
+
+func TestServer_BinaryMIMEWithDATARejected(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		EnableCHUNKING:   true,
+		EnableBINARYMIME: true,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	lines := tc.expectMultilineCode(250)
+	advertised := false
+	for _, line := range lines {
+		if strings.Contains(line, "BINARYMIME") {
+			advertised = true
+		}
+	}
+	if !advertised {
+		t.Fatal("expected BINARYMIME to be advertised")
+	}
+
+	tc.send("MAIL FROM:<sender@example.com> BODY=BINARYMIME")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	// BINARYMIME content must be sent with BDAT, not DATA (RFC 3030 §3).
+	tc.send("DATA")
+	tc.expectCode(503)
+
+	if len(session.completed) != 0 {
+		t.Fatalf("expected no completed transactions, got %d", len(session.completed))
+	}
+}
+
+func TestServer_UnknownMailParameterRejected(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com> MADEUP=value")
+	tc.expectCode(555)
+
+	if session.mailOpts != nil {
+		t.Fatal("session Mail must not be invoked for an unrecognized parameter")
+	}
+}
+
+func TestServer_UnknownRcptParameterRejected(t *testing.T) {
+	session := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return session, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com> MADEUP=value")
+	tc.expectCode(555)
+
+	if len(session.recipients) != 0 {
+		t.Fatal("session Rcpt must not be invoked for an unrecognized parameter")
+	}
+}
+
 // =============================================================================
 // MAIL FROM Syntax Tests
 // =============================================================================
@@ -2154,7 +2345,7 @@ func TestServer_LoopDetection(t *testing.T) {
 	})
 	defer ts.close()
 
-	// Message with 2 existing Received headers + 1 prepended = 3 → reject
+	// Message with 3 existing Received headers + 1 prepended = 4 > max 3 → reject
 	tc := ts.dial()
 	defer tc.close()
 
@@ -2170,12 +2361,46 @@ func TestServer_LoopDetection(t *testing.T) {
 	tc.send("DATA")
 	tc.expectCode(354)
 
-	// Send message with 2 existing Received headers (+ 1 prepended by server = 3 >= max 3)
-	tc.send("Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nSubject: loop test\r\n\r\nBody.\r\n.")
+	// Send message with 3 existing Received headers (+ 1 prepended by server = 4 > max 3)
+	tc.send("Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nReceived: from hop3 by hop3.example.com\r\nSubject: loop test\r\n\r\nBody.\r\n.")
 	tc.expectCode(554)
 
 	if len(sess.completed) != 0 {
 		t.Fatalf("expected rejected message not to be completed, got %d completed transactions", len(sess.completed))
+	}
+}
+
+func TestServer_LoopDetection_AtThreshold(t *testing.T) {
+	sess := &testSession{}
+	backend := &testBackend{sessionFactory: func(*server.Conn) (server.Session, error) {
+		return sess, nil
+	}}
+	ts := newTestServer(t, backend, server.ServerConfig{
+		MaxReceivedHeaders: 3,
+	})
+	defer ts.close()
+
+	tc := ts.dial()
+	defer tc.close()
+
+	tc.send("EHLO client.test")
+	tc.expectMultilineCode(250)
+
+	tc.send("MAIL FROM:<sender@example.com>")
+	tc.expectCode(250)
+
+	tc.send("RCPT TO:<rcpt@example.com>")
+	tc.expectCode(250)
+
+	tc.send("DATA")
+	tc.expectCode(354)
+
+	// 2 existing Received headers + 1 prepended = 3, exactly the maximum → OK.
+	tc.send("Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nSubject: ok\r\n\r\nBody.\r\n.")
+	tc.expectCode(250)
+
+	if len(sess.completed) != 1 {
+		t.Fatalf("expected completed transaction at the threshold, got %d", len(sess.completed))
 	}
 }
 
@@ -2528,8 +2753,8 @@ func TestServer_BDAT_LoopDetection(t *testing.T) {
 	tc.send("RCPT TO:<rcpt@example.com>")
 	tc.expectCode(250)
 
-	// 2 existing Received headers in data + 1 prepended = 3 >= max 3 → reject
-	msg := "Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nSubject: test\r\n\r\nBody."
+	// 3 existing Received headers in data + 1 prepended = 4 > max 3 → reject
+	msg := "Received: from hop1 by hop1.example.com\r\nReceived: from hop2 by hop2.example.com\r\nReceived: from hop3 by hop3.example.com\r\nSubject: test\r\n\r\nBody."
 	tc.send("BDAT %d LAST", len(msg))
 	tc.writeRaw(msg)
 	tc.expectCode(554)

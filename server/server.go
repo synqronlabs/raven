@@ -95,9 +95,10 @@ type ServerConfig struct {
 	// EnableCHUNKING advertises CHUNKING extension (RFC 3030).
 	EnableCHUNKING bool
 
-	// MaxReceivedHeaders is the maximum number of Received headers allowed
-	// before rejecting the message as a mail loop (RFC 5321 §6.3).
-	// Default: 100
+	// MaxReceivedHeaders is the maximum number of Received headers permitted
+	// on an inbound message, including the Received header prepended by Raven.
+	// The message is rejected as a mail loop (RFC 5321 §6.3) only once the
+	// total exceeds this maximum. Default: 100
 	MaxReceivedHeaders int
 
 	// Debug writes protocol trace to this writer if set.

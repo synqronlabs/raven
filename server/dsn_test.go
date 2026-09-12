@@ -203,7 +203,7 @@ func TestServerDSNAccepts1036ByteCommandLine(t *testing.T) {
 	defer ts.close()
 	defer tc.close()
 
-	const prefix = "MAIL FROM:<sender@example.com> ENVID=id X="
+	const prefix = "MAIL FROM:<sender@example.com> ENVID=id AUTH="
 	command := prefix + strings.Repeat("a", 1036-len(prefix)-2)
 	if len(command)+2 != 1036 {
 		t.Fatalf("test command length = %d", len(command)+2)
