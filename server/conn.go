@@ -1108,6 +1108,8 @@ func (s *bdatStreamState) startSession(c *Conn) error {
 		return errTooManyHops
 	}
 
+	headers = c.server.fixupHeaders(headers)
+
 	bodyReader, bodyWriter := io.Pipe()
 	done := make(chan error, 1)
 	s.bodyReader = bodyReader
@@ -1322,6 +1324,8 @@ func (c *Conn) handleDATA() error {
 		c.resetTransaction()
 		return nil
 	}
+
+	headers = c.server.fixupHeaders(headers)
 
 	// Call session
 	if err := c.session.Data(headers, bodyRdr); err != nil {

@@ -101,6 +101,13 @@ type ServerConfig struct {
 	// total exceeds this maximum. Default: 100
 	MaxReceivedHeaders int
 
+	// HeaderFixups enables opt-in repair of RFC 5322 header violations before
+	// the header block is passed to Session.Data. It is intended for
+	// submission services that must accept mail from non-compliant clients.
+	// The zero value leaves headers untouched; use AllHeaderFixups to enable
+	// every repair.
+	HeaderFixups HeaderFixupOptions
+
 	// Debug writes protocol trace to this writer if set.
 	Debug io.Writer
 

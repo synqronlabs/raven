@@ -13,6 +13,7 @@ import "github.com/synqronlabs/raven/server"
 - Handles SMTP protocol flow and connection lifecycle.
 - Delegates business logic to your `Backend` and `Session` implementations.
 - Supports optional extensions like AUTH, STARTTLS, CHUNKING, DSN, SMTPUTF8.
+- Can optionally repair non-compliant RFC 5322 headers for submission services.
 
 ## Key API
 
@@ -20,6 +21,7 @@ import "github.com/synqronlabs/raven/server"
 - `(*Server).ListenAndServe(ctx)`
 - `Backend`, `Session`, `AuthSession`
 - `MailOptions`, `RcptOptions`, `SMTPError`
+- `HeaderFixupOptions`, `AllHeaderFixups`
 
 ## Example
 
@@ -57,3 +59,22 @@ if err := srv.ListenAndServe(ctx); err != nil {
 `headers` contains the raw header block, including Raven's `Received` field but
 not the blank-line separator. To create a complete seekable message for
 DKIM/ARC, write `headers`, `"\r\n"`, and `body` to a caller-owned spool.
+
+## Header Fixups for Submission Services
+
+Submission services often receive mail from clients that do not produce strictly
+compliant RFC 5322 headers. Set `ServerConfig.HeaderFixups` to opt in to repairs
+applied before `Session.Data` is called:
+
+```go
+srv := server.NewServer(&Backend{}, server.ServerConfig{
+    Domain:       "submission.example.com",
+    HeaderFixups: server.AllHeaderFixups(), // or set individual fields
+})
+```
+
+Available repairs are `AddMessageID`, `AddDate`, `AddSender`,
+`NormalizeReturnPath`, `DropEmptyAddressHeaders`,
+`RemoveDuplicateSingleHeaders`, and `ReorderTraceHeaders`. Fixups rewrite the
+header block, so they can invalidate DKIM/ARC signatures covering those headers;
+leave them disabled for pure relay paths. The zero value disables all fixups.
