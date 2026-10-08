@@ -1901,6 +1901,30 @@ func TestClient_StartTLS_NotSupported(t *testing.T) {
 	}
 }
 
+func TestClient_StartTLS_HandshakeFailedSentinel(t *testing.T) {
+	h := &basicSMTPHandler{extensions: []string{"STARTTLS"}}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	c := NewClient(DefaultClientConfig())
+	if err := c.Dial(srv.addr()); err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if err := c.Hello(); err != nil {
+		t.Fatalf("Hello: %v", err)
+	}
+
+	err := c.StartTLS()
+	if !errors.Is(err, ErrStartTLSFailed) {
+		t.Fatalf("expected ErrStartTLSFailed, got %v", err)
+	}
+	if errors.Is(err, ErrTLSNotSupported) {
+		t.Fatalf("a failed negotiation must not be reported as not offered: %v", err)
+	}
+}
+
 // --- Pool tests ---
 
 func TestPool_NewPool_DefaultSize(t *testing.T) {
@@ -2784,8 +2808,49 @@ func TestDialer_StartTLS_NotAvailable_Required(t *testing.T) {
 	d.RequireTLS = true
 
 	_, err := d.Dial()
-	if err == nil {
-		t.Fatal("expected error when STARTTLS required but not available")
+	if !errors.Is(err, ErrRequireTLSNotSupported) {
+		t.Fatalf("expected ErrRequireTLSNotSupported, got %v", err)
+	}
+}
+
+func TestDialer_OpportunisticTLS_FallsBackToPlaintext(t *testing.T) {
+	// The mock server advertises STARTTLS and replies 220, then closes without
+	// completing a handshake, so the upgrade attempt always fails.
+	h := &basicSMTPHandler{extensions: []string{"STARTTLS"}}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	host, port := splitMockServerAddr(t, srv.addr())
+
+	d := NewDialer(host, port)
+	d.StartTLS = true
+	d.RequireTLS = false
+
+	c, err := d.Dial()
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if c.IsTLS() {
+		t.Fatal("expected plaintext fallback after a failed STARTTLS negotiation")
+	}
+}
+
+func TestDialer_RequiredTLS_HandshakeFailureIsFatal(t *testing.T) {
+	h := &basicSMTPHandler{extensions: []string{"STARTTLS"}}
+	srv := newMockSMTPServer(t, h.handle)
+	defer srv.close()
+
+	host, port := splitMockServerAddr(t, srv.addr())
+
+	d := NewDialer(host, port)
+	d.StartTLS = true
+	d.RequireTLS = true
+
+	_, err := d.Dial()
+	if !errors.Is(err, ErrStartTLSFailed) {
+		t.Fatalf("expected ErrStartTLSFailed, got %v", err)
 	}
 }
 
@@ -2826,8 +2891,15 @@ func TestClient_Send_RequireTLS_NotSupported(t *testing.T) {
 		MustBuild()
 
 	_, err := c.Send(mail)
-	if err == nil {
-		t.Fatal("expected error when REQUIRETLS not supported")
+	if !errors.Is(err, ErrRequireTLSNotSupported) {
+		t.Fatalf("expected ErrRequireTLSNotSupported, got %v", err)
+	}
+	var smtpErr *SMTPError
+	if !errors.As(err, &smtpErr) {
+		t.Fatalf("expected SMTPError alongside the REQUIRETLS sentinel, got %T: %v", err, err)
+	}
+	if smtpErr.EnhancedCode != escRequireTLSRequired {
+		t.Fatalf("EnhancedCode = %q, want %q", smtpErr.EnhancedCode, escRequireTLSRequired)
 	}
 }
 
@@ -2841,6 +2913,9 @@ func TestClient_SendMailFromEnvelope_RequireTLSRequiresActiveTLS(t *testing.T) {
 	}
 
 	err := c.sendMailFromEnvelope(envelope)
+	if !errors.Is(err, ErrRequireTLSNotSupported) {
+		t.Fatalf("expected ErrRequireTLSNotSupported, got %v", err)
+	}
 	var smtpErr *SMTPError
 	if !errors.As(err, &smtpErr) {
 		t.Fatalf("expected SMTPError, got %T: %v", err, err)
@@ -2850,6 +2925,31 @@ func TestClient_SendMailFromEnvelope_RequireTLSRequiresActiveTLS(t *testing.T) {
 	}
 	if !strings.Contains(smtpErr.Message, "active TLS") {
 		t.Fatalf("expected active TLS error, got %q", smtpErr.Message)
+	}
+}
+
+func TestClient_MailFromCommand_RequireTLSNotAdvertised(t *testing.T) {
+	c := NewClient(&ClientConfig{LocalName: "localhost"})
+	c.isTLS = true // TLS is active, but the server never advertised REQUIRETLS
+
+	envelope := ravenmail.Envelope{
+		From:       ravenmail.Path{Mailbox: ravenmail.MailboxAddress{LocalPart: "sender", Domain: "example.com"}},
+		RequireTLS: true,
+	}
+
+	_, err := c.mailFromCommand(envelope)
+	if !errors.Is(err, ErrRequireTLSNotSupported) {
+		t.Fatalf("expected ErrRequireTLSNotSupported, got %v", err)
+	}
+	var smtpErr *SMTPError
+	if !errors.As(err, &smtpErr) {
+		t.Fatalf("expected SMTPError, got %T: %v", err, err)
+	}
+	if smtpErr.EnhancedCode != escRequireTLSRequired {
+		t.Fatalf("EnhancedCode = %q, want %q", smtpErr.EnhancedCode, escRequireTLSRequired)
+	}
+	if !strings.Contains(smtpErr.Message, "support required") {
+		t.Fatalf("expected support-required error, got %q", smtpErr.Message)
 	}
 }
 

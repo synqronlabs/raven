@@ -410,21 +410,21 @@ func (c *Client) mailFromCommand(envelope ravenmail.Envelope) (string, error) {
 	// - The server advertises REQUIRETLS in EHLO
 	if envelope.RequireTLS {
 		if !c.isTLS {
-			return "", &SMTPError{
+			return "", errors.Join(ErrRequireTLSNotSupported, &SMTPError{
 				Code:         550,
 				EnhancedCode: escRequireTLSRequired,
 				Message:      "REQUIRETLS requires an active TLS session",
-			}
+			})
 		}
 		if _, ok := c.extensions[ravenmail.ExtRequireTLS]; ok {
 			params = append(params, "REQUIRETLS")
 		} else {
 			// Server doesn't support REQUIRETLS but message requires it
-			return "", &SMTPError{
+			return "", errors.Join(ErrRequireTLSNotSupported, &SMTPError{
 				Code:         550,
 				EnhancedCode: escRequireTLSRequired,
 				Message:      "REQUIRETLS support required",
-			}
+			})
 		}
 	}
 

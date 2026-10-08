@@ -52,6 +52,20 @@ for _, msg := range queue {
 Dial once for a sequential queue. For concurrent producers, use a bounded
 `Pool` and close it during shutdown.
 
+## TLS Modes
+
+- `Dialer.SSL` uses implicit TLS (typically port 465).
+- `Dialer.StartTLS` upgrades with STARTTLS when the server advertises it.
+- `Dialer.RequireTLS` makes TLS mandatory: missing STARTTLS returns
+  `ErrRequireTLSNotSupported` and a failed negotiation is fatal.
+
+With `StartTLS` set and `RequireTLS` false, the dialer follows RFC 7435
+opportunistic security: if the server advertises STARTTLS but the negotiation
+fails, the dialer opens a fresh plaintext connection instead of failing. A
+failed negotiation is reported as `ErrStartTLSFailed`, while a server that does
+not advertise STARTTLS is reported as `ErrTLSNotSupported`, so callers can tell
+"not offered" apart from "failed".
+
 ## Streaming Raw Mail
 
 ```go

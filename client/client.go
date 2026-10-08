@@ -24,6 +24,7 @@ var (
 	ErrAuthFailed             = errors.New("smtp: authentication failed")
 	ErrTLSAlreadyActive       = errors.New("smtp: TLS already active")
 	ErrTLSNotSupported        = errors.New("smtp: STARTTLS not supported by server")
+	ErrStartTLSFailed         = errors.New("smtp: STARTTLS negotiation failed")
 	ErrUnexpectedResponse     = errors.New("smtp: unexpected server response")
 	ErrRequireTLSNotSupported = errors.New("smtp: REQUIRETLS not supported by server")
 	ErrDeliveryByNotSupported = errors.New("smtp: DELIVERBY not supported by server")
@@ -377,16 +378,19 @@ func (c *Client) StartTLS() error {
 	}
 
 	if err := c.writeCommand("STARTTLS"); err != nil {
-		return fmt.Errorf("sending STARTTLS command: %w", err)
+		return fmt.Errorf("%w: sending STARTTLS command: %w", ErrStartTLSFailed, err)
 	}
 
 	resp, err := c.readResponse()
 	if err != nil {
-		return fmt.Errorf("reading STARTTLS response: %w", err)
+		return fmt.Errorf("%w: reading STARTTLS response: %w", ErrStartTLSFailed, err)
 	}
 
 	if !resp.IsSuccess() {
-		return resp.Error()
+		if respErr := resp.Error(); respErr != nil {
+			return fmt.Errorf("%w: %w", ErrStartTLSFailed, respErr)
+		}
+		return fmt.Errorf("%w: server responded %d %s", ErrStartTLSFailed, resp.Code, resp.Message)
 	}
 
 	// Upgrade to TLS
@@ -404,7 +408,7 @@ func (c *Client) StartTLS() error {
 
 	tlsConn := tls.Client(c.conn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
-		return fmt.Errorf("TLS handshake failed: %w", err)
+		return fmt.Errorf("%w: TLS handshake failed: %w", ErrStartTLSFailed, err)
 	}
 
 	c.conn = tlsConn

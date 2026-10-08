@@ -26,8 +26,8 @@ type Dialer struct {
 	WriteTimeout       time.Duration
 	ValidateBeforeSend bool // Validate email content before sending
 	SSL                bool // Implicit TLS (port 465)
-	StartTLS           bool
-	RequireTLS         bool
+	StartTLS           bool // Upgrade with STARTTLS when the server advertises it
+	RequireTLS         bool // Fail instead of falling back to plaintext when STARTTLS is unavailable or fails
 	Debug              bool
 }
 
@@ -65,10 +65,37 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 		config.LocalName = "localhost"
 	}
 
-	client := NewClient(config)
 	address := net.JoinHostPort(d.Host, fmt.Sprintf("%d", d.Port))
 
-	// Connect
+	client, err := d.connect(ctx, address, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// STARTTLS if requested
+	if d.StartTLS && !d.SSL {
+		client, err = d.startTLS(ctx, address, config, client)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Authenticate if credentials provided
+	if d.Auth != nil {
+		if err := client.Auth(); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("authenticating SMTP session: %w", err)
+		}
+	}
+
+	return client, nil
+}
+
+// connect opens an SMTP connection (plaintext or implicit TLS) and performs the
+// initial EHLO/HELO exchange.
+func (d *Dialer) connect(ctx context.Context, address string, config *ClientConfig) (*Client, error) {
+	client := NewClient(config)
+
 	var err error
 	if d.SSL {
 		err = client.DialTLSContext(ctx, address)
@@ -79,36 +106,48 @@ func (d *Dialer) DialContext(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("dialing SMTP server %s: %w", address, err)
 	}
 
-	// EHLO
 	if err := client.Hello(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("initializing SMTP session with EHLO/HELO: %w", err)
 	}
 
-	// STARTTLS if requested
-	if d.StartTLS && !d.SSL {
-		if client.HasExtension(ravenmail.ExtSTARTTLS) {
-			if err := client.StartTLS(); err != nil {
-				_ = client.Close()
-				return nil, fmt.Errorf("upgrading SMTP session with STARTTLS: %w", err)
-			}
-			// EHLO again after STARTTLS
-			if err := client.Hello(); err != nil {
-				_ = client.Close()
-				return nil, fmt.Errorf("re-initializing SMTP session after STARTTLS: %w", err)
-			}
-		} else if d.RequireTLS {
+	return client, nil
+}
+
+// startTLS upgrades an established plaintext session to TLS.
+//
+// When TLS is required, a missing STARTTLS advertisement returns
+// ErrRequireTLSNotSupported and any negotiation failure is fatal. Otherwise the
+// dialer follows RFC 7435 opportunistic security: a server that advertises
+// STARTTLS but fails to negotiate it is retried over a fresh plaintext
+// connection. The failed negotiation leaves the original connection in an
+// undefined state, so it is always closed before falling back.
+func (d *Dialer) startTLS(ctx context.Context, address string, config *ClientConfig, client *Client) (*Client, error) {
+	if !client.HasExtension(ravenmail.ExtSTARTTLS) {
+		if d.RequireTLS {
 			_ = client.Close()
-			return nil, ErrTLSNotSupported
+			return nil, ErrRequireTLSNotSupported
 		}
+		return client, nil
 	}
 
-	// Authenticate if credentials provided
-	if d.Auth != nil {
-		if err := client.Auth(); err != nil {
-			_ = client.Close()
-			return nil, fmt.Errorf("authenticating SMTP session: %w", err)
+	if err := client.StartTLS(); err != nil {
+		_ = client.Close()
+		if d.RequireTLS {
+			return nil, fmt.Errorf("upgrading SMTP session with STARTTLS: %w", err)
 		}
+
+		fallback, dialErr := d.connect(ctx, address, config)
+		if dialErr != nil {
+			return nil, errors.Join(fmt.Errorf("opportunistic STARTTLS failed: %w", err), dialErr)
+		}
+		return fallback, nil
+	}
+
+	// EHLO again after STARTTLS
+	if err := client.Hello(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("re-initializing SMTP session after STARTTLS: %w", err)
 	}
 
 	return client, nil
