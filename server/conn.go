@@ -679,7 +679,7 @@ func (c *Conn) handleMAIL(args string) error {
 	// Now validate the address with proper UTF8 context
 	var from string
 	if rawPath != "" {
-		parsed, err := parseAddress(rawPath, opts.UTF8)
+		parsed, err := ravenmail.ParseAddrSpec(rawPath, opts.UTF8)
 		if err != nil {
 			c.writeResponse(501, fmt.Sprintf("5.1.7 Invalid sender address: %v", err))
 			return nil
@@ -751,7 +751,7 @@ func (c *Conn) handleRCPT(args string) error {
 	allowUTF8 := c.smtputf8
 	c.mu.RUnlock()
 
-	parsed, err := parseAddress(rawPath, allowUTF8)
+	parsed, err := ravenmail.ParseAddrSpec(rawPath, allowUTF8)
 	if err != nil {
 		c.writeResponse(501, fmt.Sprintf("5.1.3 Invalid recipient address: %v", err))
 		return nil
@@ -1596,7 +1596,7 @@ func (c *Conn) writeError(err error) {
 // extractPathAndParams extracts the raw path content and parameters from an SMTP path.
 // This does minimal parsing - just extracts what's between < and >.
 // It also strips source routes per RFC 5321 §3.3 (e.g., "@relay1,@relay2:user@domain" → "user@domain").
-// Full address validation is done separately by parseAddress.
+// Full address validation is done separately by ravenmail.ParseAddrSpec.
 func extractPathAndParams(s string) (path, params string, err error) {
 	s = strings.TrimSpace(s)
 
@@ -1832,7 +1832,7 @@ func (c *Conn) parseRcptOptions(params string) (*RcptOptions, error) {
 				return nil, &SMTPError{Code: 501, Message: "Invalid ORCPT value"}
 			}
 			if strings.EqualFold(originalRecipient.AddressType, "utf-8") {
-				if _, err := parseAddress(originalRecipient.Address.Decoded, true); err != nil {
+				if _, err := ravenmail.ParseAddrSpec(originalRecipient.Address.Decoded, true); err != nil {
 					return nil, &SMTPError{Code: 501, Message: "Invalid UTF-8 ORCPT address"}
 				}
 			}

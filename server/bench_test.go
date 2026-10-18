@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/sasl"
 )
 
@@ -103,7 +104,7 @@ func BenchmarkParseAddressASCII(b *testing.B) {
 	b.SetBytes(int64(len(benchServerAddressASCII)))
 
 	for b.Loop() {
-		parsed, err := parseAddress(benchServerAddressASCII, false)
+		parsed, err := mail.ParseAddrSpec(benchServerAddressASCII, false)
 		if err != nil {
 			b.Fatalf("parseAddress: %v", err)
 		}
@@ -117,7 +118,7 @@ func BenchmarkParseAddressSMTPUTF8(b *testing.B) {
 	b.SetBytes(int64(len(benchServerAddressUTF8)))
 
 	for b.Loop() {
-		parsed, err := parseAddress(benchServerAddressUTF8, true)
+		parsed, err := mail.ParseAddrSpec(benchServerAddressUTF8, true)
 		if err != nil {
 			b.Fatalf("parseAddress: %v", err)
 		}
@@ -131,7 +132,7 @@ func BenchmarkParsePath(b *testing.B) {
 	b.SetBytes(int64(len(benchServerPath)))
 
 	for b.Loop() {
-		parsed, params, err := parsePath(benchServerPath, true)
+		parsed, params, err := mail.ParsePath(benchServerPath, true)
 		if err != nil {
 			b.Fatalf("parsePath: %v", err)
 		}

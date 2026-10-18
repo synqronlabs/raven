@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
-	"net/mail"
 	"strings"
 
 	"github.com/synqronlabs/raven/dkim"
 	ravendns "github.com/synqronlabs/raven/dns"
+	ravenmail "github.com/synqronlabs/raven/mail"
 	"github.com/synqronlabs/raven/spf"
 )
 
@@ -160,7 +160,7 @@ func ExtractFromDomain(fromHeader string) (string, error) {
 	}
 
 	// Parse the From header (may contain display name)
-	addrs, err := mail.ParseAddressList(fromHeader)
+	addrs, err := ravenmail.ParseAddressList(fromHeader)
 	if err != nil {
 		return "", fmt.Errorf("%w: parsing From address list: %w", ErrInvalidFromHeader, err)
 	}
@@ -173,7 +173,7 @@ func ExtractFromDomain(fromHeader string) (string, error) {
 	}
 
 	// Extract domain from the email address
-	return domainFromAddress(addrs[0].Address)
+	return domainFromAddress(addrs[0].String())
 }
 
 func domainFromAddress(addr string) (string, error) {

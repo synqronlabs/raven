@@ -26,6 +26,33 @@ import "github.com/synqronlabs/raven/mail"
 - `WalkMIME(...)`, `MIMEWalkPart`
 - `ValidateMIMEStream(...)`
 - `NewHeaderPrependedReader(...)`, `PrependedSize(...)`
+- `ParseAddress(...)`, `ParseAddressList(...)`, `ParseAddrSpec(...)`, `ParsePath(...)`, `ParseDate(...)`
+
+## Address parsing
+
+Address parsing is fully hand-rolled and RFC-compliant; the standard library
+`net/mail` package is not used.
+
+- `mail.ParseAddressList` parses RFC 5322 address-lists (display names, comments,
+  groups, and obsolete syntax) for headers.
+- `mail.ParseAddress` parses a single RFC 5322 mailbox.
+- `mail.ParseAddrSpec` validates a strict RFC 5321 `local@domain` address,
+  including quoted local-parts and IP/general address literals.
+- `mail.ParsePath` validates an RFC 5321 path, including source routes and
+  trailing ESMTP parameters.
+- `mail.ParseDate` parses RFC 5322 date-times, including the obsolete forms.
+
+Provider-specific behavior (Gmail dot-insensitivity, `+`/`-` subaddressing,
+domain aliases, and syntax that providers reject despite being RFC-valid) lives
+in the `mail/provider` subpackage:
+
+```go
+import "github.com/synqronlabs/raven/mail/provider"
+
+same, _ := provider.Gmail().Equivalent("first.last+tag@gmail.com", "firstlast@googlemail.com") // true
+err := provider.Gmail().Validate("user@[192.0.2.1]")                                          // provider.ErrIPLiteralDomain
+```
+
 
 ## Example
 

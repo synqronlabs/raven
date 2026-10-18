@@ -499,8 +499,15 @@ func TestStdResolverWithDialerLookupMethods(t *testing.T) {
 				}
 			}
 		case mdns.TypeAAAA:
-			resp.Answer = []mdns.RR{
-				&mdns.AAAA{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeAAAA, Class: mdns.ClassINET, Ttl: 300}, AAAA: ip6},
+			if req.Question[0].Name == "alias.example.com." {
+				resp.Answer = []mdns.RR{
+					&mdns.CNAME{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeCNAME, Class: mdns.ClassINET, Ttl: 300}, Target: "canonical.example.com."},
+					&mdns.AAAA{Hdr: mdns.RR_Header{Name: "canonical.example.com.", Rrtype: mdns.TypeAAAA, Class: mdns.ClassINET, Ttl: 300}, AAAA: ip6},
+				}
+			} else {
+				resp.Answer = []mdns.RR{
+					&mdns.AAAA{Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeAAAA, Class: mdns.ClassINET, Ttl: 300}, AAAA: ip6},
+				}
 			}
 		case mdns.TypeMX:
 			resp.Answer = []mdns.RR{

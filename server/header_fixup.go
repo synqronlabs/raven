@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	stdmail "net/mail"
 	"strings"
 	"time"
 
@@ -200,8 +199,8 @@ func normalizeReturnPath(value string) string {
 		return value
 	}
 
-	if parsed, err := stdmail.ParseAddressList(trimmed); err == nil && len(parsed) == 1 {
-		return "<" + parsed[0].Address + ">"
+	if parsed, err := ravenmail.ParseAddressList(trimmed); err == nil && len(parsed) == 1 {
+		return "<" + parsed[0].String() + ">"
 	}
 
 	return "<" + trimmed + ">"
@@ -243,12 +242,12 @@ func addSenderIfNeeded(headers ravenmail.Headers) ravenmail.Headers {
 		return headers
 	}
 
-	parsed, err := stdmail.ParseAddressList(from)
+	parsed, err := ravenmail.ParseAddressList(from)
 	if err != nil || len(parsed) < 2 {
 		return headers
 	}
 
-	return append(headers, ravenmail.Header{Name: "Sender", Value: parsed[0].Address})
+	return append(headers, ravenmail.Header{Name: "Sender", Value: parsed[0].String()})
 }
 
 // reorderTraceHeaders moves Return-Path, Received, and Resent-* fields ahead of

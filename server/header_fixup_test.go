@@ -1,7 +1,6 @@
 package server
 
 import (
-	stdmail "net/mail"
 	"strings"
 	"testing"
 
@@ -59,7 +58,7 @@ func TestFixupHeaders_AddDate(t *testing.T) {
 	if value == "" {
 		t.Fatal("expected Date to be generated")
 	}
-	if _, err := stdmail.ParseDate(value); err != nil {
+	if _, err := ravenmail.ParseDate(value); err != nil {
 		t.Fatalf("generated Date %q is not parseable: %v", value, err)
 	}
 }

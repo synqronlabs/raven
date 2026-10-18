@@ -6,7 +6,6 @@ import (
 	"fmt"
 	stdmime "mime"
 	"mime/multipart"
-	stdmail "net/mail"
 	"net/textproto"
 	"strings"
 	"time"
@@ -444,7 +443,7 @@ func (b *MailBuilder) Build() (*Mail, error) {
 
 	// If From contains multiple addresses, Sender MUST be present
 	fromHeader := b.mail.Content.Headers.Get("From")
-	if parsedFrom, err := stdmail.ParseAddressList(fromHeader); err == nil && len(parsedFrom) > 1 && b.mail.Content.Headers.Get("Sender") == "" {
+	if parsedFrom, err := ParseAddressList(fromHeader); err == nil && len(parsedFrom) > 1 && b.mail.Content.Headers.Get("Sender") == "" {
 		// Auto-add Sender as the first From address for compliance
 		if !b.mail.Envelope.From.IsNull() {
 			b.mail.AddHeader("Sender", formatAddress(b.mail.Envelope.From.Mailbox))

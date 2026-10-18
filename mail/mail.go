@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/mail"
 	"strings"
 	"time"
 
@@ -395,7 +394,7 @@ func validateAddressListHeader(name, value string, allowEmpty bool) error {
 		return fmt.Errorf("%w: %s: empty address list", ErrInvalidHeaderValue, name)
 	}
 
-	if _, err := mail.ParseAddressList(value); err != nil {
+	if _, err := ParseAddressList(value); err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrInvalidHeaderValue, name, err)
 	}
 
@@ -407,7 +406,7 @@ func validateSingleMailboxHeader(name, value string) error {
 		return err
 	}
 
-	parsed, err := mail.ParseAddressList(value)
+	parsed, err := ParseAddressList(value)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrInvalidHeaderValue, name, err)
 	}
@@ -811,7 +810,7 @@ func validateReceivedHeader(name, value string) error {
 	if datePart == "" {
 		return fmt.Errorf("%w: %s: missing date-time", ErrInvalidHeaderValue, name)
 	}
-	if _, err := mail.ParseDate(datePart); err != nil {
+	if _, err := ParseDate(datePart); err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrInvalidHeaderValue, name, err)
 	}
 	return nil
@@ -842,7 +841,7 @@ func validateResentBlock(block map[string]Header) error {
 		return fmt.Errorf("%w: resent block missing Resent-From", ErrInvalidHeaderValue)
 	}
 
-	parsed, err := mail.ParseAddressList(resentFrom.Value)
+	parsed, err := ParseAddressList(resentFrom.Value)
 	if err != nil {
 		return fmt.Errorf("%w: Resent-From: %w", ErrInvalidHeaderValue, err)
 	}
@@ -917,7 +916,7 @@ func (h *Headers) Validate() error {
 
 		switch canonicalName {
 		case "date":
-			if _, err := mail.ParseDate(hdr.Value); err != nil {
+			if _, err := ParseDate(hdr.Value); err != nil {
 				return fmt.Errorf("%w: Date: %w", ErrInvalidHeaderValue, err)
 			}
 		case "message-id", "resent-message-id":
@@ -991,7 +990,7 @@ func (h *Headers) Validate() error {
 		}
 	}
 
-	parsedFrom, err := mail.ParseAddressList(h.Get("From"))
+	parsedFrom, err := ParseAddressList(h.Get("From"))
 	if err != nil {
 		return fmt.Errorf("%w: From: %w", ErrInvalidHeaderValue, err)
 	}
@@ -1245,31 +1244,6 @@ func (m *Mail) AddReturnPath() {
 // AddHeader adds a header to the message content.
 func (m *Mail) AddHeader(name, value string) {
 	m.Content.Headers = append(m.Content.Headers, Header{Name: name, Value: value})
-}
-
-// ParseAddress parses an email address string into a MailboxAddress.
-// Supports both simple "user@domain" and RFC 5322 formatted addresses.
-func ParseAddress(addr string) (MailboxAddress, error) {
-	parsed, err := mail.ParseAddress(addr)
-	if err != nil {
-		return MailboxAddress{}, err
-	}
-
-	address := parsed.Address
-	var local, domain string
-	for i := len(address) - 1; i >= 0; i-- {
-		if address[i] == '@' {
-			local = address[:i]
-			domain = address[i+1:]
-			break
-		}
-	}
-
-	return MailboxAddress{
-		LocalPart:   local,
-		Domain:      domain,
-		DisplayName: parsed.Name,
-	}, nil
 }
 
 // ToJSON serializes the Mail object to JSON bytes.
