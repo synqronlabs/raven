@@ -440,10 +440,13 @@ func consumeComment(value string, pos int) (int, error) {
 				return 0, ErrInvalidHeaderValue
 			}
 			pos++
-		default:
-			if value[pos] == '\r' || value[pos] == '\n' {
-				return 0, ErrInvalidLineEnding
+		case '\r', '\n':
+			next, err := consumeFWS(value, pos)
+			if err != nil {
+				return 0, err
 			}
+			pos = next
+		default:
 			if isHeaderControlChar(value[pos]) {
 				return 0, ErrInvalidHeaderValue
 			}
@@ -454,12 +457,37 @@ func consumeComment(value string, pos int) (int, error) {
 	return 0, ErrInvalidHeaderValue
 }
 
-func skipCFWS(value string, pos int) (int, error) {
+// consumeFWS consumes folding white space: *WSP *(CRLF 1*WSP). A bare CR or LF
+// is rejected rather than being treated as whitespace, so malformed line
+// endings surface as ErrInvalidLineEnding instead of producing a misleading
+// syntax error from a later parser stage.
+func consumeFWS(value string, pos int) (int, error) {
 	for {
-		start := pos
 		for pos < len(value) && isWSP(value[pos]) {
 			pos++
 		}
+		if pos >= len(value) || (value[pos] != '\r' && value[pos] != '\n') {
+			return pos, nil
+		}
+		if value[pos] == '\r' && pos+1 < len(value) && value[pos+1] == '\n' {
+			next := pos + 2
+			if next < len(value) && isWSP(value[next]) {
+				pos = next
+				continue
+			}
+		}
+		return 0, ErrInvalidLineEnding
+	}
+}
+
+func skipCFWS(value string, pos int) (int, error) {
+	for {
+		start := pos
+		next, err := consumeFWS(value, pos)
+		if err != nil {
+			return 0, err
+		}
+		pos = next
 		if pos < len(value) && value[pos] == '(' {
 			next, err := consumeComment(value, pos)
 			if err != nil {
@@ -527,11 +555,14 @@ func consumeQuotedString(value string, pos int) (int, error) {
 				return 0, ErrInvalidHeaderValue
 			}
 			pos++
-		default:
-			if value[pos] == '\r' || value[pos] == '\n' {
-				return 0, ErrInvalidLineEnding
+		case '\r', '\n':
+			next, err := consumeFWS(value, pos)
+			if err != nil {
+				return 0, err
 			}
-			if value[pos] != '\t' && value[pos] < 32 {
+			pos = next
+		default:
+			if isHeaderControlChar(value[pos]) {
 				return 0, ErrInvalidHeaderValue
 			}
 			pos++

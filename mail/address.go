@@ -41,7 +41,9 @@ const (
 // It accepts both a bare addr-spec ("user@example.com") and a name-addr with a
 // display name ("Jane Doe <jane@example.com>", or a quoted/observed phrase).
 // Comments and folding white space are permitted, and RFC 2047 encoded-words
-// in the display name are decoded. RFC 6532 UTF-8 addresses are permitted.
+// in the display name are decoded. Encoded-words that decode to control
+// characters, including CR and LF, are rejected. RFC 6532 UTF-8 addresses are
+// permitted.
 //
 // The domain is normalized: an internationalized domain is converted to its
 // ASCII (punycode) form and the result is lowercased. Groups are not accepted;
@@ -98,7 +100,8 @@ func ParseAddressList(value string) ([]MailboxAddress, error) {
 			return nil, err
 		}
 		if pos == len(value) {
-			return nil, ErrInvalidAddress // trailing comma
+			// obs-addr-list permits a trailing comma.
+			return out, nil
 		}
 	}
 }
@@ -296,7 +299,11 @@ func parseBareAddrSpec(value string, pos int) (MailboxAddress, int, error) {
 	if err != nil {
 		return MailboxAddress{}, 0, err
 	}
-	return MailboxAddress{LocalPart: local, Domain: normalized}, next, nil
+	mailbox, err := newHeaderMailbox(local, normalized, "")
+	if err != nil {
+		return MailboxAddress{}, 0, err
+	}
+	return mailbox, next, nil
 }
 
 // parseAngleAddr parses "[display-name] <addr-spec>" beginning at the '<'.
@@ -326,11 +333,32 @@ func parseAngleAddr(value string, pos int, display string) (MailboxAddress, int,
 	if err != nil {
 		return MailboxAddress{}, 0, err
 	}
+	mailbox, err := newHeaderMailbox(local, normalized, display)
+	if err != nil {
+		return MailboxAddress{}, 0, err
+	}
+	return mailbox, after, nil
+}
+
+// newHeaderMailbox applies the RFC 5321 path length limits to a mailbox parsed
+// from an RFC 5322 header. Header parsing still produces an SMTP-like address,
+// so an address that cannot be put on the wire is rejected here rather than
+// being discovered when the envelope is sent.
+func newHeaderMailbox(local, domain, display string) (MailboxAddress, error) {
+	if len(local) > maxLocalPartLength {
+		return MailboxAddress{}, ErrLocalPartTooLong
+	}
+	if len(domain) > maxDomainLength {
+		return MailboxAddress{}, ErrDomainTooLong
+	}
+	if len(local)+1+len(domain) > maxAddressLength {
+		return MailboxAddress{}, ErrAddressTooLong
+	}
 	return MailboxAddress{
 		LocalPart:   local,
-		Domain:      normalized,
+		Domain:      domain,
 		DisplayName: display,
-	}, after, nil
+	}, nil
 }
 
 // parseGroup parses a group whose display-name ends at colonIdx.
@@ -471,14 +499,46 @@ func parseDisplayName(raw string) (string, error) {
 	}
 
 	decoded, err := new(mime.WordDecoder).DecodeHeader(strings.Join(words, " "))
-	if err != nil {
+	if err != nil || !validDisplayName(decoded) {
 		return "", ErrInvalidAddress
 	}
 	return decoded, nil
 }
 
-// unquoteQuotedString removes the backslash escaping from a quoted-string body.
+// validDisplayName reports whether a decoded display name is safe to emit in a
+// header field. In particular, an RFC 2047 encoded-word can decode to CR or LF,
+// which must never reach the wire because it would terminate the header line.
+func validDisplayName(name string) bool {
+	if !utf8.ValidString(name) {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if isHeaderControlChar(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// validMailboxPart reports whether a local-part or domain can be placed in an
+// SMTP path without terminating the command. Unlike a display name, it cannot
+// contain tab or any other control character.
+func validMailboxPart(part string) bool {
+	if !utf8.ValidString(part) {
+		return false
+	}
+	for i := 0; i < len(part); i++ {
+		if part[i] < 32 || part[i] == 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// unquoteQuotedString removes the backslash escaping from a quoted-string body
+// and unfolds any folding white space it contains.
 func unquoteQuotedString(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "")
 	var b strings.Builder
 	b.Grow(len(content))
 	for i := 0; i < len(content); i++ {
@@ -491,15 +551,17 @@ func unquoteQuotedString(content string) string {
 }
 
 // consumeHeaderAddrSpec parses local-part "@" domain in RFC 5322 context and
-// returns the raw local-part and domain substrings plus the position after the
-// domain (past any trailing CFWS).
+// returns the canonical local-part and domain substrings plus the position
+// after the domain (past any trailing CFWS). Comments and other CFWS inside an
+// obs-local-part or obs-domain are removed from the canonical form so the
+// result can also be used as an SMTP path.
 func consumeHeaderAddrSpec(value string, pos int) (local, domain string, next int, err error) {
 	localStart, err := skipCFWS(value, pos)
 	if err != nil {
 		return "", "", 0, err
 	}
 
-	localTextEnd, err := consumeHeaderLocalPart(value, localStart)
+	localTextEnd, local, err := consumeHeaderLocalPart(value, localStart)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -510,17 +572,15 @@ func consumeHeaderAddrSpec(value string, pos int) (local, domain string, next in
 	if at >= len(value) || value[at] != '@' {
 		return "", "", 0, ErrAddressMissingAt
 	}
-	local = value[localStart:localTextEnd]
 
 	domainStart, err := skipCFWS(value, at+1)
 	if err != nil {
 		return "", "", 0, err
 	}
-	domainTextEnd, err := consumeHeaderDomain(value, domainStart)
+	domainTextEnd, domain, err := consumeHeaderDomain(value, domainStart)
 	if err != nil {
 		return "", "", 0, err
 	}
-	domain = value[domainStart:domainTextEnd]
 
 	next, err = skipCFWS(value, domainTextEnd)
 	if err != nil {
@@ -531,35 +591,41 @@ func consumeHeaderAddrSpec(value string, pos int) (local, domain string, next in
 
 // consumeHeaderLocalPart parses local-part = (dot-atom / quoted-string /
 // obs-local-part). obs-local-part permits CFWS and quoted words between dots.
-// It returns the end of the local-part text, before any trailing CFWS.
-func consumeHeaderLocalPart(value string, pos int) (int, error) {
+// It returns the end of the local-part text, before any trailing CFWS, and a
+// canonical local-part in which comments and folding whitespace are removed
+// between words. Quoted strings and atoms are preserved verbatim.
+func consumeHeaderLocalPart(value string, pos int) (int, string, error) {
 	pos, err := skipCFWS(value, pos)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	end, err := consumeHeaderWord(value, pos)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
+	var canonical strings.Builder
+	canonical.WriteString(value[pos:end])
 	pos = end
 
 	for {
 		after, err := skipCFWS(value, pos)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		if after >= len(value) || value[after] != '.' {
-			return pos, nil
+			return pos, canonical.String(), nil
 		}
 		next, err := skipCFWS(value, after+1)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		end, err := consumeHeaderWord(value, next)
 		if err != nil {
-			return 0, ErrInvalidLocalPart
+			return 0, "", ErrInvalidLocalPart
 		}
+		canonical.WriteByte('.')
+		canonical.WriteString(value[next:end])
 		pos = end
 	}
 }
@@ -578,70 +644,85 @@ func consumeHeaderWord(value string, pos int) (int, error) {
 
 // consumeHeaderDomain parses domain = (dot-atom / domain-literal / obs-domain).
 // obs-domain is atom *("." atom) with optional CFWS. It returns the end of the
-// domain text, before any trailing CFWS.
-func consumeHeaderDomain(value string, pos int) (int, error) {
+// domain text, before any trailing CFWS, and a canonical domain in which
+// comments and folding whitespace are removed. A domain-literal is reduced to
+// its address-literal form (FWS inside the brackets is dropped).
+func consumeHeaderDomain(value string, pos int) (int, string, error) {
 	pos, err := skipCFWS(value, pos)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if pos >= len(value) {
-		return 0, ErrDomainEmpty
+		return 0, "", ErrDomainEmpty
 	}
 
 	if value[pos] == '[' {
-		return consumeDomainLiteralFWS(value, pos)
+		end, err := consumeDomainLiteralFWS(value, pos)
+		if err != nil {
+			return 0, "", err
+		}
+		return end, stripFWS(value[pos:end]), nil
 	}
 
 	next, err := consumeAtom(value, pos, true)
 	if err != nil {
-		return 0, ErrInvalidDomain
+		return 0, "", ErrInvalidDomain
 	}
+	var canonical strings.Builder
+	canonical.WriteString(value[pos:next])
 	pos = next
 
 	for {
 		after, err := skipCFWS(value, pos)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		if after >= len(value) || value[after] != '.' {
-			return pos, nil
+			return pos, canonical.String(), nil
 		}
-		next, err := consumeAtom(value, after+1, true)
+		wordStart, err := skipCFWS(value, after+1)
 		if err != nil {
-			return 0, ErrInvalidDomain
+			return 0, "", err
 		}
+		next, err := consumeAtom(value, wordStart, true)
+		if err != nil {
+			return 0, "", ErrInvalidDomain
+		}
+		canonical.WriteByte('.')
+		canonical.WriteString(value[wordStart:next])
 		pos = next
 	}
 }
 
+// stripFWS removes folding white space from a domain-literal.
+func stripFWS(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\r', '\n':
+			return -1
+		default:
+			return r
+		}
+	}, s)
+}
+
 // normalizeHeaderDomain normalizes an RFC 5322 domain. Domain literals are
-// returned as-is; otherwise internationalized domains are punycoded and the
-// result is lowercased. Unlike the SMTP form, RFC 5322 dot-atoms may contain
-// any atext, so DNS label rules are not enforced here.
+// validated as RFC 5321 address-literals; internationalized domains are
+// punycoded and the result is lowercased. The resulting domain is also checked
+// against the DNS rules used for envelope addresses, so a syntactically odd
+// header domain cannot be emitted on the wire as an invalid RCPT TO domain.
 func normalizeHeaderDomain(domain string) (string, error) {
 	if domain == "" {
 		return "", ErrDomainEmpty
 	}
 	if strings.HasPrefix(domain, "[") {
-		return domain, nil
-	}
-
-	if !isASCII(domain) {
-		profile := idna.New(
-			idna.MapForLookup(),
-			idna.ValidateLabels(true),
-			idna.CheckHyphens(true),
-			idna.CheckJoiners(true),
-			idna.StrictDomainName(true),
-		)
-		ascii, err := profile.ToASCII(domain)
-		if err != nil {
-			return "", fmt.Errorf("converting IDN domain %q to ASCII: %w", domain, errors.Join(ErrInvalidDomain, err))
+		if !strings.HasSuffix(domain, "]") {
+			return "", ErrInvalidDomain
 		}
-		domain = ascii
+		return validateIPLiteral(domain)
 	}
 
-	return strings.ToLower(domain), nil
+	return validateAndNormalizeDomain(domain, true)
 }
 
 // consumeDomainLiteralFWS parses a domain-literal (RFC 5322), allowing folding
@@ -653,8 +734,12 @@ func consumeDomainLiteralFWS(value string, pos int) (int, error) {
 		switch {
 		case c == ']':
 			return pos + 1, nil
-		case isWSP(c):
-			pos++
+		case c == '\r' || c == '\n' || isWSP(c):
+			next, err := consumeFWS(value, pos)
+			if err != nil {
+				return 0, err
+			}
+			pos = next
 		case (c >= 33 && c <= 90) || (c >= 94 && c <= 126):
 			pos++
 		default:

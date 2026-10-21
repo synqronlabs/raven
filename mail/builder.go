@@ -410,6 +410,19 @@ func (b *MailBuilder) Build() (*Mail, error) {
 		return nil, fmt.Errorf("mail builder errors: %v", b.errors)
 	}
 
+	// Display names are normally validated by ParseAddress, but the *Mailbox
+	// builder methods accept them directly. Reject control characters before a
+	// name can be copied into a generated address header. The local-part and
+	// domain are checked as well because they are emitted in SMTP commands.
+	if err := validateEnvelopeMailbox(b.mail.Envelope.From.Mailbox); err != nil {
+		return nil, fmt.Errorf("invalid sender address: %w", err)
+	}
+	for _, recipient := range b.mail.Envelope.To {
+		if err := validateEnvelopeMailbox(recipient.Address.Mailbox); err != nil {
+			return nil, fmt.Errorf("invalid recipient address: %w", err)
+		}
+	}
+
 	if b.mail.Envelope.From.IsNull() {
 		// Allow null sender for bounces, but ensure From header exists
 		if b.mail.Content.Headers.Get("From") == "" {
@@ -473,6 +486,13 @@ func (b *MailBuilder) Build() (*Mail, error) {
 	// Detect SMTPUTF8 requirement
 	if b.mail.RequiresSMTPUTF8() {
 		b.mail.Envelope.SMTPUTF8 = true
+	}
+
+	// Validate the assembled headers so custom headers added through Header or
+	// AddHeader cannot smuggle raw line breaks or invalid structured values
+	// past Build.
+	if err := b.mail.Content.Headers.Validate(); err != nil {
+		return nil, fmt.Errorf("validating message headers: %w", err)
 	}
 
 	// Calculate size if not set
@@ -632,16 +652,29 @@ func (b *MailBuilder) updateAddressHeader(name string, recipients []Recipient) {
 	b.mail.AddHeader(name, formatAddressList(addresses))
 }
 
+// validateEnvelopeMailbox rejects address components that cannot be placed in
+// an SMTP path or a generated address header.
+func validateEnvelopeMailbox(addr MailboxAddress) error {
+	if !validDisplayName(addr.DisplayName) || !validMailboxPart(addr.LocalPart) || !validMailboxPart(addr.Domain) {
+		return ErrInvalidAddress
+	}
+	return nil
+}
+
 // formatAddress formats a MailboxAddress for use in headers.
 func formatAddress(addr MailboxAddress) string {
 	email := addr.String()
 	if addr.DisplayName != "" {
 		// Check if display name needs encoding
 		displayName := addr.DisplayName
-		if ravenio.ContainsNonASCII(displayName) {
+		if ravenio.ContainsNonASCII(displayName) || !validDisplayName(displayName) {
+			// Encoding also protects against control characters (notably CR/LF)
+			// in a MailboxAddress assembled programmatically rather than parsed
+			// through ParseAddress.
 			displayName = encodeRFC2047(displayName)
 		} else if strings.ContainsAny(displayName, `"(),.:;<>@[\]`) {
-			displayName = `"` + strings.ReplaceAll(displayName, `"`, `\"`) + `"`
+			escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(displayName)
+			displayName = `"` + escaped + `"`
 		}
 		return displayName + " <" + email + ">"
 	}
@@ -657,10 +690,11 @@ func formatAddressList(addresses []MailboxAddress) string {
 	return strings.Join(formatted, ", ")
 }
 
-// encodeRFC2047 encodes a string using RFC 2047 Base64 encoding.
+// encodeRFC2047 encodes a string using RFC 2047 Base64 encoding. The standard
+// library encoder splits long values into adjacent encoded-words that respect
+// the 75-character limit from RFC 2047 section 2.
 func encodeRFC2047(s string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(s))
-	return "=?UTF-8?B?" + encoded + "?="
+	return strings.ReplaceAll(stdmime.BEncoding.Encode("UTF-8", s), "?b?", "?B?")
 }
 
 // normalizeLineEndings converts all line endings to CRLF.

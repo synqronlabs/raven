@@ -49,7 +49,7 @@ func TestMailBuilder_Build_DoesNotAutoAddSenderForQuotedComma(t *testing.T) {
 
 func TestMailBuilder_Build_MessageIDFallsBackToLocalhost(t *testing.T) {
 	b := NewMailBuilder()
-	b.mail.Content.Headers = Headers{{Name: "From", Value: "sender"}}
+	b.mail.Content.Headers = Headers{{Name: "From", Value: "sender@example.com"}}
 	b.mail.Envelope.From = Path{}
 	b.mail.AddRecipient(MailboxAddress{LocalPart: "rcpt"})
 	b.mail.Content.Body = []byte("body")

@@ -90,7 +90,7 @@ func TestParseAddress_DomainLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if parsed.Domain != "[ 192.0.2.1 ]" {
+	if parsed.Domain != "[192.0.2.1]" {
 		t.Errorf("Domain = %q", parsed.Domain)
 	}
 
@@ -179,6 +179,7 @@ func TestParseAddressList_More(t *testing.T) {
 		{"comments", "(a) a@b.com (b), (c) c@d.com", []string{"a@b.com", "c@d.com"}},
 		{"bare angle", "<a@b.com>, <c@d.com>", []string{"a@b.com", "c@d.com"}},
 		{"obs phrase dot", "John.Doe <j@x.com>", []string{"j@x.com"}},
+		{"trailing comma", "a@b.com,", []string{"a@b.com"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -199,7 +200,6 @@ func TestParseAddressList_More(t *testing.T) {
 
 	invalid := []string{
 		"a@b.com b@c.com",     // missing comma
-		"a@b.com,",            // trailing comma
 		",",                   // empty element
 		"G: a@b.com b@c.com;", // missing comma in group
 		"G: a@b.com",          // missing group terminator
