@@ -3,8 +3,8 @@ package mail
 import (
 	"errors"
 	"fmt"
-	"mime"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/idna"
@@ -46,8 +46,10 @@ const (
 // permitted.
 //
 // The domain is normalized: an internationalized domain is converted to its
-// ASCII (punycode) form and the result is lowercased. Groups are not accepted;
-// use ParseAddressList for headers that may carry an address-list.
+// ASCII (punycode) form and the result is lowercased. The local-part is stored
+// in unquoted semantic form, with obs-local-part words joined by dots; call
+// String to serialize it with RFC 5321 quoting when necessary. Groups are not
+// accepted; use ParseAddressList for headers that may carry an address-list.
 func ParseAddress(addr string) (MailboxAddress, error) {
 	mailbox, next, err := parseMailbox(addr, 0)
 	if err != nil {
@@ -76,6 +78,19 @@ func ParseAddressList(value string) ([]MailboxAddress, error) {
 		return nil, nil
 	}
 
+	// obs-addr-list permits leading commas before the first address. Interior
+	// and trailing empty elements are rejected deliberately so a malformed list
+	// cannot silently drop or invent recipients.
+	for pos < len(value) && value[pos] == ',' {
+		pos, err = skipCFWS(value, pos+1)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if pos == len(value) {
+		return nil, ErrInvalidAddress
+	}
+
 	var out []MailboxAddress
 	for {
 		mailboxes, next, err := parseAddress(value, pos)
@@ -99,9 +114,8 @@ func ParseAddressList(value string) ([]MailboxAddress, error) {
 		if err != nil {
 			return nil, err
 		}
-		if pos == len(value) {
-			// obs-addr-list permits a trailing comma.
-			return out, nil
+		if pos == len(value) || value[pos] == ',' {
+			return nil, ErrInvalidAddress
 		}
 	}
 }
@@ -163,8 +177,10 @@ func ParsePath(s string, allowUTF8 bool) (MailboxAddress, string, error) {
 // This is the strict SMTP form: the local-part is a dot-string or quoted-string,
 // the domain is a DNS domain or an address-literal, and the RFC 5321 length
 // limits are enforced. Internationalized domains are converted to their ASCII
-// (punycode) form and the result is lowercased. When allowUTF8 is false,
-// non-ASCII characters are rejected (SMTPUTF8 is required to carry them).
+// (punycode) form and the result is lowercased. The returned local-part is in
+// unquoted semantic form; String re-quotes it when required. When allowUTF8 is
+// false, non-ASCII characters are rejected (SMTPUTF8 is required to carry
+// them).
 func ParseAddrSpec(addr string, allowUTF8 bool) (MailboxAddress, error) {
 	if addr == "" {
 		return MailboxAddress{}, ErrAddressEmpty
@@ -200,6 +216,12 @@ func ParseAddrSpec(addr string, allowUTF8 bool) (MailboxAddress, error) {
 	}
 
 	localPart := addr[:localEnd]
+	if localPart[0] == '"' {
+		localPart = unquoteQuotedString(localPart[1 : len(localPart)-1])
+	}
+	if !validMailboxPart(localPart) {
+		return MailboxAddress{}, ErrInvalidLocalPart
+	}
 	domain := addr[localEnd+1:]
 
 	normalizedDomain, err := validateAndNormalizeDomain(domain, allowUTF8)
@@ -345,13 +367,16 @@ func parseAngleAddr(value string, pos int, display string) (MailboxAddress, int,
 // so an address that cannot be put on the wire is rejected here rather than
 // being discovered when the envelope is sent.
 func newHeaderMailbox(local, domain, display string) (MailboxAddress, error) {
-	if len(local) > maxLocalPartLength {
+	if !validMailboxPart(local) || !validMailboxPart(domain) {
+		return MailboxAddress{}, ErrInvalidAddress
+	}
+	if len(encodeLocalPart(local)) > maxLocalPartLength {
 		return MailboxAddress{}, ErrLocalPartTooLong
 	}
 	if len(domain) > maxDomainLength {
 		return MailboxAddress{}, ErrDomainTooLong
 	}
-	if len(local)+1+len(domain) > maxAddressLength {
+	if len(encodeLocalPart(local))+1+len(domain) > maxAddressLength {
 		return MailboxAddress{}, ErrAddressTooLong
 	}
 	return MailboxAddress{
@@ -359,6 +384,49 @@ func newHeaderMailbox(local, domain, display string) (MailboxAddress, error) {
 		Domain:      domain,
 		DisplayName: display,
 	}, nil
+}
+
+// localPartNeedsQuoting reports whether a semantic local-part can be emitted as
+// an RFC 5321 dot-string. Empty local-parts and anything outside atext (or
+// non-ASCII SMTPUTF8 text) require a quoted-string.
+func localPartNeedsQuoting(local string) bool {
+	if local == "" {
+		return true
+	}
+	atomStart := 0
+	for i := 0; i <= len(local); i++ {
+		if i < len(local) && local[i] != '.' {
+			if !isAText(local[i]) && local[i] < 128 {
+				return true
+			}
+			continue
+		}
+		if i == atomStart {
+			return true
+		}
+		atomStart = i + 1
+	}
+	return false
+}
+
+// encodeLocalPart serializes a semantic local-part, quoting and escaping it
+// when it is not a valid dot-string.
+func encodeLocalPart(local string) string {
+	if !localPartNeedsQuoting(local) {
+		return local
+	}
+
+	var b strings.Builder
+	b.Grow(len(local) + 2)
+	b.WriteByte('"')
+	for i := 0; i < len(local); i++ {
+		if local[i] == '\\' || local[i] == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(local[i])
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // parseGroup parses a group whose display-name ends at colonIdx.
@@ -457,48 +525,58 @@ func consumeAddressPhrase(value string, pos int) (int, bool) {
 }
 
 // parseDisplayName converts a raw RFC 5322 phrase into a display name. Quoted
-// words are unquoted and RFC 2047 encoded-words are decoded.
+// words are unquoted, obs-phrase dots are preserved, CFWS runs collapse to a
+// single space, and RFC 2047 encoded-words are decoded.
 func parseDisplayName(raw string) (string, error) {
-	var words []string
+	var b strings.Builder
 	pos := 0
+	pendingSpace := false
 	for {
 		next, err := skipCFWS(raw, pos)
 		if err != nil {
 			return "", err
 		}
+		if next != pos {
+			pendingSpace = true
+		}
 		pos = next
 		if pos >= len(raw) {
 			break
 		}
+		if pendingSpace && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		pendingSpace = false
 
 		switch c := raw[pos]; {
 		case c == '.':
-			// Obsolescent separator.
+			// Obsolescent phrase separator; it is part of the display name.
+			b.WriteByte('.')
 			pos++
 		case c == '"':
 			end, err := consumeQuotedString(raw, pos)
 			if err != nil {
 				return "", err
 			}
-			words = append(words, unquoteQuotedString(raw[pos+1:end-1]))
+			b.WriteString(unquoteQuotedString(raw[pos+1 : end-1]))
 			pos = end
 		case isAText(c) || c >= 128:
 			end, err := consumeAtom(raw, pos, true)
 			if err != nil {
 				return "", err
 			}
-			words = append(words, raw[pos:end])
+			b.WriteString(raw[pos:end])
 			pos = end
 		default:
 			return "", ErrInvalidAddress
 		}
 	}
 
-	if len(words) == 0 {
+	if b.Len() == 0 {
 		return "", nil
 	}
 
-	decoded, err := new(mime.WordDecoder).DecodeHeader(strings.Join(words, " "))
+	decoded, err := decodeHeaderValue(b.String())
 	if err != nil || !validDisplayName(decoded) {
 		return "", ErrInvalidAddress
 	}
@@ -512,8 +590,8 @@ func validDisplayName(name string) bool {
 	if !utf8.ValidString(name) {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		if isHeaderControlChar(name[i]) {
+	for _, r := range name {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return false
 		}
 	}
@@ -527,8 +605,8 @@ func validMailboxPart(part string) bool {
 	if !utf8.ValidString(part) {
 		return false
 	}
-	for i := 0; i < len(part); i++ {
-		if part[i] < 32 || part[i] == 127 {
+	for _, r := range part {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return false
 		}
 	}
@@ -538,14 +616,22 @@ func validMailboxPart(part string) bool {
 // unquoteQuotedString removes the backslash escaping from a quoted-string body
 // and unfolds any folding white space it contains.
 func unquoteQuotedString(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "")
 	var b strings.Builder
 	b.Grow(len(content))
 	for i := 0; i < len(content); i++ {
-		if content[i] == '\\' && i+1 < len(content) {
+		switch {
+		case content[i] == '\\' && i+1 < len(content):
 			i++
+			b.WriteByte(content[i])
+		case content[i] == '\r' && i+1 < len(content) && content[i+1] == '\n':
+			i++
+			for i+1 < len(content) && isWSP(content[i+1]) {
+				i++
+			}
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(content[i])
 		}
-		b.WriteByte(content[i])
 	}
 	return b.String()
 }
@@ -591,21 +677,21 @@ func consumeHeaderAddrSpec(value string, pos int) (local, domain string, next in
 
 // consumeHeaderLocalPart parses local-part = (dot-atom / quoted-string /
 // obs-local-part). obs-local-part permits CFWS and quoted words between dots.
-// It returns the end of the local-part text, before any trailing CFWS, and a
-// canonical local-part in which comments and folding whitespace are removed
-// between words. Quoted strings and atoms are preserved verbatim.
+// It returns the end of the local-part text, before any trailing CFWS, and the
+// semantic local-part: quoted words are unquoted, words are joined with dots,
+// and comments/folding whitespace are removed.
 func consumeHeaderLocalPart(value string, pos int) (int, string, error) {
 	pos, err := skipCFWS(value, pos)
 	if err != nil {
 		return 0, "", err
 	}
 
-	end, err := consumeHeaderWord(value, pos)
+	end, word, err := consumeHeaderWordText(value, pos)
 	if err != nil {
 		return 0, "", err
 	}
-	var canonical strings.Builder
-	canonical.WriteString(value[pos:end])
+	var semantic strings.Builder
+	semantic.WriteString(word)
 	pos = end
 
 	for {
@@ -614,20 +700,34 @@ func consumeHeaderLocalPart(value string, pos int) (int, string, error) {
 			return 0, "", err
 		}
 		if after >= len(value) || value[after] != '.' {
-			return pos, canonical.String(), nil
+			return pos, semantic.String(), nil
 		}
 		next, err := skipCFWS(value, after+1)
 		if err != nil {
 			return 0, "", err
 		}
-		end, err := consumeHeaderWord(value, next)
+		end, word, err := consumeHeaderWordText(value, next)
 		if err != nil {
 			return 0, "", ErrInvalidLocalPart
 		}
-		canonical.WriteByte('.')
-		canonical.WriteString(value[next:end])
+		semantic.WriteByte('.')
+		semantic.WriteString(word)
 		pos = end
 	}
+}
+
+// consumeHeaderWordText parses a single word (atom or quoted-string) at pos and
+// returns its semantic text. Quoted words are unquoted and any FWS inside them
+// is unfolded.
+func consumeHeaderWordText(value string, pos int) (int, string, error) {
+	end, err := consumeHeaderWord(value, pos)
+	if err != nil {
+		return 0, "", err
+	}
+	if value[pos] == '"' {
+		return end, unquoteQuotedString(value[pos+1 : end-1]), nil
+	}
+	return end, value[pos:end], nil
 }
 
 // consumeHeaderWord parses a single word (atom or quoted-string) at pos. pos

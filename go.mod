@@ -7,10 +7,10 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/tinylib/msgp v1.6.4
 	golang.org/x/net v0.57.0
+	golang.org/x/text v0.40.0
 )
 
 require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
 )

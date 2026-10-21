@@ -210,7 +210,7 @@ func (p *Profile) Validate(addr string) error {
 	if !p.AllowIPLiteralDomain && strings.HasPrefix(m.Domain, "[") {
 		return fmt.Errorf("%w: %s", ErrIPLiteralDomain, m.Domain)
 	}
-	if !p.AllowQuotedLocalPart && strings.HasPrefix(m.LocalPart, `"`) {
+	if !p.AllowQuotedLocalPart && m.RequiresQuotedLocalPart() {
 		return fmt.Errorf("%w: %s", ErrQuotedLocalPart, m.LocalPart)
 	}
 	if !p.AllowSMTPUTF8 && containsNonASCII(addrSpec) {

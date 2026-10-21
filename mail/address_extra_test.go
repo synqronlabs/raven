@@ -106,9 +106,9 @@ func TestParseAddress_ObsLocalPart(t *testing.T) {
 		addr  string
 		local string
 	}{
-		{`"a"."b"@example.com`, `"a"."b"`},
-		{`a."b".c@example.com`, `a."b".c`},
-		{`"a".b@example.com`, `"a".b`},
+		{`"a"."b"@example.com`, `a.b`},
+		{`a."b".c@example.com`, `a.b.c`},
+		{`"a".b@example.com`, `a.b`},
 	}
 	for _, tt := range valid {
 		parsed, err := ParseAddress(tt.addr)
@@ -136,7 +136,7 @@ func TestParseAddress_DisplayName(t *testing.T) {
 		{`"A\"B" <a@b.com>`, `A"B`},
 		{`"A\\B" <a@b.com>`, `A\B`},
 		{"=?UTF-8?B?SsO2aG4=?= <j@x.com>", "Jöhn"},
-		{"John.Doe <j@x.com>", "John Doe"},
+		{"John.Doe <j@x.com>", "John.Doe"},
 		{"John  Doe <j@x.com>", "John Doe"},
 		{"(comment) Jane <j@x.com>", "Jane"},
 	}
@@ -179,7 +179,8 @@ func TestParseAddressList_More(t *testing.T) {
 		{"comments", "(a) a@b.com (b), (c) c@d.com", []string{"a@b.com", "c@d.com"}},
 		{"bare angle", "<a@b.com>, <c@d.com>", []string{"a@b.com", "c@d.com"}},
 		{"obs phrase dot", "John.Doe <j@x.com>", []string{"j@x.com"}},
-		{"trailing comma", "a@b.com,", []string{"a@b.com"}},
+		{"leading comma", ", a@b.com", []string{"a@b.com"}},
+		{"leading commas", ", , a@b.com, b@c.com", []string{"a@b.com", "b@c.com"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,7 +201,9 @@ func TestParseAddressList_More(t *testing.T) {
 
 	invalid := []string{
 		"a@b.com b@c.com",     // missing comma
-		",",                   // empty element
+		"a@b.com,",            // trailing empty element
+		"a@b.com,,c@d.com",    // interior empty element
+		",",                   // no address after leading comma
 		"G: a@b.com b@c.com;", // missing comma in group
 		"G: a@b.com",          // missing group terminator
 		"G: a@b.com, ;",       // empty element in group

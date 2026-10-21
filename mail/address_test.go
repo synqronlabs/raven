@@ -38,13 +38,13 @@ func TestParseAddrSpec_Valid(t *testing.T) {
 		{"with tilde", "user~name@example.com", false, "user~name", "example.com"},
 		{"with slash", "user/name@example.com", false, "user/name", "example.com"},
 
-		// Quoted local-part
-		{"quoted simple", `"user"@example.com`, false, `"user"`, "example.com"},
-		{"quoted with space", `"user name"@example.com`, false, `"user name"`, "example.com"},
-		{"quoted with at", `"user@domain"@example.com`, false, `"user@domain"`, "example.com"},
-		{"quoted with dot dot", `"user..name"@example.com`, false, `"user..name"`, "example.com"},
-		{"quoted with backslash", `"user\\name"@example.com`, false, `"user\\name"`, "example.com"},
-		{"quoted with quote", `"user\"name"@example.com`, false, `"user\"name"`, "example.com"},
+		// Quoted local-part (stored in unquoted semantic form)
+		{"quoted simple", `"user"@example.com`, false, `user`, "example.com"},
+		{"quoted with space", `"user name"@example.com`, false, `user name`, "example.com"},
+		{"quoted with at", `"user@domain"@example.com`, false, `user@domain`, "example.com"},
+		{"quoted with dot dot", `"user..name"@example.com`, false, `user..name`, "example.com"},
+		{"quoted with backslash", `"user\\name"@example.com`, false, `user\name`, "example.com"},
+		{"quoted with quote", `"user\"name"@example.com`, false, `user"name`, "example.com"},
 
 		// IP address literals
 		{"IPv4 literal", "user@[192.168.1.1]", false, "user", "[192.168.1.1]"},
@@ -299,12 +299,12 @@ func TestQuotedLocalPart(t *testing.T) {
 		address string
 		local   string
 	}{
-		{`"simple"@example.com`, `"simple"`},
-		{`"with space"@example.com`, `"with space"`},
-		{`"with.dot"@example.com`, `"with.dot"`},
-		{`"with@at"@example.com`, `"with@at"`},
-		{`"with\"quote"@example.com`, `"with\"quote"`},
-		{`"with\\backslash"@example.com`, `"with\\backslash"`},
+		{`"simple"@example.com`, `simple`},
+		{`"with space"@example.com`, `with space`},
+		{`"with.dot"@example.com`, `with.dot`},
+		{`"with@at"@example.com`, `with@at`},
+		{`"with\"quote"@example.com`, `with"quote`},
+		{`"with\\backslash"@example.com`, `with\backslash`},
 	}
 
 	for _, tt := range valid {
@@ -315,6 +315,11 @@ func TestQuotedLocalPart(t *testing.T) {
 			}
 			if parsed.LocalPart != tt.local {
 				t.Errorf("LocalPart = %q, want %q", parsed.LocalPart, tt.local)
+			}
+			// The semantic local-part must serialize back to an SMTP-valid
+			// local-part, re-quoting when required.
+			if _, err := ParseAddrSpec(parsed.String(), false); err != nil {
+				t.Errorf("ParseAddrSpec(%q) after serialization error: %v", parsed.String(), err)
 			}
 		})
 	}

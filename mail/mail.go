@@ -62,14 +62,17 @@ const (
 )
 
 // MailboxAddress represents an email address.
-// Supports ASCII and internationalized addresses.
+// Supports ASCII and internationalized addresses. LocalPart is stored in
+// unquoted semantic form; String applies RFC 5321 quoting when necessary.
 type MailboxAddress struct {
 	LocalPart   string `json:"local_part"`
 	Domain      string `json:"domain"`
 	DisplayName string `json:"display_name,omitempty"`
 }
 
-// String returns the address in the standard "local-part@domain" format.
+// String returns the address in the standard "local-part@domain" format. The
+// local-part is stored in unquoted semantic form and is re-quoted here when its
+// content cannot be represented as an RFC 5321 dot-string.
 func (m *MailboxAddress) String() string {
 	if m == nil {
 		return ""
@@ -77,7 +80,16 @@ func (m *MailboxAddress) String() string {
 	if m.LocalPart == "" && m.Domain == "" {
 		return ""
 	}
-	return m.LocalPart + "@" + m.Domain
+	return encodeLocalPart(m.LocalPart) + "@" + m.Domain
+}
+
+// RequiresQuotedLocalPart reports whether the stored semantic local-part must
+// be quoted when serialized as an SMTP local-part.
+func (m *MailboxAddress) RequiresQuotedLocalPart() bool {
+	if m == nil {
+		return false
+	}
+	return localPartNeedsQuoting(m.LocalPart)
 }
 
 // Path represents an SMTP forward-path or reverse-path.
