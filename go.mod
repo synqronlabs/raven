@@ -1,13 +1,13 @@
 module github.com/synqronlabs/raven
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/miekg/dns v1.1.73
 	github.com/tinylib/msgp v1.6.4
 	golang.org/x/net v0.57.0
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.43.0
 )
 
 require (
