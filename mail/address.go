@@ -3,10 +3,12 @@ package mail
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/synqronlabs/raven/internal/smtppath"
 	"golang.org/x/net/idna"
 )
 
@@ -62,8 +64,8 @@ func ParseAddress(addr string) (MailboxAddress, error) {
 	return mailbox, nil
 }
 
-// ParseAddressList parses an RFC 5322 address-list (as found in From, To, Cc,
-// and similar headers) into a flat list of mailboxes.
+// ParseAddressList parses an RFC 5322 address-list (as found in To, Cc, and
+// similar headers) into a flat list of mailboxes.
 //
 // Name-addr mailboxes, quoted display names, comments, obsolete phrase syntax,
 // and groups are supported. A group contributes its member mailboxes; an empty
@@ -120,6 +122,49 @@ func ParseAddressList(value string) ([]MailboxAddress, error) {
 	}
 }
 
+// parseMailboxList parses an RFC 5322 mailbox-list. Unlike ParseAddressList it
+// does not accept groups, because From, Sender, and their Resent-* equivalents
+// are defined in terms of mailboxes rather than addresses. An empty value
+// yields no mailboxes and no error; callers that require a mailbox must check
+// the result length.
+func parseMailboxList(value string) ([]MailboxAddress, error) {
+	pos, err := skipCFWS(value, 0)
+	if err != nil {
+		return nil, err
+	}
+	if pos == len(value) {
+		return nil, nil
+	}
+
+	var out []MailboxAddress
+	for {
+		mailbox, next, err := parseMailbox(value, pos)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mailbox)
+
+		next, err = skipCFWS(value, next)
+		if err != nil {
+			return nil, err
+		}
+		if next == len(value) {
+			return out, nil
+		}
+		if value[next] != ',' {
+			return nil, ErrInvalidAddress
+		}
+
+		pos, err = skipCFWS(value, next+1)
+		if err != nil {
+			return nil, err
+		}
+		if pos == len(value) || value[pos] == ',' {
+			return nil, ErrInvalidAddress
+		}
+	}
+}
+
 // ParsePath parses and validates an SMTP path (RFC 5321 forward-path or
 // reverse-path), e.g. "<user@domain> PARAMS" or "<@relay1,@relay2:user@domain>
 // PARAMS". It returns the parsed mailbox, any trailing ESMTP parameters, and an
@@ -128,39 +173,28 @@ func ParseAddressList(value string) ([]MailboxAddress, error) {
 // The null reverse-path "<>" yields a zero MailboxAddress. When allowUTF8 is
 // false, non-ASCII characters are rejected.
 func ParsePath(s string, allowUTF8 bool) (MailboxAddress, string, error) {
-	s = strings.TrimSpace(s)
-
-	if s == "" {
-		return MailboxAddress{}, "", ErrAddressEmpty
-	}
-
-	// Handle null path <>.
-	if s == "<>" {
-		return MailboxAddress{}, "", nil
-	}
-
-	if s[0] != '<' {
+	inner, params, err := smtppath.Split(s)
+	if err != nil {
+		if errors.Is(err, smtppath.ErrEmpty) {
+			return MailboxAddress{}, "", ErrAddressEmpty
+		}
 		return MailboxAddress{}, "", ErrPathMissingBrackets
 	}
 
-	idx := strings.Index(s, ">")
-	if idx == -1 {
-		return MailboxAddress{}, "", ErrPathMissingBrackets
+	// A null reverse-path may still carry ESMTP parameters, e.g.
+	// "MAIL FROM:<> SIZE=123".
+	if inner == "" {
+		return MailboxAddress{}, params, nil
 	}
-
-	inner := s[1:idx]
-	params := strings.TrimSpace(s[idx+1:])
 
 	// Optional source route: A-d-l = At-domain *( "," At-domain ).
-	if strings.HasPrefix(inner, "@") {
-		colon := findSourceRouteEnd(inner)
-		if colon == -1 {
-			return MailboxAddress{}, "", fmt.Errorf("parsing SMTP path %q: %w", s, ErrAddressMissingAt)
-		}
-		if err := validateSourceRoute(inner[:colon], allowUTF8); err != nil {
+	if route, rest, ok := smtppath.SplitSourceRoute(inner); ok {
+		if err := validateSourceRoute(route, allowUTF8); err != nil {
 			return MailboxAddress{}, "", fmt.Errorf("parsing SMTP path %q: %w", s, err)
 		}
-		inner = inner[colon+1:]
+		inner = rest
+	} else if strings.HasPrefix(inner, "@") {
+		return MailboxAddress{}, "", fmt.Errorf("parsing SMTP path %q: %w", s, ErrAddressMissingAt)
 	}
 
 	parsed, err := ParseAddrSpec(inner, allowUTF8)
@@ -927,28 +961,6 @@ func consumeSMTPQuotedString(value string, pos int, allowUTF8 bool) (int, error)
 	return 0, ErrInvalidLocalPart
 }
 
-// findSourceRouteEnd returns the index of the top-level ":" that terminates an
-// A-d-l source route, or -1 if there is none. Colons inside address literals
-// (e.g. [IPv6:...]) are ignored.
-func findSourceRouteEnd(value string) int {
-	depth := 0
-	for i := 0; i < len(value); i++ {
-		switch value[i] {
-		case '[':
-			depth++
-		case ']':
-			if depth > 0 {
-				depth--
-			}
-		case ':':
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
 // validateSourceRoute validates A-d-l = At-domain *( "," At-domain ).
 func validateSourceRoute(route string, allowUTF8 bool) error {
 	for domain := range strings.SplitSeq(route, ",") {
@@ -1131,56 +1143,14 @@ func isValidIPv4(s string) bool {
 }
 
 // isValidIPv6 checks if a string is a valid IPv6 address. It accepts standard
-// and compressed formats, and IPv4-embedded forms.
+// and compressed formats, including IPv4-embedded forms, but rejects zone
+// identifiers: an RFC 5321 IPv6-address-literal has no zone.
 func isValidIPv6(s string) bool {
-	if s == "" {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
 		return false
 	}
-
-	// Allow a trailing IPv4 part (e.g. ::ffff:192.0.2.1).
-	if dot := strings.LastIndex(s, "."); dot != -1 {
-		colon := strings.LastIndex(s, ":")
-		if colon > dot || !isValidIPv4(s[colon+1:]) {
-			return false
-		}
-		s = s[:colon+1]
-	}
-
-	colons := strings.Count(s, ":")
-	doubleColon := strings.Contains(s, "::")
-
-	if doubleColon {
-		if strings.Count(s, "::") > 1 {
-			return false
-		}
-		if colons > 7 {
-			return false
-		}
-	} else if colons != 7 {
-		return false
-	}
-
-	s = strings.TrimPrefix(s, "::")
-	s = strings.TrimSuffix(s, "::")
-	if s == "" {
-		return true // Just "::" is valid.
-	}
-
-	for part := range strings.SplitSeq(s, ":") {
-		if part == "" {
-			continue
-		}
-		if len(part) > 4 {
-			return false
-		}
-		for i := 0; i < len(part); i++ {
-			c := part[i]
-			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-				return false
-			}
-		}
-	}
-	return true
+	return addr.Is6() && addr.Zone() == ""
 }
 
 // isASCII reports whether s contains only ASCII characters (0-127).

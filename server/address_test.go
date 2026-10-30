@@ -16,6 +16,11 @@ func TestExtractPathAndParams_SourceRoutes(t *testing.T) {
 		{"multiple relays", "<@a,@b:user@example.com>", "user@example.com", ""},
 		{"source route with params", "<@relay:user@example.com> SIZE=100", "user@example.com", "SIZE=100"},
 		{"null path", "<>", "", ""},
+		{"null path with params", "<> SIZE=100", "", "SIZE=100"},
+		{"source route with IPv6 literal", "<@relay:user@[IPv6:2001:db8::1]>", "user@[IPv6:2001:db8::1]", ""},
+		{"source route with quoted colon", `<@relay:"a:b"@example.com>`, `"a:b"@example.com`, ""},
+		{"quoted greater-than", `<"a>b"@example.com>`, `"a>b"@example.com`, ""},
+		{"general literal greater-than", `<user@[TAG:a>b]>`, `user@[TAG:a>b]`, ""},
 	}
 
 	for _, tt := range tests {

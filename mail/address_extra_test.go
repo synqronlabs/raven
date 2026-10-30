@@ -226,6 +226,10 @@ func TestParsePath_SourceRoutes(t *testing.T) {
 		{"<@a.example.com,@b.example.com:user@example.com> SIZE=1", "user@example.com", "SIZE=1"},
 		{"<@[192.0.2.1]:user@example.com>", "user@example.com", ""},
 		{"<@relay.example.com:user@[IPv6:2001:db8::1]>", "user@[IPv6:2001:db8::1]", ""},
+		{`<@relay.example.com:"a:b"@example.com>`, `"a:b"@example.com`, ""},
+		{`<"a>b"@example.com>`, `"a>b"@example.com`, ""},
+		{`<user@[TAG:a>b]>`, `user@[TAG:a>b]`, ""},
+		{"<> SIZE=10", "", "SIZE=10"},
 	}
 	for _, tt := range tests {
 		parsed, params, err := ParsePath(tt.path, false)
@@ -267,6 +271,51 @@ func TestParseAddressList_EmptyAndComments(t *testing.T) {
 		if len(got) != 0 {
 			t.Errorf("ParseAddressList(%q) = %v, want empty", input, got)
 		}
+	}
+}
+
+func TestParseMailboxList(t *testing.T) {
+	valid := []struct {
+		input string
+		want  []string
+	}{
+		{"a@b.com", []string{"a@b.com"}},
+		{"a@b.com, c@d.com", []string{"a@b.com", "c@d.com"}},
+		{"Jane <jane@example.com>, Bob <bob@example.com>", []string{"jane@example.com", "bob@example.com"}},
+		{"(lead) a@b.com (trail)", []string{"a@b.com"}},
+	}
+	for _, tt := range valid {
+		got, err := parseMailboxList(tt.input)
+		if err != nil {
+			t.Errorf("parseMailboxList(%q) error: %v", tt.input, err)
+			continue
+		}
+		if len(got) != len(tt.want) {
+			t.Errorf("parseMailboxList(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i].String() != tt.want[i] {
+				t.Errorf("parseMailboxList(%q)[%d] = %q, want %q", tt.input, i, got[i].String(), tt.want[i])
+			}
+		}
+	}
+
+	invalid := []string{
+		"Friends: a@b.com;",
+		"Undisclosed:;",
+		"a@b.com,",
+		"a@b.com,,c@d.com",
+		"a@b.com Friends: c@d.com;",
+	}
+	for _, input := range invalid {
+		if _, err := parseMailboxList(input); err == nil {
+			t.Errorf("parseMailboxList(%q) = nil error, want error", input)
+		}
+	}
+
+	if got, err := parseMailboxList("   "); err != nil || len(got) != 0 {
+		t.Errorf("parseMailboxList(empty) = %v, %v, want empty, nil", got, err)
 	}
 }
 

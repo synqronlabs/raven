@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	ravenio "github.com/synqronlabs/raven/io"
 )
@@ -413,17 +414,34 @@ func validateAddressListHeader(name, value string, allowEmpty bool) error {
 	return nil
 }
 
-func validateSingleMailboxHeader(name, value string) error {
-	if err := validateAddressListHeader(name, value, false); err != nil {
-		return err
+// validateMailboxListHeader validates a mailbox-list field. Groups are not
+// permitted: From and Resent-From are mailbox-list fields, not address-list
+// fields, and a group must not be allowed to stand in for a required sender.
+func validateMailboxListHeader(name, value string) error {
+	if isCFWSOnly(value) {
+		return fmt.Errorf("%w: %s: empty mailbox list", ErrInvalidHeaderValue, name)
 	}
 
-	parsed, err := ParseAddressList(value)
+	parsed, err := parseMailboxList(value)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrInvalidHeaderValue, name, err)
 	}
-	if len(parsed) != 1 {
-		return fmt.Errorf("%w: %s: must contain exactly one mailbox", ErrInvalidHeaderValue, name)
+	if len(parsed) == 0 {
+		return fmt.Errorf("%w: %s: empty mailbox list", ErrInvalidHeaderValue, name)
+	}
+
+	return nil
+}
+
+func validateSingleMailboxHeader(name, value string) error {
+	if isCFWSOnly(value) {
+		return fmt.Errorf("%w: %s: empty mailbox", ErrInvalidHeaderValue, name)
+	}
+
+	// Sender is a mailbox, not an address-list or a group. ParseAddress
+	// rejects group syntax and trailing addresses.
+	if _, err := ParseAddress(value); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrInvalidHeaderValue, name, err)
 	}
 
 	return nil
@@ -884,9 +902,12 @@ func validateResentBlock(block map[string]Header) error {
 		return fmt.Errorf("%w: resent block missing Resent-From", ErrInvalidHeaderValue)
 	}
 
-	parsed, err := ParseAddressList(resentFrom.Value)
+	parsed, err := parseMailboxList(resentFrom.Value)
 	if err != nil {
 		return fmt.Errorf("%w: Resent-From: %w", ErrInvalidHeaderValue, err)
+	}
+	if len(parsed) == 0 {
+		return fmt.Errorf("%w: Resent-From: empty mailbox list", ErrInvalidHeaderValue)
 	}
 	if len(parsed) > 1 {
 		if _, ok := block["resent-sender"]; !ok {
@@ -970,11 +991,19 @@ func (h *Headers) Validate() error {
 			if err := validateMessageIDListHeader(hdr.Name, hdr.Value); err != nil {
 				return err
 			}
-		case "from", "reply-to", "to", "cc":
+		case "from":
+			if err := validateMailboxListHeader(hdr.Name, hdr.Value); err != nil {
+				return err
+			}
+		case "reply-to", "to", "cc":
 			if err := validateAddressListHeader(hdr.Name, hdr.Value, false); err != nil {
 				return err
 			}
-		case "resent-from", "resent-to", "resent-cc":
+		case "resent-from":
+			if err := validateMailboxListHeader(hdr.Name, hdr.Value); err != nil {
+				return err
+			}
+		case "resent-to", "resent-cc":
 			if err := validateAddressListHeader(hdr.Name, hdr.Value, false); err != nil {
 				return err
 			}
@@ -1033,7 +1062,7 @@ func (h *Headers) Validate() error {
 		}
 	}
 
-	parsedFrom, err := ParseAddressList(h.Get("From"))
+	parsedFrom, err := parseMailboxList(h.Get("From"))
 	if err != nil {
 		return fmt.Errorf("%w: From: %w", ErrInvalidHeaderValue, err)
 	}
@@ -1548,12 +1577,27 @@ func FoldHeader(name, value string) []byte {
 				}
 				currentLineLen = 1 + (i - lastBreak + 1) // 1 for the leading space
 			} else if currentLineLen >= MaxLineLength {
-				// No good break point found, force break at max length
-				// This is a last resort - RFC says MUST not exceed 998
-				result = append(result, valueBytes[lastBreak:i]...)
+				// No good break point found, force break at max length.
+				// This is a last resort - RFC says MUST not exceed 998.
+				// Do not split a multi-byte UTF-8 sequence; RFC 6532
+				// permits raw UTF-8 header values, and a split rune would
+				// make the folded header invalid UTF-8.
+				breakAt := i
+				for breakAt > lastBreak && !utf8.RuneStart(valueBytes[breakAt]) {
+					breakAt--
+				}
+				if breakAt <= lastBreak {
+					// Invalid UTF-8: preserve the previous behavior rather
+					// than looping or dropping bytes.
+					breakAt = i
+				}
+
+				result = append(result, valueBytes[lastBreak:breakAt]...)
 				result = append(result, '\r', '\n', ' ')
-				lastBreak = i
-				currentLineLen = 1
+				lastBreak = breakAt
+				// The continuation WSP plus the bytes already passed over
+				// on this iteration count toward the new line.
+				currentLineLen = 1 + (i - breakAt)
 			}
 		}
 	}

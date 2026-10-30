@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/synqronlabs/raven/internal/smtppath"
 	"github.com/synqronlabs/raven/internal/transferbuf"
 	ravenio "github.com/synqronlabs/raven/io"
 	ravenmail "github.com/synqronlabs/raven/mail"
@@ -1598,36 +1599,15 @@ func (c *Conn) writeError(err error) {
 // It also strips source routes per RFC 5321 §3.3 (e.g., "@relay1,@relay2:user@domain" → "user@domain").
 // Full address validation is done separately by ravenmail.ParseAddrSpec.
 func extractPathAndParams(s string) (path, params string, err error) {
-	s = strings.TrimSpace(s)
-
-	if s == "" {
-		return "", "", errors.New("empty path")
+	path, params, err = smtppath.Split(s)
+	if err != nil {
+		return "", "", err
 	}
 
-	// Handle null path <>
-	if s == "<>" {
-		return "", "", nil
-	}
-
-	// Must start with <
-	if s[0] != '<' {
-		return "", "", errors.New("path must start with <")
-	}
-
-	// Find closing >
-	idx := strings.Index(s, ">")
-	if idx == -1 {
-		return "", "", errors.New("path must end with >")
-	}
-
-	path = s[1:idx]
-	params = strings.TrimSpace(s[idx+1:])
-
-	// Strip source route (RFC 5321 §3.3): "@relay1,@relay2:user@domain" → "user@domain"
-	if path != "" && path[0] == '@' {
-		if colonIdx := strings.LastIndex(path, ":"); colonIdx != -1 {
-			path = path[colonIdx+1:]
-		}
+	// Strip source route (RFC 5321 §3.3): "@relay1,@relay2:user@domain" → "user@domain".
+	// The splitter ignores colons inside address literals and quoted local-parts.
+	if _, rest, ok := smtppath.SplitSourceRoute(path); ok {
+		path = rest
 	}
 
 	return path, params, nil

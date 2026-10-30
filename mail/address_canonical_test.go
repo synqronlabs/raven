@@ -186,3 +186,23 @@ func TestParsePath_QuotedLocalPartIsValidSMTP(t *testing.T) {
 		t.Errorf("Path.String() = %q, want quoted local-part", path.String())
 	}
 }
+
+func TestParsePath_QuotedLocalPartWithGreaterThan(t *testing.T) {
+	original := MailboxAddress{LocalPart: "a>b", Domain: "example.com"}
+	envelopePath := Path{Mailbox: original}
+	path := envelopePath.String()
+	if path != `<"a>b"@example.com>` {
+		t.Fatalf("Path.String() = %q, want quoted greater-than", path)
+	}
+
+	parsed, params, err := ParsePath(path, false)
+	if err != nil {
+		t.Fatalf("ParsePath(%q) error: %v", path, err)
+	}
+	if params != "" {
+		t.Errorf("ParsePath(%q) params = %q, want empty", path, params)
+	}
+	if parsed.LocalPart != "a>b" || parsed.Domain != "example.com" {
+		t.Errorf("ParsePath(%q) = %+v, want local=a>b domain=example.com", path, parsed)
+	}
+}

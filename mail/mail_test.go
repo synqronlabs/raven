@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestMailBuilder_Basic(t *testing.T) {
@@ -424,6 +425,64 @@ func TestRFC5322_HeaderValidation_MultipleFromNoSender(t *testing.T) {
 	err = headers.Validate()
 	if err != nil {
 		t.Errorf("Expected no error with Sender header, got %v", err)
+	}
+}
+
+func TestRFC5322_HeaderValidation_FromRejectsGroups(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers Headers
+	}{
+		{
+			"from group",
+			Headers{
+				{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+				{Name: "From", Value: "Friends: alice@example.com;"},
+			},
+		},
+		{
+			"from empty group",
+			Headers{
+				{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+				{Name: "From", Value: "Undisclosed:;"},
+			},
+		},
+		{
+			"sender group",
+			Headers{
+				{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+				{Name: "From", Value: "sender@example.com"},
+				{Name: "Sender", Value: "Friends: alice@example.com;"},
+			},
+		},
+		{
+			"resent-from group",
+			Headers{
+				{Name: "Resent-Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+				{Name: "Resent-From", Value: "Friends: alice@example.com;"},
+				{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+				{Name: "From", Value: "sender@example.com"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.headers.Validate()
+			if !errors.Is(err, ErrInvalidHeaderValue) {
+				t.Errorf("Validate() error = %v, want ErrInvalidHeaderValue", err)
+			}
+		})
+	}
+
+	// Groups remain valid in address-list fields such as To.
+	headers := Headers{
+		{Name: "Date", Value: "Thu, 12 Dec 2024 10:00:00 +0000"},
+		{Name: "From", Value: "sender@example.com"},
+		{Name: "To", Value: "Undisclosed:;"},
+	}
+	if err := headers.Validate(); err != nil {
+		t.Errorf("To with an empty group should remain valid, got %v", err)
 	}
 }
 
@@ -898,6 +957,30 @@ func TestFoldHeader_NoWhitespace(t *testing.T) {
 	for i, line := range lines {
 		if len(line) > MaxLineLength {
 			t.Errorf("Line %d exceeds max length (998): %d chars", i, len(line))
+		}
+	}
+}
+
+func TestFoldHeader_DoesNotSplitUTF8Runes(t *testing.T) {
+	for _, name := range []string{"X", "X-Long", "X-Description"} {
+		for _, value := range []string{
+			strings.Repeat("日", 500),
+			strings.Repeat("é", 700),
+			strings.Repeat("😀", 400),
+		} {
+			result := FoldHeader(name, value)
+			if !utf8.Valid(result) {
+				t.Fatalf("FoldHeader(%q, UTF-8 value) produced invalid UTF-8", name)
+			}
+
+			for i, line := range splitLines(result) {
+				if len(line) > MaxLineLength {
+					t.Errorf("line %d exceeds MaxLineLength: %d", i, len(line))
+				}
+				if !utf8.ValidString(line) {
+					t.Errorf("line %d is not valid UTF-8: %q", i, line)
+				}
+			}
 		}
 	}
 }

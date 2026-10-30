@@ -50,6 +50,8 @@ func TestParseAddrSpec_Valid(t *testing.T) {
 		{"IPv4 literal", "user@[192.168.1.1]", false, "user", "[192.168.1.1]"},
 		{"IPv6 literal", "user@[IPv6:2001:db8::1]", false, "user", "[IPv6:2001:db8::1]"},
 		{"IPv6 full", "user@[IPv6:2001:0db8:0000:0000:0000:0000:0000:0001]", false, "user", "[IPv6:2001:0db8:0000:0000:0000:0000:0000:0001]"},
+		{"IPv6 embedded IPv4 full", "user@[IPv6:1:2:3:4:5:6:192.0.2.1]", false, "user", "[IPv6:1:2:3:4:5:6:192.0.2.1]"},
+		{"IPv6 compressed loopback", "user@[IPv6:::1]", false, "user", "[IPv6:::1]"},
 
 		// Internationalized (with SMTPUTF8)
 		{"UTF8 local", "用户@example.com", true, "用户", "example.com"},
@@ -116,6 +118,9 @@ func TestParseAddrSpec_Invalid(t *testing.T) {
 		{"IPv4 with leading zero", "user@[192.168.01.1]", false, ErrInvalidIPLiteral},
 		{"invalid IPv6", "user@[IPv6:invalid]", false, ErrInvalidIPLiteral},
 		{"bad literal format", "user@[notip]", false, ErrInvalidIPLiteral},
+		{"IPv6 multiple compression", "user@[IPv6:1:::2]", false, ErrInvalidIPLiteral},
+		{"IPv6 trailing colon", "user@[IPv6:1:2:3:4:5:6:7:]", false, ErrInvalidIPLiteral},
+		{"IPv6 too many groups with IPv4", "user@[IPv6:1:2:3:4:5:6:7:192.0.2.1]", false, ErrInvalidIPLiteral},
 	}
 
 	for _, tt := range tests {
@@ -241,6 +246,7 @@ func TestValidateIPv6(t *testing.T) {
 		"fe80::1",
 		"2001:db8:85a3::8a2e:370:7334",
 		"::ffff:192.0.2.1",
+		"1:2:3:4:5:6:192.0.2.1",
 	}
 	for _, ip := range valid {
 		if !isValidIPv6(ip) {
@@ -248,7 +254,20 @@ func TestValidateIPv6(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"", "2001:db8::1::2", "2001:db8:1:2:3:4:5:6:7:8", "gggg::1", "2001:db8"}
+	invalid := []string{
+		"",
+		"2001:db8::1::2",
+		"2001:db8:1:2:3:4:5:6:7:8",
+		"gggg::1",
+		"2001:db8",
+		"1:::2",
+		":::1",
+		":::",
+		":1:2:3:4:5:6:7",
+		"1:2:3:4:5:6:7:",
+		"1:2:3:4:5:6:7:192.0.2.1",
+		"fe80::1%eth0",
+	}
 	for _, ip := range invalid {
 		if isValidIPv6(ip) {
 			t.Errorf("isValidIPv6(%q) = true, want false", ip)
@@ -395,6 +414,9 @@ func FuzzParseAddress(f *testing.F) {
 	f.Add("user@[IPv6:2001:db8::1]")
 	f.Add("Thu, 12 Dec 2024 10:00:00 +0000")
 	f.Add("<@relay.example.com:user@example.com> SIZE=10")
+	f.Add(`<"a>b"@example.com>`)
+	f.Add("<user@[IPv6:1:2:3:4:5:6:192.0.2.1]>")
+	f.Add("<> SIZE=10")
 
 	f.Fuzz(func(t *testing.T, s string) {
 		_, _ = ParseAddress(s)
